@@ -212,11 +212,7 @@ Bash commands — no agent bug, prompt injection, or hallucination can bypass
 a kernel-enforced `denyRead`. But SRT has no awareness of agent-specific
 tool semantics. It cannot:
 
-- Distinguish `bash rm` from `bash git push` (all shell commands look alike
-  to a syscall filter)
-- Prompt the user before a risky-but-legitimate command ("ask" semantics)
 - Control built-in tools (Read, Write, Edit) that run inside the agent process
-- Express its policy in each agent's native configuration format
 
 Without twsrt, the administrator must manually translate SRT's filesystem
 rules into each agent's permission model — exactly the error-prone,
@@ -242,10 +238,7 @@ userspace — inside the agent's own process. This means:
                     ──────────         ───────────        ───────────
 Bash file access    ✓ kernel deny      ✓ agent deny       ✓✓ two layers
 Bash network        ✓ proxy deny       ✓ agent deny       ✓✓ two layers
-Bash cmd semantics  ✗ can't distinguish ✓ deny/ask rules  ✓ agent layer
 Built-in tools      ✗ not covered      ✓ agent deny       ✓ agent layer
-Multi-agent policy  ✗ manual per-agent ✓ auto-translated  ✓ consistent
-Drift detection     ✗ none             ✓ twsrt diff       ✓ auditable
 Enforcement depth   kernel (Bash)      userspace (all)    kernel + userspace
 ```
 
@@ -253,7 +246,7 @@ Enforcement depth   kernel (Bash)      userspace (all)    kernel + userspace
 the **most dangerous** attack vector. Bash is the primary tool an agent
 uses to interact with the OS — it can execute arbitrary programs, access
 any file, and make network connections. A kernel-level deny on Bash is
-un-bypassable by the agent. twsrt then ensures this same policy is
+un-bypassable by the agent. `twsrt` then ensures this same policy is
 faithfully expressed as application-level rules for ALL tools across ALL
 agents, covering the surface area that SRT cannot reach.
 

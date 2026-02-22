@@ -1,11 +1,13 @@
-"""Tests for CLI commands: init, version, generate."""
+"""Tests for CLI commands: init, version, generate, edit."""
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
-from twsrt.bin.cli import __version__, app
+from twsrt.bin.cli import __version__, _resolve_editor, app
 
 runner = CliRunner()
 
@@ -538,3 +540,135 @@ class TestUS3AcceptanceScenarios:
 
         result = runner.invoke(app, ["-c", str(config), "diff", "copilot"])
         assert result.exit_code == 2
+
+
+# --- Edit Command Tests (002-add-srt-domain) ---
+
+
+class TestResolveEditor:
+    """T001: _resolve_editor() returns $EDITOR, falls back to $VISUAL, then vi."""
+
+    def test_returns_editor_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("EDITOR", "nvim")
+        assert _resolve_editor() == "nvim"
+
+    def test_falls_back_to_visual(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("EDITOR", raising=False)
+        monkeypatch.setenv("VISUAL", "code")
+        assert _resolve_editor() == "code"
+
+    def test_falls_back_to_vi(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("EDITOR", raising=False)
+        monkeypatch.delenv("VISUAL", raising=False)
+        assert _resolve_editor() == "vi"
+
+
+def _make_edit_config(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Helper: create SRT + bash-rules files and config, return (config, srt_file, bash_file)."""
+    srt_file = tmp_path / "srt.json"
+    srt_file.write_text("{}")
+
+    bash_file = tmp_path / "bash-rules.json"
+    bash_file.write_text('{"deny": [], "ask": []}')
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f'[sources]\nsrt = "{srt_file}"\nbash_rules = "{bash_file}"\n'
+    )
+    return config, srt_file, bash_file
+
+
+class TestEditSrt:
+    """T002-T004: twsrt edit srt — happy path, missing file, editor failure."""
+
+    def test_edit_srt_calls_editor_with_srt_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """T002: edit srt opens file in $EDITOR."""
+        config, srt_file, _ = _make_edit_config(tmp_path)
+        monkeypatch.setenv("EDITOR", "test-editor")
+
+        with patch("twsrt.bin.cli.subprocess") as mock_sub:
+            mock_sub.run.return_value = MagicMock(returncode=0)
+            result = runner.invoke(app, ["-c", str(config), "edit", "srt"])
+
+        assert result.exit_code == 0
+        mock_sub.run.assert_called_once_with(["test-editor", str(srt_file)])
+
+    def test_edit_srt_missing_file_exits_1(self, tmp_path: Path) -> None:
+        """T003: edit srt with nonexistent file reports error with path."""
+        config = tmp_path / "config.toml"
+        nonexistent = tmp_path / "nonexistent.json"
+        config.write_text(
+            f'[sources]\nsrt = "{nonexistent}"\n'
+            f'bash_rules = "/dummy"\n'
+        )
+
+        result = runner.invoke(app, ["-c", str(config), "edit", "srt"])
+        assert result.exit_code == 1
+        assert str(nonexistent) in result.output
+
+    def test_edit_srt_editor_nonzero_exit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """T004: editor exits non-zero — warning and matching exit code."""
+        config, srt_file, _ = _make_edit_config(tmp_path)
+        monkeypatch.setenv("EDITOR", "failing-editor")
+
+        with patch("twsrt.bin.cli.subprocess") as mock_sub:
+            mock_sub.run.return_value = MagicMock(returncode=2)
+            result = runner.invoke(app, ["-c", str(config), "edit", "srt"])
+
+        assert result.exit_code == 2
+
+
+class TestEditBash:
+    """T008-T009: twsrt edit bash — happy path and missing file."""
+
+    def test_edit_bash_calls_editor_with_bash_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """T008: edit bash opens file in editor."""
+        config, _, bash_file = _make_edit_config(tmp_path)
+        monkeypatch.setenv("EDITOR", "test-editor")
+
+        with patch("twsrt.bin.cli.subprocess") as mock_sub:
+            mock_sub.run.return_value = MagicMock(returncode=0)
+            result = runner.invoke(app, ["-c", str(config), "edit", "bash"])
+
+        assert result.exit_code == 0
+        mock_sub.run.assert_called_once_with(["test-editor", str(bash_file)])
+
+    def test_edit_bash_missing_file_exits_1(self, tmp_path: Path) -> None:
+        """T009: edit bash with nonexistent file reports error."""
+        config = tmp_path / "config.toml"
+        nonexistent = tmp_path / "nonexistent.json"
+        config.write_text(
+            f'[sources]\nsrt = "/dummy"\n'
+            f'bash_rules = "{nonexistent}"\n'
+        )
+
+        result = runner.invoke(app, ["-c", str(config), "edit", "bash"])
+        assert result.exit_code == 1
+        assert str(nonexistent) in result.output
+
+
+class TestEditNoArgument:
+    """T012-T013: twsrt edit with no/invalid argument."""
+
+    def test_edit_no_argument_shows_sources(self, tmp_path: Path) -> None:
+        """T012: edit with no argument lists available sources."""
+        config, _, _ = _make_edit_config(tmp_path)
+        result = runner.invoke(app, ["-c", str(config), "edit"])
+        assert result.exit_code == 0
+        assert "srt" in result.output
+        assert "bash" in result.output
+
+    def test_edit_invalid_source_exits_1(self, tmp_path: Path) -> None:
+        """T013: edit with invalid source shows error and valid sources."""
+        config, _, _ = _make_edit_config(tmp_path)
+        result = runner.invoke(app, ["-c", str(config), "edit", "foo"])
+        assert result.exit_code == 1
+        assert "foo" in result.output
+        assert "srt" in result.output
+        assert "bash" in result.output

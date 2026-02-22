@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -236,6 +238,54 @@ def diff(
 
     if has_drift:
         raise typer.Exit(1)
+
+
+def _resolve_editor() -> str:
+    """Resolve editor: $EDITOR → $VISUAL → vi."""
+    return os.environ.get("EDITOR") or os.environ.get("VISUAL") or "vi"
+
+
+# Canonical source short names mapped to AppConfig field names
+_SOURCE_NAMES = ("srt", "bash")
+
+
+@app.command()
+def edit(
+    ctx: typer.Context,
+    source: Optional[str] = typer.Argument(None, help="Source to edit: srt, bash"),
+) -> None:
+    """Open a canonical source file in your editor."""
+    from twsrt.lib.config import load_config
+
+    config = load_config(ctx.obj["config_path"])
+    sources = {
+        "srt": config.srt_path,
+        "bash": config.bash_rules_path,
+    }
+
+    if source is None:
+        typer.echo(f"Available sources: {', '.join(sources)}")
+        raise typer.Exit(0)
+
+    if source not in sources:
+        typer.echo(
+            f"Error: Unknown source '{source}'. Available: {', '.join(sources)}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    path = sources[source]
+    if not path.exists():
+        typer.echo(f"Error: File not found: {path}", err=True)
+        raise typer.Exit(1)
+
+    editor = _resolve_editor()
+    result = subprocess.run([editor, str(path)])
+    if result.returncode != 0:
+        typer.echo(
+            f"Warning: Editor exited with code {result.returncode}", err=True
+        )
+        raise typer.Exit(result.returncode)
 
 
 @app.command(hidden=True)
