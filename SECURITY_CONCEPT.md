@@ -12,8 +12,11 @@ coverage gaps.
 **twsrt** solves this by establishing two canonical security sources and
 automatically translating them into each agent's native configuration format.
 Combined with Anthropic's Sandbox Runtime Tool (SRT) at the OS level, this
-creates a **defense-in-depth** architecture where security is enforced at
-two independent layers — neither of which the AI agent can bypass.
+creates a **defense-in-depth** architecture: SRT enforces OS-level invariants
+that no agent can bypass regardless of bugs, while twsrt ensures every agent
+receives consistent, drift-free application-level rules from the same policy.
+Neither layer alone is sufficient; together they close each other's gaps
+(see Section 3.7).
 
 ```
                     CANONICAL SOURCES (human-maintained)
@@ -34,8 +37,8 @@ two independent layers — neither of which the AI agent can bypass.
 
                     ENFORCEMENT LAYERS
                     ==================
-     Layer 1 (OS):  SRT sandbox — syscall-level deny (kernel enforcement)
-     Layer 2 (App): Agent permissions — tool-level deny/ask (application enforcement)
+     Layer 1 (OS):  SRT sandbox — syscall-level deny (Bash only, kernel enforcement)
+     Layer 2 (App): Agent permissions — tool-level deny/ask (all tools, application enforcement)
 ```
 
 **Key invariant**: Canonical sources are never written by twsrt. Generated
@@ -82,33 +85,48 @@ mistake (hallucination).
 
 ### 3.1 Defense in Depth
 
-Security is enforced at two independent layers. Compromise of one layer does
-not compromise the other.
+Security enforcement is **asymmetric** across tool types. The two layers
+provide different coverage depending on how the agent accesses resources:
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Layer 2: Application-Level (Agent Permissions)         │
-│  ─────────────────────────────────────────────────────  │
-│  Claude:  permissions.deny / .ask / .allow              │
-│  Copilot: --deny-tool / --allow-tool flags              │
-│  Enforcement: Agent's internal permission engine        │
-│  Bypassable: Only if agent software has a bug           │
-│                                                         │
-│  ┌───────────────────────────────────────────────────┐  │
-│  │  Layer 1: OS-Level (SRT Sandbox)                  │  │
-│  │  ─────────────────────────────────────────────── │  │
-│  │  Filesystem: denyRead, denyWrite, allowWrite      │  │
-│  │  Network: allowedDomains (allowlist)              │  │
-│  │  Enforcement: OS kernel / seccomp / sandbox       │  │
-│  │  Bypassable: Only via kernel exploit              │  │
-│  └───────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  Layer 2: Application-Level (Agent Permissions)              │
+│  ──────────────────────────────────────────────────────────  │
+│  Claude:  permissions.deny / .ask / .allow                   │
+│  Copilot: --deny-tool / --allow-tool flags                   │
+│  Scope:   ALL tools (Bash, Read, Write, Edit, WebFetch, ...) │
+│  Enforcement: Agent's internal permission engine             │
+│  Limitation: Best-effort for built-in tools (see §7.4)       │
+│                                                              │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │  Layer 1: OS-Level (SRT Sandbox)                       │  │
+│  │  ────────────────────────────────────────────────────  │  │
+│  │  Scope: Bash commands and their child processes ONLY   │  │
+│  │  Filesystem: denyRead, denyWrite, allowWrite           │  │
+│  │  Network: allowedDomains (proxy-based filtering)       │  │
+│  │  Enforcement: OS kernel (Seatbelt/bubblewrap/seccomp)  │  │
+│  │  NOT applied to: Read, Write, Edit, Glob, Grep tools   │  │
+│  └────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-**Redundancy**: If the agent's permission engine has a bug that allows
-`Read(~/.aws/credentials)`, the SRT sandbox still blocks the underlying
-`read()` syscall. Conversely, if SRT is misconfigured, the agent-level
-deny rules still prevent the tool from being invoked.
+**Coverage by tool type**:
+
+| Access Method | SRT (Layer 1) | Agent Permissions (Layer 2) | Effective Depth |
+|---|---|---|---|
+| `Bash(cat ~/.aws/credentials)` | Kernel-enforced deny | Tool-level deny | **Two layers** |
+| `Read(~/.aws/credentials)` | Not covered | Tool-level deny (best-effort) | **One layer** |
+| `Bash(curl evil.com)` | Network proxy blocks | Tool-level deny | **Two layers** |
+| `WebFetch(evil.com)` | Not covered | Tool-level allow check | **One layer** |
+
+**Redundancy for Bash**: If the agent's permission engine has a bug that
+allows `Bash(cat ~/.aws/credentials)`, the SRT sandbox still blocks the
+underlying `read()` syscall. This is true two-layer defense.
+
+**No redundancy for built-in tools**: If the agent's permission engine fails
+to enforce `Read(~/.aws/credentials)`, there is no OS-level fallback. The
+Read tool runs in the agent's Node.js process, outside the SRT sandbox.
+See Section 7.4 for known enforcement gaps.
 
 ### 3.2 Single Source of Truth
 
@@ -117,8 +135,8 @@ duplication between agents.
 
 | Security Domain | Canonical Source | Why Separate |
 |---|---|---|
-| Filesystem access (read/write deny, write allow) | `~/.srt-settings.json` | SRT enforces at OS syscall level |
-| Network access (domain allowlist) | `~/.srt-settings.json` | SRT enforces at network level |
+| Filesystem access (read/write deny, write allow) | `~/.srt-settings.json` | SRT enforces at OS level for Bash; agent permissions for built-in tools |
+| Network access (domain allowlist) | `~/.srt-settings.json` | SRT enforces via proxy for Bash; agent permissions for WebFetch |
 | Bash command restrictions (deny/ask) | `~/.config/twsrt/bash-rules.json` | SRT cannot distinguish `bash rm` from `bash git push` |
 
 **Why this matters**: When a security policy changes (e.g., adding a new
@@ -160,16 +178,19 @@ Each enforcement layer handles what it does best:
 
 | Capability | SRT (OS-Level) | Agent Permissions |
 |---|---|---|
-| Block file read syscalls | Yes | Yes (tool-level) |
-| Block file write syscalls | Yes | Yes (tool-level) |
-| Block network to unauthorized domains | Yes | Yes (WebFetch allow) |
+| Block Bash file access (`cat`, `rm`) | **Yes** (kernel) | Yes (tool-level) |
+| Block built-in tool file access (Read, Edit) | **No** | Yes (best-effort) |
+| Block Bash network access (`curl`) | **Yes** (proxy) | Yes (tool-level) |
+| Block built-in network access (WebFetch) | **No** | Yes (allow check) |
 | Distinguish `bash rm` from `bash git push` | **No** | **Yes** |
 | Prompt user before risky commands (ask) | **No** | **Yes** (Claude only) |
-| Enforce even if agent has bugs | **Yes** | No |
+| Enforce even if agent has bugs | **Yes** (Bash only) | No |
 
 SRT cannot parse shell command semantics — it sees all bash invocations
-equivalently. Agent permissions can distinguish commands but depend on the
-agent's own enforcement. Both layers together close each other's gaps.
+equivalently. SRT also cannot intercept built-in tool operations — these
+run inside the agent's own process. Agent permissions can distinguish
+commands and cover all tools, but depend on the agent's own enforcement
+correctness. The layers are complementary but not fully overlapping.
 
 ### 3.6 Auditability
 
@@ -181,6 +202,78 @@ agent's own enforcement. Both layers together close each other's gaps.
   only. Human error in security-critical permission lists is eliminated.
 - **Explicit warnings**: Lossy mappings (e.g., ask → deny for Copilot) emit
   warnings to stderr so administrators know where fidelity is reduced.
+
+### 3.7 Why SRT + twsrt Together: A Strategic Assessment
+
+Each layer alone has structural weaknesses. The combination eliminates them.
+
+**SRT alone is insufficient.** SRT enforces hard OS-level boundaries for
+Bash commands — no agent bug, prompt injection, or hallucination can bypass
+a kernel-enforced `denyRead`. But SRT has no awareness of agent-specific
+tool semantics. It cannot:
+
+- Distinguish `bash rm` from `bash git push` (all shell commands look alike
+  to a syscall filter)
+- Prompt the user before a risky-but-legitimate command ("ask" semantics)
+- Control built-in tools (Read, Write, Edit) that run inside the agent process
+- Express its policy in each agent's native configuration format
+
+Without twsrt, the administrator must manually translate SRT's filesystem
+rules into each agent's permission model — exactly the error-prone,
+drift-susceptible process that creates security gaps.
+
+**Agent permissions alone are insufficient.** Agent-level deny rules cover
+all tools (Bash, Read, Write, Edit, WebFetch) and can express fine-grained
+semantics (deny vs ask vs allow). But they are enforced in application
+userspace — inside the agent's own process. This means:
+
+- A bug in the agent's permission engine silently negates the control
+  (documented: GitHub #6631, #24846)
+- Each agent has a different configuration format; maintaining N agents
+  with M rules requires N*M manual entries
+- There is no independent verification that the policy is actually enforced
+- The agent process itself has full OS-level access; permissions are
+  self-imposed constraints, not external invariants
+
+**The combination closes both gaps:**
+
+```
+                    SRT alone          twsrt alone        SRT + twsrt
+                    ──────────         ───────────        ───────────
+Bash file access    ✓ kernel deny      ✓ agent deny       ✓✓ two layers
+Bash network        ✓ proxy deny       ✓ agent deny       ✓✓ two layers
+Bash cmd semantics  ✗ can't distinguish ✓ deny/ask rules  ✓ agent layer
+Built-in tools      ✗ not covered      ✓ agent deny       ✓ agent layer
+Multi-agent policy  ✗ manual per-agent ✓ auto-translated  ✓ consistent
+Drift detection     ✗ none             ✓ twsrt diff       ✓ auditable
+Enforcement depth   kernel (Bash)      userspace (all)    kernel + userspace
+```
+
+**The key insight**: SRT provides the **hardest** security boundary for
+the **most dangerous** attack vector. Bash is the primary tool an agent
+uses to interact with the OS — it can execute arbitrary programs, access
+any file, and make network connections. A kernel-level deny on Bash is
+un-bypassable by the agent. twsrt then ensures this same policy is
+faithfully expressed as application-level rules for ALL tools across ALL
+agents, covering the surface area that SRT cannot reach.
+
+**Quantifying the risk reduction**: Consider the credential exfiltration
+threat (`~/.aws/credentials`):
+
+| Scenario | Without SRT+twsrt | With SRT+twsrt |
+|---|---|---|
+| Agent uses `Bash(cat ~/.aws/credentials)` | Depends on manual agent config | Kernel-blocked (SRT) + agent-blocked (twsrt-generated deny) |
+| Agent uses `Read(~/.aws/credentials)` | Depends on manual agent config | Agent-blocked (twsrt-generated deny, best-effort) |
+| Agent uses `Bash(curl) \| base64` to exfiltrate | Depends on manual network config | Kernel-blocked (SRT network proxy) + agent-blocked (twsrt-generated deny) |
+| Admin forgets to update one agent | That agent is unprotected | Impossible — twsrt generates from single source for all agents |
+| Agent config drifts after manual edit | Undetectable | `twsrt diff` catches it immediately |
+
+The most critical attacks (Bash-based exfiltration and destruction) get
+kernel-level protection. The remaining surface (built-in tools) gets
+consistent, automatically-generated agent-level protection. And the
+single-source model with drift detection eliminates the configuration
+management failures that are, in practice, the most common cause of
+security gaps.
 
 
 ## 4. Architecture
@@ -245,8 +338,10 @@ Validation constraints enforced at construction:
 
 ### 5.1 SRT Settings (`~/.srt-settings.json`)
 
-The SRT (Sandbox Runtime Tool) configuration defines OS-level enforcement
-boundaries:
+The SRT (Sandbox Runtime Tool) configuration defines enforcement
+boundaries. SRT enforces these at the OS level for Bash commands;
+for built-in tools, the same rules are translated to agent-level
+permissions (see Section 3.1 for coverage details):
 
 ```json
 {
@@ -309,7 +404,7 @@ with three permission tiers: `deny` (blocked), `ask` (prompt user), and
 | denyRead file (e.g., `~/.netrc`) | `Read(~/.netrc)`, `Write(~/.netrc)`, `Edit(~/.netrc)`, `MultiEdit(~/.netrc)` in deny | All file tools blocked; bare only (no `/**`) |
 | denyRead glob (e.g., `**/.env`) | `Read(**/.env)`, `Write(**/.env)`, `Edit(**/.env)`, `MultiEdit(**/.env)` in deny | Glob preserved as-is |
 | denyWrite pattern | `Write({pattern})`, `Edit({pattern})`, `MultiEdit({pattern})` in deny | Write tools only (Read not included) |
-| allowWrite path | No output | SRT enforces at OS level; Claude already has blanket allows |
+| allowWrite path | No output | SRT enforces for Bash; Claude already has blanket allows |
 | allowedDomains domain | `WebFetch(domain:{domain})` in allow + domain in `sandbox.network.allowedDomains` | Full fidelity |
 | Bash deny command | `Bash({cmd})`, `Bash({cmd} *)` in deny | Bare + wildcard catches subcommands |
 | Bash ask command | `Bash({cmd})`, `Bash({cmd} *)` in ask | Bare + wildcard catches subcommands |
@@ -350,9 +445,9 @@ simpler, two-state model: deny or allow (no "ask" tier).
 
 | Canonical Rule | Copilot CLI Output | Notes |
 |---|---|---|
-| denyRead / denyWrite | No output | SRT enforces at OS level; Copilot has no path-level control |
+| denyRead / denyWrite | No output | SRT enforces for Bash at OS level; Copilot has no path-level control |
 | allowWrite | `--allow-tool 'shell(*)'`, `--allow-tool 'read'`, `--allow-tool 'edit'`, `--allow-tool 'write'` | Deduplicated across multiple allowWrite entries |
-| allowedDomains | No output | SRT enforces at OS level |
+| allowedDomains | No output | SRT enforces for Bash at OS level |
 | Bash deny command | `--deny-tool 'shell({cmd})'` | Full fidelity |
 | Bash ask command | `--deny-tool 'shell({cmd})'` + stderr warning | **Lossy**: Copilot has no "ask" equivalent |
 
@@ -401,9 +496,11 @@ translates independently from the same normalized `SecurityRule` list.
 
 | Threat | Without twsrt | With twsrt (SRT + Agent) |
 |---|---|---|
-| Agent reads `~/.aws/credentials` | Must manually configure each agent's deny list | SRT blocks `read()` syscall **AND** agent blocks `Read()` tool — two layers |
+| Agent reads `~/.aws/credentials` via Bash (`cat`) | Must manually configure each agent's deny list | SRT blocks `read()` syscall **AND** agent blocks `Bash(cat)` — two layers |
+| Agent reads `~/.aws/credentials` via Read tool | Must manually configure each agent's deny list | Agent blocks `Read()` tool — one layer (SRT does not cover built-in tools) |
 | Agent runs `rm -rf /` | Must manually add to each agent's deny list | Bash deny rule translates to all agents automatically |
-| Agent sends data to `evil.com` | Must manually configure network allowlists per agent | SRT allowlist blocks at network level **AND** Claude WebFetch allowlist blocks at tool level |
+| Agent sends data to `evil.com` via Bash (`curl`) | Must manually configure network allowlists per agent | SRT network proxy blocks **AND** agent blocks `Bash(curl)` — two layers |
+| Agent sends data to `evil.com` via WebFetch | Must manually configure network allowlists per agent | Agent `WebFetch(domain:...)` allow check — one layer |
 | Config drift (deny rule removed) | Undetectable until exploit | `twsrt diff` detects missing rules, exit code 1 |
 | Human error in settings.json | Manual edits to complex JSON | Managed sections are machine-generated; human edits only to non-security sections |
 | New agent added to workflow | Start from scratch, risk incomplete coverage | Implement generator protocol; same canonical sources, guaranteed same policy |
@@ -426,15 +523,64 @@ Honest limitations:
 - **SRT bypass via kernel exploit**: If the OS sandbox is compromised,
   Layer 1 falls. Layer 2 (agent permissions) still applies but is
   implemented in userspace.
-- **Agent software bugs**: If Claude Code's permission engine has a
-  vulnerability that ignores deny rules, Layer 2 falls. Layer 1 (SRT)
-  still blocks at OS level.
+- **Agent software bugs (Bash tools)**: If Claude Code's permission engine
+  has a vulnerability that ignores Bash deny rules, Layer 1 (SRT) still
+  blocks at OS level. This is true defense in depth.
+- **Agent software bugs (built-in tools)**: If the agent's permission
+  engine fails to enforce Read/Write/Edit deny rules, there is **no
+  OS-level fallback**. Built-in tools run inside the agent's Node.js
+  process, outside the SRT sandbox. See Section 7.4.
 - **Misconfigured canonical sources**: twsrt translates faithfully. If
   `~/.srt-settings.json` is too permissive, the generated configs will
   be too. Garbage in, garbage out — but at least it's consistently
   garbage across all agents.
 - **Runtime configuration changes**: SRT's `ignoreViolations` allows
   per-command exceptions at runtime. twsrt does not manage these.
+
+### 7.4 Known Enforcement Gaps
+
+This section documents verified limitations in the current enforcement
+model. A security document that omits known gaps is worse than no
+document at all.
+
+**SRT sandbox scope**: The SRT sandbox (Seatbelt on macOS, bubblewrap on
+Linux) enforces filesystem and network restrictions at the kernel level,
+but **only for Bash commands and their child processes**. Built-in agent
+tools (Read, Write, Edit, Glob, Grep, WebFetch) execute within the
+agent's own process and are not subject to SRT enforcement.
+
+This means the defense-in-depth model is asymmetric:
+
+```
+Bash(cat ~/.aws/credentials)  →  SRT blocks (kernel)  +  Agent blocks (permissions)
+Read(~/.aws/credentials)      →  Agent blocks only (permissions, best-effort)
+```
+
+**Built-in tool permission enforcement**: Anthropic's documentation states
+that Claude Code makes a *"best-effort attempt"* to apply deny rules to
+built-in file tools. Multiple community-reported issues (GitHub #6631,
+#24846) document cases where Read/Write deny rules were not enforced for
+built-in tools. The deny rules generated by twsrt for Read/Write/Edit
+provide defense-in-intent but may not be reliably enforced by all agent
+versions.
+
+**Implication for twsrt**: twsrt generates correct deny rules for all
+tool types. The translation is faithful regardless of enforcement gaps.
+However, administrators should understand that the effective security
+posture differs by access path:
+
+| Access Path | Enforcement Confidence |
+|---|---|
+| Bash commands accessing denied paths | **High** — kernel-enforced by SRT |
+| Bash commands accessing denied network | **High** — proxy-enforced by SRT |
+| Built-in tools accessing denied paths | **Medium** — depends on agent enforcement quality |
+| Built-in tools accessing denied network | **Medium** — depends on agent enforcement quality |
+
+**Recommendation**: For the highest-value secrets (cloud credentials, SSH
+keys, GPG keys), rely on the SRT sandbox as the primary control. Ensure
+these paths are in `denyRead` so that Bash-based access is kernel-blocked.
+The agent-level deny rules provide additional coverage but should not be
+the sole control for critical assets.
 
 
 ## 8. Operational Model

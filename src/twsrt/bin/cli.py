@@ -11,7 +11,7 @@ import typer
 
 from twsrt.lib.models import AppConfig
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 app = typer.Typer(
     name="twsrt",
