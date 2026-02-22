@@ -1,0 +1,19 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.13
+    hooks:
+      - id: ruff-format
+        files: ^(src/twsrt|tests)/
+      - id: ruff
+        args: [--fix]
+        files: ^(src/twsrt|tests)/
+
+  - repo: local
+    hooks:
+      - id: ty
+        name: ty
+        entry: ty check src/twsrt
+        language: system
+        types: [python]
+        files: ^src/twsrt/
+        pass_filenames: false

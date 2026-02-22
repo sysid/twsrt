@@ -1,17 +1,109 @@
 [project]
 name = "twsrt"
 version = "0.1.0"
-description = "Add your description here"
+description = "Agent security configuration generator — translates canonical security rules into agent-specific configs"
 readme = "README.md"
+license = "BSD-3-Clause"
+requires-python = ">=3.11"
 authors = [
-    { name = "sysid", email = "sysid@gmx.de" }
+    { name = "sysid", email = "sysid@gmx.de" },
 ]
-requires-python = ">=3.13"
-dependencies = []
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "typer>=0.15.1",
+]
 
 [project.scripts]
-twsrt = "twsrt:main"
+twsrt = "twsrt.bin.cli:app"
 
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["twsrt*"]
+
+[tool.uv]
+managed = true
+package = true
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.4",
+    "pytest-cov>=6.0.0",
+    "pytest-mock>=3.14.0",
+    "ruff>=0.8.4",
+    "pre-commit>=4.0.0",
+    "build>=1.2.2",
+    "bump-my-version>=0.28.0",
+]
+
+[tool.bumpversion]
+current_version = "0.1.0"
+commit = true
+tag = false
+tag_name = "v{new_version}"
+message = "Bump version to {new_version}"
+
+[tool.bumpversion.file_patterns]
+"src/twsrt/bin/cli.py" = [
+    { search = "__version__ = \"{current_version}\"", replace = "__version__ = \"{new_version}\"" },
+]
+
+[[tool.bumpversion.files]]
+filename = "VERSION"
+
+[[tool.bumpversion.files]]
+filename = "pyproject.toml"
+
+[[tool.bumpversion.files]]
+filename = "src/twsrt/bin/cli.py"
+
+[tool.pytest.ini_options]
+python_files = "*.py"
+norecursedirs = ["wip"]
+markers = [
+    "integration: marks tests as integration tests",
+    "experimentation: marks tests as experimental tests, not to be run in CICD",
+]
+
+[tool.coverage.run]
+source = ["src/twsrt"]
+omit = [
+    "tests/*",
+    "**/__main__.py",
+    "**/.venv/*",
+    "**/site-packages/*",
+]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 85
+
+[tool.ruff]
+line-length = 88
+indent-width = 4
+target-version = "py311"
+exclude = [
+    ".direnv", ".eggs", ".git", ".mypy_cache", ".pytest_cache",
+    ".ruff_cache", ".venv", "__pypackages__", "build", "dist",
+    "node_modules", "site-packages", "venv",
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+ignore = []
+fixable = ["ALL"]
+unfixable = []
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
