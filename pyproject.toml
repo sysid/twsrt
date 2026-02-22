@@ -1,0 +1,17 @@
+[project]
+name = "twsrt"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "sysid", email = "sysid@gmx.de" }
+]
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+twsrt = "twsrt:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
