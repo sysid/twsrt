@@ -50,7 +50,20 @@ class TestCopilotGeneration:
         output = gen.generate(rules, config)
         lines = [line for line in output.strip().split("\n") if line.strip()]
         for line in lines:
-            assert line.strip().startswith("--")
+            assert line.strip().rstrip(" \\").startswith("--")
+
+    def test_lines_have_continuation_backslash(
+        self, gen: CopilotGenerator, config: AppConfig
+    ) -> None:
+        """Each line ends with ' \\' for shell line continuation."""
+        rules = [
+            SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
+            SecurityRule(Scope.EXECUTE, Action.DENY, "sudo", Source.BASH_RULES),
+        ]
+        output = gen.generate(rules, config)
+        lines = [line for line in output.strip().split("\n") if line.strip()]
+        for line in lines:
+            assert line.endswith(" \\")
 
     def test_no_srt_wrapper(self, gen: CopilotGenerator, config: AppConfig) -> None:
         """FR-005: no wrapper function or srt -c in output."""

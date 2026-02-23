@@ -52,17 +52,19 @@ class CopilotGenerator:
 
             # READ/DENY, WRITE/DENY: SRT handles at OS level
 
-        return "\n".join(flags)
+        return "\n".join(f"{flag} \\" for flag in flags)
 
     def diff(self, rules: list[SecurityRule], target: Path) -> DiffResult:
         """Compare generated flags against existing target file."""
         config = AppConfig()
         generated_text = self.generate(rules, config)
         gen_lines = {
-            line.strip() for line in generated_text.strip().split("\n") if line.strip()
+            line.strip().rstrip(" \\")
+            for line in generated_text.strip().split("\n")
+            if line.strip()
         }
         ext_lines = {
-            line.strip()
+            line.strip().rstrip(" \\")
             for line in target.read_text().strip().split("\n")
             if line.strip()
         }
