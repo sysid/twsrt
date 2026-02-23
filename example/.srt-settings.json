@@ -1,0 +1,134 @@
+{
+  "enabled": true,
+  "allowPty": true,
+  "network": {
+    "allowedDomains": [
+        "anthropic.com",
+        "*.anthropic.com",
+        "www.theregister.com",
+
+        "github.com",
+        "*.github.com",
+        "*.githubusercontent.com",
+        "*.githubassets.com",
+        "gitlab.com",
+        "*.gitlab.com",
+        "bitbucket.org",
+        "*.bitbucket.org",
+        "*.atlassian.com",
+
+        "registry.npmjs.org",
+        "*.npmjs.org",
+        "*.yarnpkg.com",
+        "nodejs.org",
+        "*.nodejs.org",
+        "deno.land",
+        "*.deno.land",
+        "esm.sh",
+        "*.esm.sh",
+        "jsr.io",
+        "*.jsr.io",
+
+        "pypi.org",
+        "*.pypi.org",
+        "files.pythonhosted.org",
+        "docs.python.org",
+        "*.readthedocs.io",
+        "*.readthedocs.org",
+
+        "crates.io",
+        "*.crates.io",
+        "static.crates.io",
+        "docs.rs",
+        "doc.rust-lang.org",
+        "*.rust-lang.org",
+
+        "repo1.maven.org",
+        "central.sonatype.com",
+        "*.sonatype.org",
+        "services.gradle.org",
+        "plugins.gradle.org",
+        "repo.gradle.org",
+        "jcenter.bintray.com",
+        "*.spring.io",
+        "docs.oracle.com",
+
+        "registry.terraform.io",
+        "releases.hashicorp.com",
+        "checkpoint-api.hashicorp.com",
+        "*.hashicorp.com",
+
+        "hub.docker.com",
+        "*.docker.com",
+        "*.docker.io",
+
+        "stackoverflow.com",
+        "*.stackexchange.com",
+        "developer.mozilla.org",
+        "www.typescriptlang.org",
+        "www.npmjs.com",
+        "www.baeldung.com",
+
+        "raw.githubusercontent.com",
+        "objects.githubusercontent.com",
+        "media.githubusercontent.com"
+    ],
+    "deniedDomains": [],
+    "allowLocalBinding": true
+  },
+  "filesystem": {
+    "denyRead": [
+      "~/.azure",
+      "~/.gcloud",
+      "~/.kube",
+      "~/.netrc",
+      "~/.npmrc",
+      "~/.ssh",
+      "~/.aws",
+      "~/.gnupg",
+
+      "~/.pypirc",
+      "~/.rsenv"
+    ],
+    "allowWrite": [
+      ".",
+      "/tmp",
+      "~/xxx",
+      "~/.gradle",
+      "~/.pi/agent/sessions"
+    ],
+    "denyWrite": [
+      "**/.env",
+      "**/.env.*",
+      "**/*.pem",
+      "**/*.key",
+      "**/*.p12",
+      "**/*.pfx",
+      "**/*.crt",
+      "**/*.cer",
+      "**/*.keystore",
+      "**/*.jks",
+      "**/id_rsa",
+      "**/id_ed25519",
+      "**/id_ecdsa",
+      "**/secrets/**",
+      "**/credentials/**",
+      "**/private/**",
+      "**/serviceAccount*.json",
+      "**/service-account*.json",
+      "**/*credential*",
+      "**/*password*",
+      "**/token*",
+      "**/.github/workflows/**",
+      "**/Jenkinsfile",
+      "**/.gitlab-ci.yml"
+    ]
+  },
+  "ignoreViolations": {
+    "*": ["/usr/bin", "/System"],
+    "git push": ["/usr/bin/nc"],
+    "npm": ["/private/tmp"]
+  },
+  "enableWeakerNestedSandbox": false,
+  "enableWeakerNetworkIsolation": true
+}

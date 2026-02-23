@@ -173,6 +173,9 @@ generate matching agent-level rules:
 }
 ```
 
+Comprehensive example: 
+[.srt-settings.json](example/.srt-settings.json)
+
 
 ### `~/.config/twsrt/config.toml`
 
@@ -194,6 +197,8 @@ claude_settings = "~/.claude/settings.json"
   "ask": ["git push", "git commit", "pip install"]
 }
 ```
+Comprehensive example:
+[bash-rules.json](example/bash-rules.json)
 
 ## Rule Mapping
 
