@@ -44,8 +44,13 @@ class CopilotGenerator:
                     flags.append("--allow-tool 'edit'")
                     flags.append("--allow-tool 'write'")
 
-            # READ/DENY, WRITE/DENY, NETWORK/ALLOW: SRT handles at OS level
-            # No Copilot flags generated
+            elif rule.scope == Scope.NETWORK and rule.action == Action.ALLOW:
+                flags.append(f"--allow-url '{rule.pattern}'")
+
+            elif rule.scope == Scope.NETWORK and rule.action == Action.DENY:
+                flags.append(f"--deny-url '{rule.pattern}'")
+
+            # READ/DENY, WRITE/DENY: SRT handles at OS level
 
         return "\n".join(flags)
 

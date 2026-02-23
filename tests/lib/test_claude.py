@@ -176,6 +176,43 @@ class TestClaudeGeneration:
         assert "Edit(**/.env)" in deny
         assert "MultiEdit(**/.env)" in deny
 
+    def test_denied_domains_generate_webfetch_deny(
+        self, gen: ClaudeGenerator, config: AppConfig
+    ) -> None:
+        """FR-006: NETWORK/DENY → WebFetch(domain:...) in permissions.deny."""
+        rules = [
+            SecurityRule(Scope.NETWORK, Action.DENY, "evil.com", Source.SRT_NETWORK),
+            SecurityRule(
+                Scope.NETWORK, Action.DENY, "*.tracker.net", Source.SRT_NETWORK
+            ),
+        ]
+        output = json.loads(gen.generate(rules, config))
+        deny = output["permissions"]["deny"]
+        assert "WebFetch(domain:evil.com)" in deny
+        assert "WebFetch(domain:*.tracker.net)" in deny
+
+    def test_denied_domains_not_in_allow(
+        self, gen: ClaudeGenerator, config: AppConfig
+    ) -> None:
+        """NETWORK/DENY must NOT appear in permissions.allow."""
+        rules = [
+            SecurityRule(Scope.NETWORK, Action.DENY, "evil.com", Source.SRT_NETWORK),
+        ]
+        output = json.loads(gen.generate(rules, config))
+        allow = output["permissions"]["allow"]
+        assert "WebFetch(domain:evil.com)" not in allow
+
+    def test_denied_domains_not_in_sandbox_network(
+        self, gen: ClaudeGenerator, config: AppConfig
+    ) -> None:
+        """NETWORK/DENY must NOT add to sandbox.network.allowedDomains."""
+        rules = [
+            SecurityRule(Scope.NETWORK, Action.DENY, "evil.com", Source.SRT_NETWORK),
+        ]
+        output = json.loads(gen.generate(rules, config))
+        domains = output["sandbox"]["network"]["allowedDomains"]
+        assert "evil.com" not in domains
+
     def test_empty_rules_generate_empty_sections(
         self, gen: ClaudeGenerator, config: AppConfig
     ) -> None:

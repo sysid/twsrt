@@ -282,9 +282,7 @@ def edit(
     editor = _resolve_editor()
     result = subprocess.run([editor, str(path)])
     if result.returncode != 0:
-        typer.echo(
-            f"Warning: Editor exited with code {result.returncode}", err=True
-        )
+        typer.echo(f"Warning: Editor exited with code {result.returncode}", err=True)
         raise typer.Exit(result.returncode)
 
 

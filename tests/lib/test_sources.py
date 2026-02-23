@@ -45,13 +45,14 @@ class TestReadSrt:
 
     def test_allowed_domains(self, srt_file: Path) -> None:
         rules = read_srt(srt_file)
-        network_rules = [r for r in rules if r.scope == Scope.NETWORK]
-        assert len(network_rules) == 4
-        domains = {r.pattern for r in network_rules}
+        network_allow = [
+            r for r in rules if r.scope == Scope.NETWORK and r.action == Action.ALLOW
+        ]
+        assert len(network_allow) == 4
+        domains = {r.pattern for r in network_allow}
         assert "github.com" in domains
         assert "pypi.org" in domains
-        for r in network_rules:
-            assert r.action == Action.ALLOW
+        for r in network_allow:
             assert r.source == Source.SRT_NETWORK
 
     def test_all_rules_have_srt_source(self, srt_file: Path) -> None:
@@ -105,6 +106,52 @@ class TestReadSrt:
         p.write_text(json.dumps(srt))
         rules = read_srt(p)
         assert rules[0].pattern == "~/.ssh"
+
+    def test_denied_domains(self, srt_file: Path) -> None:
+        """deniedHosts in nested SRT format produces NETWORK/DENY rules."""
+        rules = read_srt(srt_file)
+        denied = [
+            r for r in rules if r.scope == Scope.NETWORK and r.action == Action.DENY
+        ]
+        assert len(denied) == 2
+        patterns = {r.pattern for r in denied}
+        assert "evil.com" in patterns
+        assert "*.tracker.net" in patterns
+        for r in denied:
+            assert r.source == Source.SRT_NETWORK
+
+    def test_flat_srt_denied_domains(self, tmp_path: Path) -> None:
+        """Flat SRT format with deniedDomains produces NETWORK/DENY rules."""
+        srt = {
+            "network": {
+                "allowedDomains": ["github.com"],
+                "deniedDomains": ["evil.com", "*.tracker.net"],
+            },
+        }
+        p = tmp_path / "srt.json"
+        p.write_text(json.dumps(srt))
+        rules = read_srt(p)
+        denied = [
+            r for r in rules if r.scope == Scope.NETWORK and r.action == Action.DENY
+        ]
+        assert len(denied) == 2
+        assert {r.pattern for r in denied} == {"evil.com", "*.tracker.net"}
+
+    def test_empty_denied_domains(self, tmp_path: Path) -> None:
+        """Empty deniedDomains produces no NETWORK/DENY rules."""
+        srt = {
+            "network": {
+                "allowedDomains": ["github.com"],
+                "deniedDomains": [],
+            },
+        }
+        p = tmp_path / "srt.json"
+        p.write_text(json.dumps(srt))
+        rules = read_srt(p)
+        denied = [
+            r for r in rules if r.scope == Scope.NETWORK and r.action == Action.DENY
+        ]
+        assert len(denied) == 0
 
     def test_flat_srt_format(self, tmp_path: Path) -> None:
         """Flat SRT format (top-level filesystem/network) is supported."""

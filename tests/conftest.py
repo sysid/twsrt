@@ -38,7 +38,11 @@ SAMPLE_SRT = {
                     "*.github.com",
                     "pypi.org",
                     "registry.npmjs.org",
-                ]
+                ],
+                "deniedHosts": [
+                    "evil.com",
+                    "*.tracker.net",
+                ],
             },
         },
     }
@@ -88,6 +92,7 @@ SAMPLE_CLAUDE_SETTINGS = {
             "Bash(rm:*)",
             "Bash(sudo:*)",
             "Read(**/.aws/**)",
+            "WebFetch(domain:evil.com)",
         ],
         "ask": [
             "Bash(git push)",

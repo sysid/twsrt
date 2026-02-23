@@ -28,6 +28,7 @@ def read_srt(srt_path: Path) -> list[SecurityRule]:
         allow_write = filesystem.get("allowWrite", [])
         network = data.get("network", {})
         allowed_domains = network.get("allowedDomains", [])
+        denied_domains = network.get("deniedDomains", [])
     else:
         permissions = data.get("sandbox", {}).get("permissions", {})
         filesystem = permissions.get("filesystem", {})
@@ -36,6 +37,7 @@ def read_srt(srt_path: Path) -> list[SecurityRule]:
         allow_write = filesystem.get("write", {}).get("allowOnly", [])
         network = permissions.get("network", {})
         allowed_domains = network.get("allowedHosts", [])
+        denied_domains = network.get("deniedHosts", [])
 
     for pattern in deny_read:
         rules.append(
@@ -72,6 +74,16 @@ def read_srt(srt_path: Path) -> list[SecurityRule]:
             SecurityRule(
                 scope=Scope.NETWORK,
                 action=Action.ALLOW,
+                pattern=domain,
+                source=Source.SRT_NETWORK,
+            )
+        )
+
+    for domain in denied_domains:
+        rules.append(
+            SecurityRule(
+                scope=Scope.NETWORK,
+                action=Action.DENY,
                 pattern=domain,
                 source=Source.SRT_NETWORK,
             )

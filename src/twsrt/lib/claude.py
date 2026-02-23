@@ -48,6 +48,10 @@ class ClaudeGenerator:
                 allow.append(f"WebFetch(domain:{rule.pattern})")
                 domains.append(rule.pattern)
 
+            elif rule.scope == Scope.NETWORK and rule.action == Action.DENY:
+                # FR-006: deniedDomains → WebFetch deny only (no sandbox.network)
+                deny.append(f"WebFetch(domain:{rule.pattern})")
+
             elif rule.scope == Scope.EXECUTE and rule.action == Action.DENY:
                 # FR-010: Bash deny — bare command + wildcard
                 deny.append(f"Bash({rule.pattern})")

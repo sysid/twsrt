@@ -572,9 +572,7 @@ def _make_edit_config(tmp_path: Path) -> tuple[Path, Path, Path]:
     bash_file.write_text('{"deny": [], "ask": []}')
 
     config = tmp_path / "config.toml"
-    config.write_text(
-        f'[sources]\nsrt = "{srt_file}"\nbash_rules = "{bash_file}"\n'
-    )
+    config.write_text(f'[sources]\nsrt = "{srt_file}"\nbash_rules = "{bash_file}"\n')
     return config, srt_file, bash_file
 
 
@@ -599,10 +597,7 @@ class TestEditSrt:
         """T003: edit srt with nonexistent file reports error with path."""
         config = tmp_path / "config.toml"
         nonexistent = tmp_path / "nonexistent.json"
-        config.write_text(
-            f'[sources]\nsrt = "{nonexistent}"\n'
-            f'bash_rules = "/dummy"\n'
-        )
+        config.write_text(f'[sources]\nsrt = "{nonexistent}"\nbash_rules = "/dummy"\n')
 
         result = runner.invoke(app, ["-c", str(config), "edit", "srt"])
         assert result.exit_code == 1
@@ -643,10 +638,7 @@ class TestEditBash:
         """T009: edit bash with nonexistent file reports error."""
         config = tmp_path / "config.toml"
         nonexistent = tmp_path / "nonexistent.json"
-        config.write_text(
-            f'[sources]\nsrt = "/dummy"\n'
-            f'bash_rules = "{nonexistent}"\n'
-        )
+        config.write_text(f'[sources]\nsrt = "/dummy"\nbash_rules = "{nonexistent}"\n')
 
         result = runner.invoke(app, ["-c", str(config), "edit", "bash"])
         assert result.exit_code == 1

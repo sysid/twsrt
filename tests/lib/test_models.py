@@ -52,14 +52,24 @@ class TestSecurityRule:
                 source=Source.SRT_FILESYSTEM,
             )
 
-    def test_network_requires_allow(self) -> None:
-        with pytest.raises(ValueError, match="NETWORK.*ALLOW"):
+    def test_network_requires_allow_or_deny(self) -> None:
+        with pytest.raises(ValueError, match="NETWORK.*ALLOW.*DENY"):
             SecurityRule(
                 scope=Scope.NETWORK,
-                action=Action.DENY,
+                action=Action.ASK,
                 pattern="github.com",
                 source=Source.SRT_NETWORK,
             )
+
+    def test_network_deny_is_valid(self) -> None:
+        rule = SecurityRule(
+            scope=Scope.NETWORK,
+            action=Action.DENY,
+            pattern="evil.com",
+            source=Source.SRT_NETWORK,
+        )
+        assert rule.scope == Scope.NETWORK
+        assert rule.action == Action.DENY
 
     def test_network_allow_is_valid(self) -> None:
         rule = SecurityRule(

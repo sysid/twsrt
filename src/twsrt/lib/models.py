@@ -34,8 +34,11 @@ class SecurityRule:
     def __post_init__(self) -> None:
         if not self.pattern:
             raise ValueError("pattern must not be empty")
-        if self.scope == Scope.NETWORK and self.action != Action.ALLOW:
-            raise ValueError("NETWORK scope requires ALLOW action")
+        if self.scope == Scope.NETWORK and self.action not in (
+            Action.ALLOW,
+            Action.DENY,
+        ):
+            raise ValueError("NETWORK scope requires ALLOW or DENY action")
         if self.scope == Scope.EXECUTE and self.source != Source.BASH_RULES:
             raise ValueError("EXECUTE scope requires BASH_RULES source")
         if self.scope in (Scope.READ, Scope.WRITE) and self.source not in (

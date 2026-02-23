@@ -81,15 +81,59 @@ class TestCopilotGeneration:
         output = gen.generate(rules, config)
         assert output.strip() == ""
 
-    def test_network_no_copilot_output(
+    def test_network_allow_generates_allow_url(
         self, gen: CopilotGenerator, config: AppConfig
     ) -> None:
-        """Network rules: SRT handles, no Copilot flags."""
+        """FR-001: NETWORK/ALLOW → --allow-url flags."""
         rules = [
             SecurityRule(Scope.NETWORK, Action.ALLOW, "github.com", Source.SRT_NETWORK),
+            SecurityRule(
+                Scope.NETWORK, Action.ALLOW, "*.npmjs.org", Source.SRT_NETWORK
+            ),
         ]
         output = gen.generate(rules, config)
-        assert output.strip() == ""
+        assert "--allow-url 'github.com'" in output
+        assert "--allow-url '*.npmjs.org'" in output
+
+    def test_allow_url_one_per_line(
+        self, gen: CopilotGenerator, config: AppConfig
+    ) -> None:
+        """FR-002: each --allow-url on its own line."""
+        rules = [
+            SecurityRule(Scope.NETWORK, Action.ALLOW, "a.com", Source.SRT_NETWORK),
+            SecurityRule(Scope.NETWORK, Action.ALLOW, "b.com", Source.SRT_NETWORK),
+        ]
+        output = gen.generate(rules, config)
+        lines = [line for line in output.strip().split("\n") if line.strip()]
+        allow_url_lines = [ln for ln in lines if "--allow-url" in ln]
+        assert len(allow_url_lines) == 2
+
+    def test_network_deny_generates_deny_url(
+        self, gen: CopilotGenerator, config: AppConfig
+    ) -> None:
+        """FR-005: NETWORK/DENY → --deny-url flags."""
+        rules = [
+            SecurityRule(Scope.NETWORK, Action.DENY, "evil.com", Source.SRT_NETWORK),
+            SecurityRule(
+                Scope.NETWORK, Action.DENY, "*.tracker.net", Source.SRT_NETWORK
+            ),
+        ]
+        output = gen.generate(rules, config)
+        assert "--deny-url 'evil.com'" in output
+        assert "--deny-url '*.tracker.net'" in output
+
+    def test_deny_url_one_per_line(
+        self, gen: CopilotGenerator, config: AppConfig
+    ) -> None:
+        """Each --deny-url on its own line."""
+        rules = [
+            SecurityRule(Scope.NETWORK, Action.DENY, "a.com", Source.SRT_NETWORK),
+            SecurityRule(Scope.NETWORK, Action.DENY, "b.com", Source.SRT_NETWORK),
+        ]
+        output = gen.generate(rules, config)
+        lines = [line for line in output.strip().split("\n") if line.strip()]
+        deny_url_lines = [ln for ln in lines if "--deny-url" in ln]
+        assert len(deny_url_lines) == 2
 
 
 class TestCopilotLossyMapping:
