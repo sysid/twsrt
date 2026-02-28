@@ -62,6 +62,9 @@ class ClaudeGenerator:
                 ask.append(f"Bash({rule.pattern})")
                 ask.append(f"Bash({rule.pattern} *)")
 
+        network: dict = {"allowedDomains": domains}
+        network.update(config.network_config)
+
         output = {
             "permissions": {
                 "deny": deny,
@@ -69,16 +72,13 @@ class ClaudeGenerator:
                 "allow": allow,
             },
             "sandbox": {
-                "network": {
-                    "allowedDomains": domains,
-                }
+                "network": network,
             },
         }
         return json.dumps(output, indent=2)
 
-    def diff(self, rules: list[SecurityRule], target: Path) -> DiffResult:
+    def diff(self, rules: list[SecurityRule], target: Path, config: AppConfig) -> DiffResult:
         """Compare generated config against existing Claude settings.json."""
-        config = AppConfig()
         generated = json.loads(self.generate(rules, config))
         existing = json.loads(target.read_text())
 
@@ -111,6 +111,24 @@ class ClaudeGenerator:
             missing.append(f"network:{d}")
         for d in ext_domains - gen_domains:
             extra.append(f"network:{d}")
+
+        # Compare pass-through network config keys
+        from twsrt.lib.sources import _NETWORK_CONFIG_KEYS
+
+        gen_network = generated.get("sandbox", {}).get("network", {})
+        ext_network = existing.get("sandbox", {}).get("network", {})
+        for key in _NETWORK_CONFIG_KEYS:
+            gen_val = gen_network.get(key)
+            ext_val = ext_network.get(key)
+            if gen_val != ext_val:
+                if gen_val is not None and ext_val is None:
+                    missing.append(f"network.config:{key}")
+                elif gen_val is None and ext_val is not None:
+                    extra.append(f"network.config:{key}")
+                else:
+                    # Value mismatch — report both
+                    missing.append(f"network.config:{key}")
+                    extra.append(f"network.config:{key}")
 
         return DiffResult(
             agent=self.name,
@@ -152,7 +170,7 @@ def selective_merge(target: Path, generated: dict) -> dict:
     - permissions.ask: fully replaced
     - permissions.allow: WebFetch(domain:*) entries replaced,
       blanket allows, mcp__ allows, and project-specific allows preserved
-    - sandbox.network: fully replaced
+    - sandbox.network: key-by-key merge (preserves unmanaged keys)
     - hooks, plugins, additionalDirectories: preserved unchanged
     """
     existing = json.loads(target.read_text())
@@ -168,8 +186,9 @@ def selective_merge(target: Path, generated: dict) -> dict:
     generated_allow = generated["permissions"].get("allow", [])
     existing["permissions"]["allow"] = preserved + generated_allow
 
-    # Replace sandbox.network fully
+    # Merge sandbox.network key-by-key (preserves unmanaged keys like allowManagedDomainsOnly)
     existing.setdefault("sandbox", {})
-    existing["sandbox"]["network"] = generated["sandbox"]["network"]
+    existing["sandbox"].setdefault("network", {})
+    existing["sandbox"]["network"].update(generated["sandbox"]["network"])
 
     return existing

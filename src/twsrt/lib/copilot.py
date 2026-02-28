@@ -54,9 +54,8 @@ class CopilotGenerator:
 
         return "\n".join(f"{flag} \\" for flag in flags)
 
-    def diff(self, rules: list[SecurityRule], target: Path) -> DiffResult:
+    def diff(self, rules: list[SecurityRule], target: Path, config: AppConfig) -> DiffResult:
         """Compare generated flags against existing target file."""
-        config = AppConfig()
         generated_text = self.generate(rules, config)
         gen_lines = {
             line.strip().rstrip(" \\")

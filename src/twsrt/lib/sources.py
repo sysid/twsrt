@@ -3,11 +3,20 @@
 import json
 from pathlib import Path
 
-from twsrt.lib.models import Action, Scope, SecurityRule, Source
+from twsrt.lib.models import Action, Scope, SecurityRule, Source, SrtResult
+
+# Pass-through network keys (not handled as SecurityRules)
+_NETWORK_CONFIG_KEYS = (
+    "allowUnixSockets",
+    "allowAllUnixSockets",
+    "allowLocalBinding",
+    "httpProxyPort",
+    "socksProxyPort",
+)
 
 
-def read_srt(srt_path: Path) -> list[SecurityRule]:
-    """Parse SRT JSON into SecurityRules."""
+def read_srt(srt_path: Path) -> SrtResult:
+    """Parse SRT JSON into SecurityRules and pass-through network config."""
     if not srt_path.exists():
         raise FileNotFoundError(f"SRT settings not found: {srt_path}")
 
@@ -18,26 +27,13 @@ def read_srt(srt_path: Path) -> list[SecurityRule]:
 
     rules: list[SecurityRule] = []
 
-    # Support both SRT formats:
-    # Flat:   {"filesystem": {"denyRead": [...]}, "network": {"allowedDomains": [...]}}
-    # Nested: {"sandbox": {"permissions": {"filesystem": {"read": {"denyOnly": [...]}}}}}
-    if "filesystem" in data or "network" in data:
-        filesystem = data.get("filesystem", {})
-        deny_read = filesystem.get("denyRead", [])
-        deny_write = filesystem.get("denyWrite", [])
-        allow_write = filesystem.get("allowWrite", [])
-        network = data.get("network", {})
-        allowed_domains = network.get("allowedDomains", [])
-        denied_domains = network.get("deniedDomains", [])
-    else:
-        permissions = data.get("sandbox", {}).get("permissions", {})
-        filesystem = permissions.get("filesystem", {})
-        deny_read = filesystem.get("read", {}).get("denyOnly", [])
-        deny_write = filesystem.get("write", {}).get("denyWithinAllow", [])
-        allow_write = filesystem.get("write", {}).get("allowOnly", [])
-        network = permissions.get("network", {})
-        allowed_domains = network.get("allowedHosts", [])
-        denied_domains = network.get("deniedHosts", [])
+    filesystem = data.get("filesystem", {})
+    deny_read = filesystem.get("denyRead", [])
+    deny_write = filesystem.get("denyWrite", [])
+    allow_write = filesystem.get("allowWrite", [])
+    network = data.get("network", {})
+    allowed_domains = network.get("allowedDomains", [])
+    denied_domains = network.get("deniedDomains", [])
 
     for pattern in deny_read:
         rules.append(
@@ -89,7 +85,10 @@ def read_srt(srt_path: Path) -> list[SecurityRule]:
             )
         )
 
-    return rules
+    # Extract pass-through network config keys
+    network_config = {k: network[k] for k in _NETWORK_CONFIG_KEYS if k in network}
+
+    return SrtResult(rules=rules, network_config=network_config)
 
 
 def read_bash_rules(bash_rules_path: Path) -> list[SecurityRule]:

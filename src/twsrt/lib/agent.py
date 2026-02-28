@@ -14,7 +14,7 @@ class AgentGenerator(Protocol):
         """Generate agent-specific config from security rules."""
         ...
 
-    def diff(self, rules: list[SecurityRule], target: Path) -> DiffResult:
+    def diff(self, rules: list[SecurityRule], target: Path, config: AppConfig) -> DiffResult:
         """Compare generated config against existing target file."""
         ...
 

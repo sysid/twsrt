@@ -149,13 +149,9 @@ class TestUS1AcceptanceScenarios:
     def test_scenario_1_deny_read_all_file_tools(self, tmp_path: Path) -> None:
         """denyRead generates deny for ALL file tools."""
         srt = {
-            "sandbox": {
-                "permissions": {
-                    "filesystem": {
-                        "read": {"denyOnly": ["~/.aws", "~/.ssh"]},
-                    }
-                }
-            }
+            "filesystem": {
+                "denyRead": ["~/.aws", "~/.ssh"],
+            },
         }
         config = _make_config(tmp_path, srt)
         result = runner.invoke(app, ["-c", str(config), "generate", "claude"])
@@ -175,13 +171,9 @@ class TestUS1AcceptanceScenarios:
     def test_scenario_2_allow_write_no_output(self, tmp_path: Path) -> None:
         """allowWrite produces no Claude output."""
         srt = {
-            "sandbox": {
-                "permissions": {
-                    "filesystem": {
-                        "write": {"allowOnly": [".", "/tmp"]},
-                    }
-                }
-            }
+            "filesystem": {
+                "allowWrite": [".", "/tmp"],
+            },
         }
         config = _make_config(tmp_path, srt)
         result = runner.invoke(app, ["-c", str(config), "generate", "claude"])
@@ -193,13 +185,9 @@ class TestUS1AcceptanceScenarios:
     def test_scenario_3_allowed_domains(self, tmp_path: Path) -> None:
         """allowedDomains → WebFetch allow + sandbox.network."""
         srt = {
-            "sandbox": {
-                "permissions": {
-                    "network": {
-                        "allowedHosts": ["github.com", "*.github.com"],
-                    }
-                }
-            }
+            "network": {
+                "allowedDomains": ["github.com", "*.github.com"],
+            },
         }
         config = _make_config(tmp_path, srt)
         result = runner.invoke(app, ["-c", str(config), "generate", "claude"])
@@ -214,7 +202,7 @@ class TestUS1AcceptanceScenarios:
 
     def test_scenario_4_bash_deny(self, tmp_path: Path) -> None:
         """Bash deny → Bash(cmd) + Bash(cmd *) in deny."""
-        srt = {"sandbox": {"permissions": {}}}
+        srt = {}
         bash_rules = {"deny": ["rm", "sudo", "git push --force"], "ask": []}
         config = _make_config(tmp_path, srt, bash_rules)
         result = runner.invoke(app, ["-c", str(config), "generate", "claude"])
@@ -230,7 +218,7 @@ class TestUS1AcceptanceScenarios:
 
     def test_scenario_5_bash_ask(self, tmp_path: Path) -> None:
         """Bash ask → Bash(cmd) + Bash(cmd *) in ask."""
-        srt = {"sandbox": {"permissions": {}}}
+        srt = {}
         bash_rules = {"deny": [], "ask": ["git push", "git commit", "pip install"]}
         config = _make_config(tmp_path, srt, bash_rules)
         result = runner.invoke(app, ["-c", str(config), "generate", "claude"])
@@ -247,13 +235,9 @@ class TestUS1AcceptanceScenarios:
     def test_scenario_6_deny_write(self, tmp_path: Path) -> None:
         """denyWrite → Write/Edit/MultiEdit in deny (no Read)."""
         srt = {
-            "sandbox": {
-                "permissions": {
-                    "filesystem": {
-                        "write": {"denyWithinAllow": ["**/.env", "**/*.pem"]},
-                    }
-                }
-            }
+            "filesystem": {
+                "denyWrite": ["**/.env", "**/*.pem"],
+            },
         }
         config = _make_config(tmp_path, srt)
         result = runner.invoke(app, ["-c", str(config), "generate", "claude"])
@@ -268,14 +252,12 @@ class TestUS1AcceptanceScenarios:
     def test_scenario_7_selective_merge(self, tmp_path: Path) -> None:
         """Selective merge preserves hooks, mcp__, blanket allows."""
         srt = {
-            "sandbox": {
-                "permissions": {
-                    "filesystem": {
-                        "read": {"denyOnly": ["**/.secret"]},
-                    },
-                    "network": {"allowedHosts": ["github.com"]},
-                }
-            }
+            "filesystem": {
+                "denyRead": ["**/.secret"],
+            },
+            "network": {
+                "allowedDomains": ["github.com"],
+            },
         }
         bash_rules = {"deny": ["rm"], "ask": ["git push"]}
         config = _make_config(tmp_path, srt, bash_rules)
@@ -346,7 +328,7 @@ class TestUS2AcceptanceScenarios:
 
     def test_copilot_deny_flags(self, tmp_path: Path) -> None:
         """Bash deny → --deny-tool flags."""
-        srt = {"sandbox": {"permissions": {}}}
+        srt = {}
         bash_rules = {"deny": ["rm", "sudo"], "ask": []}
         config = _make_config(tmp_path, srt, bash_rules)
         result = runner.invoke(app, ["-c", str(config), "generate", "copilot"])
@@ -356,7 +338,7 @@ class TestUS2AcceptanceScenarios:
 
     def test_copilot_lossy_ask_warning(self, tmp_path: Path) -> None:
         """Bash ask → --deny-tool with warning on stderr."""
-        srt = {"sandbox": {"permissions": {}}}
+        srt = {}
         bash_rules = {"deny": [], "ask": ["git push"]}
         config = _make_config(tmp_path, srt, bash_rules)
         result = runner.invoke(app, ["-c", str(config), "generate", "copilot"])
@@ -366,13 +348,9 @@ class TestUS2AcceptanceScenarios:
     def test_generate_all_includes_both_agents(self, tmp_path: Path) -> None:
         """twsrt generate (all) includes both Claude and Copilot output."""
         srt = {
-            "sandbox": {
-                "permissions": {
-                    "network": {
-                        "allowedHosts": ["github.com"],
-                    }
-                }
-            }
+            "network": {
+                "allowedDomains": ["github.com"],
+            },
         }
         bash_rules = {"deny": ["rm"], "ask": []}
         config = _make_config(tmp_path, srt, bash_rules)
@@ -417,13 +395,9 @@ def _make_config_with_targets(
 class TestDiffCommand:
     def test_diff_claude_with_drift_exits_1(self, tmp_path: Path) -> None:
         srt = {
-            "sandbox": {
-                "permissions": {
-                    "filesystem": {
-                        "read": {"denyOnly": ["**/.aws", "**/.kube"]},
-                    }
-                }
-            }
+            "filesystem": {
+                "denyRead": ["**/.aws", "**/.kube"],
+            },
         }
         config, claude_target, _ = _make_config_with_targets(tmp_path, srt)
         # Write existing with only .aws rules (missing .kube)
@@ -447,7 +421,7 @@ class TestDiffCommand:
         assert "missing" in result.output.lower() or ".kube" in result.output
 
     def test_diff_no_drift_exits_0(self, tmp_path: Path) -> None:
-        srt = {"sandbox": {"permissions": {}}}
+        srt = {}
         bash_rules = {"deny": ["rm"], "ask": []}
         config, claude_target, _ = _make_config_with_targets(tmp_path, srt, bash_rules)
         # Write existing that matches
@@ -465,7 +439,7 @@ class TestDiffCommand:
         assert result.exit_code == 0
 
     def test_diff_missing_target_exits_2(self, tmp_path: Path) -> None:
-        srt = {"sandbox": {"permissions": {}}}
+        srt = {}
         config, claude_target, _ = _make_config_with_targets(tmp_path, srt)
         # Don't create claude_target file
 
@@ -480,13 +454,9 @@ class TestUS3AcceptanceScenarios:
     def test_drift_detected_with_missing_and_extra(self, tmp_path: Path) -> None:
         """Place a known-drifted settings.json, verify specific missing/extra."""
         srt = {
-            "sandbox": {
-                "permissions": {
-                    "filesystem": {
-                        "read": {"denyOnly": ["**/.aws", "**/.kube"]},
-                    }
-                }
-            }
+            "filesystem": {
+                "denyRead": ["**/.aws", "**/.kube"],
+            },
         }
         bash_rules = {"deny": ["rm"], "ask": []}
         config, claude_target, _ = _make_config_with_targets(tmp_path, srt, bash_rules)
@@ -516,7 +486,7 @@ class TestUS3AcceptanceScenarios:
         assert "docker" in result.output
 
     def test_no_drift_reports_clean(self, tmp_path: Path) -> None:
-        srt = {"sandbox": {"permissions": {}}}
+        srt = {}
         bash_rules = {"deny": ["rm"], "ask": []}
         config, claude_target, _ = _make_config_with_targets(tmp_path, srt, bash_rules)
         existing = {
@@ -534,7 +504,7 @@ class TestUS3AcceptanceScenarios:
         assert "no drift" in result.output.lower()
 
     def test_missing_target_file_exits_2(self, tmp_path: Path) -> None:
-        srt = {"sandbox": {"permissions": {}}}
+        srt = {}
         config, _, copilot_target = _make_config_with_targets(tmp_path, srt)
         # Don't create copilot_target
 

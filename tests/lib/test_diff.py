@@ -33,7 +33,7 @@ class TestClaudeDrift:
         target = tmp_path / "settings.json"
         target.write_text(json.dumps(existing))
 
-        result = gen.diff(rules, target)
+        result = gen.diff(rules, target, AppConfig())
         assert result.matched is False
         assert len(result.missing) > 0
         # .kube entries should be in missing
@@ -50,7 +50,7 @@ class TestClaudeDrift:
         target = tmp_path / "settings.json"
         target.write_text(json.dumps(generated))
 
-        result = gen.diff(rules, target)
+        result = gen.diff(rules, target, AppConfig())
         assert result.matched is True
         assert result.missing == []
         assert result.extra == []
@@ -78,7 +78,7 @@ class TestClaudeDrift:
         target = tmp_path / "settings.json"
         target.write_text(json.dumps(existing))
 
-        result = gen.diff(rules, target)
+        result = gen.diff(rules, target, AppConfig())
         assert result.matched is False
         assert "WebFetch(domain:*.tracker.net)" in result.missing
 
@@ -99,7 +99,7 @@ class TestClaudeDrift:
         target = tmp_path / "settings.json"
         target.write_text(json.dumps(existing))
 
-        result = gen.diff(rules, target)
+        result = gen.diff(rules, target, AppConfig())
         assert result.matched is False
         assert "WebFetch(domain:stale.com)" in result.extra
 
@@ -120,9 +120,104 @@ class TestClaudeDrift:
         target = tmp_path / "settings.json"
         target.write_text(json.dumps(existing))
 
-        result = gen.diff(rules, target)
+        result = gen.diff(rules, target, AppConfig())
         assert result.matched is False
         assert "Bash(docker run:*)" in result.extra
+
+
+class TestClaudeNetworkConfigDrift:
+    """US3: Drift detection for pass-through network config keys."""
+
+    def test_missing_network_config_key(self, tmp_path: Path) -> None:
+        """Generated has allowLocalBinding but existing doesn't → missing."""
+        gen = ClaudeGenerator()
+        config = AppConfig(network_config={"allowLocalBinding": True})
+        rules: list[SecurityRule] = []
+        existing = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {"network": {"allowedDomains": []}},
+        }
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(existing))
+
+        result = gen.diff(rules, target, config)
+        assert result.matched is False
+        assert "network.config:allowLocalBinding" in result.missing
+
+    def test_extra_network_config_key(self, tmp_path: Path) -> None:
+        """Existing has httpProxyPort but generated doesn't → extra."""
+        gen = ClaudeGenerator()
+        config = AppConfig()  # no network_config
+        rules: list[SecurityRule] = []
+        existing = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {"network": {"allowedDomains": [], "httpProxyPort": 8080}},
+        }
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(existing))
+
+        result = gen.diff(rules, target, config)
+        assert result.matched is False
+        assert "network.config:httpProxyPort" in result.extra
+
+    def test_matching_network_config_no_drift(self, tmp_path: Path) -> None:
+        """Both sides have same network config keys → matched."""
+        gen = ClaudeGenerator()
+        config = AppConfig(
+            network_config={"allowLocalBinding": True, "httpProxyPort": 8080}
+        )
+        rules: list[SecurityRule] = []
+        generated = json.loads(gen.generate(rules, config))
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(generated))
+
+        result = gen.diff(rules, target, config)
+        assert result.matched is True
+
+    def test_value_mismatch_detected(self, tmp_path: Path) -> None:
+        """Same key, different value → both missing and extra reported."""
+        gen = ClaudeGenerator()
+        config = AppConfig(network_config={"httpProxyPort": 8080})
+        rules: list[SecurityRule] = []
+        existing = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {"network": {"allowedDomains": [], "httpProxyPort": 9090}},
+        }
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(existing))
+
+        result = gen.diff(rules, target, config)
+        assert result.matched is False
+        # Value mismatch: generated=8080, existing=9090
+        assert "network.config:httpProxyPort" in result.missing or "network.config:httpProxyPort" in result.extra
+
+    def test_mixed_drift_scenario(self, tmp_path: Path) -> None:
+        """Mix of matching, missing, and extra network config keys."""
+        gen = ClaudeGenerator()
+        config = AppConfig(
+            network_config={
+                "allowLocalBinding": True,
+                "httpProxyPort": 8080,
+            }
+        )
+        rules: list[SecurityRule] = []
+        existing = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {
+                "network": {
+                    "allowedDomains": [],
+                    "allowLocalBinding": True,
+                    "socksProxyPort": 1080,
+                }
+            },
+        }
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(existing))
+
+        result = gen.diff(rules, target, config)
+        assert result.matched is False
+        assert "network.config:httpProxyPort" in result.missing
+        assert "network.config:socksProxyPort" in result.extra
 
 
 class TestCopilotDrift:
@@ -135,7 +230,7 @@ class TestCopilotDrift:
         target = tmp_path / "copilot-flags.txt"
         target.write_text("--deny-tool 'shell(rm)'\n--deny-tool 'shell(docker)'\n")
 
-        result = gen.diff(rules, target)
+        result = gen.diff(rules, target, AppConfig())
         assert result.matched is False
         assert "--deny-tool 'shell(docker)'" in result.extra
 
@@ -150,7 +245,7 @@ class TestCopilotDrift:
         target = tmp_path / "copilot-flags.txt"
         target.write_text(output + "\n")
 
-        result = gen.diff(rules, target)
+        result = gen.diff(rules, target, AppConfig())
         assert result.matched is True
 
     def test_diff_detects_missing_allow_url(self, tmp_path: Path) -> None:
@@ -164,7 +259,7 @@ class TestCopilotDrift:
         target = tmp_path / "copilot-flags.txt"
         target.write_text("--allow-url 'github.com'\n")
 
-        result = gen.diff(rules, target)
+        result = gen.diff(rules, target, AppConfig())
         assert result.matched is False
         assert "--allow-url 'pypi.org'" in result.missing
 
@@ -177,7 +272,7 @@ class TestCopilotDrift:
         target = tmp_path / "copilot-flags.txt"
         target.write_text("--allow-url 'github.com'\n--allow-url 'stale.com'\n")
 
-        result = gen.diff(rules, target)
+        result = gen.diff(rules, target, AppConfig())
         assert result.matched is False
         assert "--allow-url 'stale.com'" in result.extra
 
@@ -193,6 +288,6 @@ class TestCopilotDrift:
         target = tmp_path / "copilot-flags.txt"
         target.write_text("--deny-url 'evil.com'\n")
 
-        result = gen.diff(rules, target)
+        result = gen.diff(rules, target, AppConfig())
         assert result.matched is False
         assert "--deny-url '*.tracker.net'" in result.missing

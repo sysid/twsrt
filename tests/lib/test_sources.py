@@ -11,7 +11,7 @@ from twsrt.lib.sources import read_bash_rules, read_srt
 
 class TestReadSrt:
     def test_deny_read_rules(self, srt_file: Path) -> None:
-        rules = read_srt(srt_file)
+        rules = read_srt(srt_file).rules
         deny_reads = [
             r for r in rules if r.scope == Scope.READ and r.action == Action.DENY
         ]
@@ -23,7 +23,7 @@ class TestReadSrt:
         assert "~/.ssh" in patterns
 
     def test_deny_write_rules(self, srt_file: Path) -> None:
-        rules = read_srt(srt_file)
+        rules = read_srt(srt_file).rules
         deny_writes = [
             r for r in rules if r.scope == Scope.WRITE and r.action == Action.DENY
         ]
@@ -34,7 +34,7 @@ class TestReadSrt:
         assert "**/*.pem" in patterns
 
     def test_allow_write_rules(self, srt_file: Path) -> None:
-        rules = read_srt(srt_file)
+        rules = read_srt(srt_file).rules
         allow_writes = [
             r for r in rules if r.scope == Scope.WRITE and r.action == Action.ALLOW
         ]
@@ -44,7 +44,7 @@ class TestReadSrt:
         assert "/tmp" in patterns
 
     def test_allowed_domains(self, srt_file: Path) -> None:
-        rules = read_srt(srt_file)
+        rules = read_srt(srt_file).rules
         network_allow = [
             r for r in rules if r.scope == Scope.NETWORK and r.action == Action.ALLOW
         ]
@@ -56,29 +56,25 @@ class TestReadSrt:
             assert r.source == Source.SRT_NETWORK
 
     def test_all_rules_have_srt_source(self, srt_file: Path) -> None:
-        rules = read_srt(srt_file)
+        rules = read_srt(srt_file).rules
         for r in rules:
             assert r.source in (Source.SRT_FILESYSTEM, Source.SRT_NETWORK)
 
     def test_non_security_fields_ignored(self, tmp_path: Path) -> None:
         """SRT fields like enabled, allowPty should not appear in rules."""
         srt = {
-            "sandbox": {
-                "enabled": True,
-                "allowPty": True,
-                "permissions": {
-                    "filesystem": {
-                        "read": {"denyOnly": ["**/.secret"]},
-                    },
-                },
-            }
+            "enabled": True,
+            "allowPty": True,
+            "filesystem": {
+                "denyRead": ["**/.secret"],
+            },
         }
         p = tmp_path / "srt.json"
         p.write_text(json.dumps(srt))
-        rules = read_srt(p)
+        result = read_srt(p)
         # Only filesystem deny rules, no rules for enabled/allowPty
-        assert len(rules) == 1
-        assert rules[0].pattern == "**/.secret"
+        assert len(result.rules) == 1
+        assert result.rules[0].pattern == "**/.secret"
 
     def test_missing_file_raises_error(self, tmp_path: Path) -> None:
         missing = tmp_path / "nonexistent.json"
@@ -94,22 +90,18 @@ class TestReadSrt:
     def test_tilde_in_paths_handled(self, tmp_path: Path) -> None:
         """Tilde paths in SRT deny entries should be preserved as-is (they're patterns)."""
         srt = {
-            "sandbox": {
-                "permissions": {
-                    "filesystem": {
-                        "read": {"denyOnly": ["~/.ssh"]},
-                    }
-                }
-            }
+            "filesystem": {
+                "denyRead": ["~/.ssh"],
+            },
         }
         p = tmp_path / "srt.json"
         p.write_text(json.dumps(srt))
-        rules = read_srt(p)
-        assert rules[0].pattern == "~/.ssh"
+        result = read_srt(p)
+        assert result.rules[0].pattern == "~/.ssh"
 
     def test_denied_domains(self, srt_file: Path) -> None:
-        """deniedHosts in nested SRT format produces NETWORK/DENY rules."""
-        rules = read_srt(srt_file)
+        """deniedDomains in SRT format produces NETWORK/DENY rules."""
+        rules = read_srt(srt_file).rules
         denied = [
             r for r in rules if r.scope == Scope.NETWORK and r.action == Action.DENY
         ]
@@ -130,7 +122,7 @@ class TestReadSrt:
         }
         p = tmp_path / "srt.json"
         p.write_text(json.dumps(srt))
-        rules = read_srt(p)
+        rules = read_srt(p).rules
         denied = [
             r for r in rules if r.scope == Scope.NETWORK and r.action == Action.DENY
         ]
@@ -147,7 +139,7 @@ class TestReadSrt:
         }
         p = tmp_path / "srt.json"
         p.write_text(json.dumps(srt))
-        rules = read_srt(p)
+        rules = read_srt(p).rules
         denied = [
             r for r in rules if r.scope == Scope.NETWORK and r.action == Action.DENY
         ]
@@ -167,7 +159,7 @@ class TestReadSrt:
         }
         p = tmp_path / "srt.json"
         p.write_text(json.dumps(srt))
-        rules = read_srt(p)
+        rules = read_srt(p).rules
         deny_reads = [
             r for r in rules if r.scope == Scope.READ and r.action == Action.DENY
         ]
@@ -183,6 +175,105 @@ class TestReadSrt:
         assert len(allow_writes) == 1
         assert len(network_rules) == 2
         assert {r.pattern for r in network_rules} == {"github.com", "pypi.org"}
+
+
+class TestReadSrtNetworkConfig:
+    """Tests for network_config extraction from SRT (FR-001, FR-003)."""
+
+    def test_all_five_keys_present(self, tmp_path: Path) -> None:
+        """All 5 pass-through network keys are extracted into network_config."""
+        srt = {
+            "network": {
+                "allowedDomains": ["github.com"],
+                "allowUnixSockets": ["/var/run/docker.sock"],
+                "allowAllUnixSockets": True,
+                "allowLocalBinding": True,
+                "httpProxyPort": 8080,
+                "socksProxyPort": 1080,
+            },
+        }
+        p = tmp_path / "srt.json"
+        p.write_text(json.dumps(srt))
+        result = read_srt(p)
+        assert result.network_config["allowUnixSockets"] == ["/var/run/docker.sock"]
+        assert result.network_config["allowAllUnixSockets"] is True
+        assert result.network_config["allowLocalBinding"] is True
+        assert result.network_config["httpProxyPort"] == 8080
+        assert result.network_config["socksProxyPort"] == 1080
+
+    def test_partial_keys(self, tmp_path: Path) -> None:
+        """Only present keys appear in network_config."""
+        srt = {
+            "network": {
+                "allowedDomains": ["github.com"],
+                "allowLocalBinding": True,
+            },
+        }
+        p = tmp_path / "srt.json"
+        p.write_text(json.dumps(srt))
+        result = read_srt(p)
+        assert result.network_config == {"allowLocalBinding": True}
+
+    def test_no_network_config_keys(self, tmp_path: Path) -> None:
+        """SRT with only allowedDomains produces empty network_config."""
+        srt = {
+            "network": {
+                "allowedDomains": ["github.com"],
+            },
+        }
+        p = tmp_path / "srt.json"
+        p.write_text(json.dumps(srt))
+        result = read_srt(p)
+        assert result.network_config == {}
+
+    def test_empty_unix_sockets_list(self, tmp_path: Path) -> None:
+        """Empty allowUnixSockets list is preserved (not omitted)."""
+        srt = {
+            "network": {
+                "allowUnixSockets": [],
+            },
+        }
+        p = tmp_path / "srt.json"
+        p.write_text(json.dumps(srt))
+        result = read_srt(p)
+        assert result.network_config["allowUnixSockets"] == []
+
+    def test_falsy_port_zero(self, tmp_path: Path) -> None:
+        """Port value 0 is valid and preserved (not omitted)."""
+        srt = {
+            "network": {
+                "httpProxyPort": 0,
+            },
+        }
+        p = tmp_path / "srt.json"
+        p.write_text(json.dumps(srt))
+        result = read_srt(p)
+        assert result.network_config["httpProxyPort"] == 0
+
+    def test_returns_srt_result_type(self, srt_file: Path) -> None:
+        """read_srt returns SrtResult with rules attribute."""
+        from twsrt.lib.models import SrtResult
+
+        result = read_srt(srt_file)
+        assert isinstance(result, SrtResult)
+        assert len(result.rules) > 0
+
+    def test_excluded_keys_not_in_config(self, tmp_path: Path) -> None:
+        """deniedDomains and mitmProxy are NOT in network_config (FR-004)."""
+        srt = {
+            "network": {
+                "allowedDomains": ["github.com"],
+                "deniedDomains": ["evil.com"],
+                "mitmProxy": True,
+                "allowLocalBinding": True,
+            },
+        }
+        p = tmp_path / "srt.json"
+        p.write_text(json.dumps(srt))
+        result = read_srt(p)
+        assert "deniedDomains" not in result.network_config
+        assert "mitmProxy" not in result.network_config
+        assert "allowLocalBinding" in result.network_config
 
 
 class TestReadBashRules:

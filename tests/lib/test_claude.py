@@ -222,6 +222,62 @@ class TestClaudeGeneration:
         assert output["permissions"]["allow"] == []
         assert output["sandbox"]["network"]["allowedDomains"] == []
 
+    def test_network_config_all_keys_in_sandbox_output(
+        self, gen: ClaudeGenerator
+    ) -> None:
+        """US1: All 5 pass-through network keys appear in sandbox.network output."""
+        config = AppConfig(
+            network_config={
+                "allowUnixSockets": ["/var/run/docker.sock"],
+                "allowAllUnixSockets": True,
+                "allowLocalBinding": True,
+                "httpProxyPort": 8080,
+                "socksProxyPort": 1080,
+            }
+        )
+        output = json.loads(gen.generate([], config))
+        network = output["sandbox"]["network"]
+        assert network["allowUnixSockets"] == ["/var/run/docker.sock"]
+        assert network["allowAllUnixSockets"] is True
+        assert network["allowLocalBinding"] is True
+        assert network["httpProxyPort"] == 8080
+        assert network["socksProxyPort"] == 1080
+
+    def test_network_config_partial_keys(self, gen: ClaudeGenerator) -> None:
+        """US1: Only present pass-through keys appear in output."""
+        config = AppConfig(
+            network_config={"allowLocalBinding": True}
+        )
+        output = json.loads(gen.generate([], config))
+        network = output["sandbox"]["network"]
+        assert network["allowLocalBinding"] is True
+        assert "allowUnixSockets" not in network
+        assert "httpProxyPort" not in network
+
+    def test_network_config_empty_omits_keys(
+        self, gen: ClaudeGenerator, config: AppConfig
+    ) -> None:
+        """US2: When no network_config keys present, sandbox.network has only allowedDomains."""
+        output = json.loads(gen.generate([], config))
+        network = output["sandbox"]["network"]
+        assert list(network.keys()) == ["allowedDomains"]
+
+    def test_network_config_coexists_with_domains(
+        self, gen: ClaudeGenerator
+    ) -> None:
+        """Pass-through keys and allowedDomains coexist in sandbox.network."""
+        config = AppConfig(
+            network_config={"allowLocalBinding": True, "httpProxyPort": 8080}
+        )
+        rules = [
+            SecurityRule(Scope.NETWORK, Action.ALLOW, "github.com", Source.SRT_NETWORK),
+        ]
+        output = json.loads(gen.generate(rules, config))
+        network = output["sandbox"]["network"]
+        assert network["allowedDomains"] == ["github.com"]
+        assert network["allowLocalBinding"] is True
+        assert network["httpProxyPort"] == 8080
+
 
 class TestSelectiveMerge:
     """FR-018: Selective merge for Claude settings.json."""
@@ -367,7 +423,8 @@ class TestSelectiveMerge:
         allow = result["permissions"]["allow"]
         assert "Bash(./gradlew:*)" in allow
 
-    def test_sandbox_network_fully_replaced(self, tmp_path: Path) -> None:
+    def test_sandbox_network_domains_replaced(self, tmp_path: Path) -> None:
+        """Generated allowedDomains replace existing ones."""
         existing = {
             "permissions": {"deny": [], "ask": [], "allow": []},
             "sandbox": {"network": {"allowedDomains": ["old.com"]}},
@@ -384,6 +441,61 @@ class TestSelectiveMerge:
             "github.com",
             "pypi.org",
         ]
+
+    def test_sandbox_network_preserves_unmanaged_keys(self, tmp_path: Path) -> None:
+        """US1/T009: dict.update() merge preserves unmanaged keys like allowManagedDomainsOnly."""
+        existing = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {
+                "network": {
+                    "allowedDomains": ["old.com"],
+                    "allowManagedDomainsOnly": True,
+                }
+            },
+        }
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(existing))
+
+        generated = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {"network": {"allowedDomains": ["github.com"]}},
+        }
+        result = selective_merge(target, generated)
+        # Generated keys updated
+        assert result["sandbox"]["network"]["allowedDomains"] == ["github.com"]
+        # Unmanaged key preserved (not wiped by full replacement)
+        assert result["sandbox"]["network"]["allowManagedDomainsOnly"] is True
+
+    def test_sandbox_network_config_keys_merged(self, tmp_path: Path) -> None:
+        """Pass-through network config keys are merged into sandbox.network."""
+        existing = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {
+                "network": {
+                    "allowedDomains": ["old.com"],
+                    "allowManagedDomainsOnly": True,
+                }
+            },
+        }
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(existing))
+
+        generated = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {
+                "network": {
+                    "allowedDomains": ["github.com"],
+                    "allowLocalBinding": True,
+                    "httpProxyPort": 8080,
+                }
+            },
+        }
+        result = selective_merge(target, generated)
+        network = result["sandbox"]["network"]
+        assert network["allowedDomains"] == ["github.com"]
+        assert network["allowLocalBinding"] is True
+        assert network["httpProxyPort"] == 8080
+        assert network["allowManagedDomainsOnly"] is True
 
     def test_hooks_preserved(self, tmp_path: Path) -> None:
         existing = {

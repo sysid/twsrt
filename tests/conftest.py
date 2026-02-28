@@ -10,42 +10,34 @@ import pytest
 
 
 SAMPLE_SRT = {
-    "sandbox": {
-        "enabled": True,
-        "allowPty": True,
-        "permissions": {
-            "filesystem": {
-                "read": {
-                    "denyOnly": [
-                        "**/.env",
-                        "**/.env.*",
-                        "**/.aws",
-                        "~/.ssh",
-                    ]
-                },
-                "write": {
-                    "allowOnly": [".", "/tmp"],
-                    "denyWithinAllow": [
-                        "**/.env",
-                        "**/*.pem",
-                        "**/*.key",
-                    ],
-                },
-            },
-            "network": {
-                "allowedHosts": [
-                    "github.com",
-                    "*.github.com",
-                    "pypi.org",
-                    "registry.npmjs.org",
-                ],
-                "deniedHosts": [
-                    "evil.com",
-                    "*.tracker.net",
-                ],
-            },
-        },
-    }
+    "enabled": True,
+    "allowPty": True,
+    "filesystem": {
+        "denyRead": [
+            "**/.env",
+            "**/.env.*",
+            "**/.aws",
+            "~/.ssh",
+        ],
+        "allowWrite": [".", "/tmp"],
+        "denyWrite": [
+            "**/.env",
+            "**/*.pem",
+            "**/*.key",
+        ],
+    },
+    "network": {
+        "allowedDomains": [
+            "github.com",
+            "*.github.com",
+            "pypi.org",
+            "registry.npmjs.org",
+        ],
+        "deniedDomains": [
+            "evil.com",
+            "*.tracker.net",
+        ],
+    },
 }
 
 
@@ -101,7 +93,7 @@ SAMPLE_CLAUDE_SETTINGS = {
     },
     "sandbox": {
         "network": {
-            "allowedHosts": [
+            "allowedDomains": [
                 "github.com",
                 "pypi.org",
             ]

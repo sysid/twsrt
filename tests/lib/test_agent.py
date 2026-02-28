@@ -27,6 +27,7 @@ class TestAgentGeneratorContract:
     def test_diff_returns_diff_result(self, tmp_path: Path) -> None:
         target = tmp_path / "target.json"
         target.write_text("{}")
+        config = AppConfig()
         for gen in GENERATORS.values():
-            result = gen.diff([], target)
+            result = gen.diff([], target, config)
             assert isinstance(result, DiffResult)

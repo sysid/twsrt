@@ -117,13 +117,14 @@ def generate(
     config = load_config(config_path)
 
     try:
-        srt_rules = read_srt(config.srt_path)
+        srt_result = read_srt(config.srt_path)
         bash_rules = read_bash_rules(config.bash_rules_path)
     except (FileNotFoundError, ValueError) as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
 
-    all_rules = srt_rules + bash_rules
+    all_rules = srt_result.rules + bash_rules
+    config.network_config = srt_result.network_config
 
     if agent == "all":
         generators = list(GENERATORS.values())
@@ -194,13 +195,14 @@ def diff(
     config = load_config(config_path)
 
     try:
-        srt_rules = read_srt(config.srt_path)
+        srt_result = read_srt(config.srt_path)
         bash_rules = read_bash_rules(config.bash_rules_path)
     except (FileNotFoundError, ValueError) as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
 
-    all_rules = srt_rules + bash_rules
+    all_rules = srt_result.rules + bash_rules
+    config.network_config = srt_result.network_config
 
     if agent == "all":
         generators = list(GENERATORS.values())
@@ -222,7 +224,7 @@ def diff(
             )
             raise typer.Exit(2)
 
-        result = gen.diff(all_rules, target)
+        result = gen.diff(all_rules, target, config)
 
         if result.matched:
             typer.echo(f"{gen.name}: no drift")

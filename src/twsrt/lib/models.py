@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 
 class Scope(Enum):
@@ -48,6 +49,14 @@ class SecurityRule:
 
 
 @dataclass
+class SrtResult:
+    """Result from parsing SRT settings: rules + pass-through network config."""
+
+    rules: list[SecurityRule]
+    network_config: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class AppConfig:
     srt_path: Path = field(
         default_factory=lambda: Path("~/.srt-settings.json").expanduser()
@@ -59,6 +68,7 @@ class AppConfig:
         default_factory=lambda: Path("~/.claude/settings.json").expanduser()
     )
     copilot_output_path: Path | None = None
+    network_config: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
