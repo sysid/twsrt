@@ -1,6 +1,6 @@
 [project]
 name = "twsrt"
-version = "0.2.0"
+version = "0.3.0"
 description = "Agent security configuration generator — translates canonical security rules into agent-specific configs"
 readme = "README.md"
 license = "BSD-3-Clause"
@@ -43,7 +43,7 @@ dev = [
 ]
 
 [tool.bumpversion]
-current_version = "0.2.0"
+current_version = "0.3.0"
 commit = true
 tag = false
 tag_name = "v{new_version}"
