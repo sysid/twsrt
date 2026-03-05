@@ -189,7 +189,10 @@ class TestClaudeNetworkConfigDrift:
         result = gen.diff(rules, target, config)
         assert result.matched is False
         # Value mismatch: generated=8080, existing=9090
-        assert "network.config:httpProxyPort" in result.missing or "network.config:httpProxyPort" in result.extra
+        assert (
+            "network.config:httpProxyPort" in result.missing
+            or "network.config:httpProxyPort" in result.extra
+        )
 
     def test_mixed_drift_scenario(self, tmp_path: Path) -> None:
         """Mix of matching, missing, and extra network config keys."""

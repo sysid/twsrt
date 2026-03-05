@@ -216,6 +216,42 @@ Where Tool = Read, Write, Edit, MultiEdit. Directory vs file detection uses the
 filesystem at generation time; glob patterns and unknown paths are treated as
 bare patterns (no `/**` suffix for globs, `/**` added for unknown paths).
 
+## Merge Behavior (`--write`)
+
+When writing to `~/.claude/settings.json`, twsrt uses **selective merge** — it does not
+overwrite the entire file. Each section has its own merge strategy:
+
+| Section | Strategy | Detail |
+|---|---|---|
+| `permissions.deny` | **Fully replaced** | All existing deny entries removed, replaced with generated ones |
+| `permissions.ask` | **Fully replaced** | All existing ask entries removed, replaced with generated ones |
+| `permissions.allow` | **Selective merge** | Only `WebFetch(domain:...)` entries replaced; everything else preserved |
+| `sandbox.network` | **Key-by-key merge** | `dict.update()` — generated keys overwrite, unmanaged keys preserved |
+| `hooks` | **Preserved** | Untouched |
+| `additionalDirectories` | **Preserved** | Untouched |
+| All other keys | **Preserved** | Untouched |
+
+### What gets preserved in `permissions.allow`
+
+The allow section is the only one with nuanced logic. twsrt considers `WebFetch(domain:...)`
+entries as "managed" — it strips all existing ones and replaces them with generated ones.
+Everything else is treated as user-managed and preserved verbatim:
+
+- **Blanket tool allows** (`Read`, `Glob`, `Grep`, `LS`, `Task`, `WebSearch`) — kept
+- **Bash allows** (`Bash(npm test:*)`, `Bash(./gradlew:*)`) — kept
+- **MCP allows** (`mcp__memory__store`, `mcp__github__search`) — kept
+- **Any other custom allows** — kept
+
+### Implication for Bash commands
+
+twsrt **never generates** `Bash(...)` entries in `permissions.allow`. It only generates Bash
+entries in `deny` and `ask` (from `bash-rules.json`). Since those sections are **fully
+replaced**, any manually-added Bash deny/ask entries in settings.json will be **lost** on
+`twsrt generate --write`. Only entries defined in your `bash-rules.json` source survive.
+
+However, Bash **allow** entries you've manually added are safe — they don't match the
+`WebFetch(domain:` prefix and are preserved.
+
 ## Development
 
 ```bash

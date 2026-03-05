@@ -77,7 +77,9 @@ class ClaudeGenerator:
         }
         return json.dumps(output, indent=2)
 
-    def diff(self, rules: list[SecurityRule], target: Path, config: AppConfig) -> DiffResult:
+    def diff(
+        self, rules: list[SecurityRule], target: Path, config: AppConfig
+    ) -> DiffResult:
         """Compare generated config against existing Claude settings.json."""
         generated = json.loads(self.generate(rules, config))
         existing = json.loads(target.read_text())

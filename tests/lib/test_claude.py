@@ -245,9 +245,7 @@ class TestClaudeGeneration:
 
     def test_network_config_partial_keys(self, gen: ClaudeGenerator) -> None:
         """US1: Only present pass-through keys appear in output."""
-        config = AppConfig(
-            network_config={"allowLocalBinding": True}
-        )
+        config = AppConfig(network_config={"allowLocalBinding": True})
         output = json.loads(gen.generate([], config))
         network = output["sandbox"]["network"]
         assert network["allowLocalBinding"] is True
@@ -262,9 +260,7 @@ class TestClaudeGeneration:
         network = output["sandbox"]["network"]
         assert list(network.keys()) == ["allowedDomains"]
 
-    def test_network_config_coexists_with_domains(
-        self, gen: ClaudeGenerator
-    ) -> None:
+    def test_network_config_coexists_with_domains(self, gen: ClaudeGenerator) -> None:
         """Pass-through keys and allowedDomains coexist in sandbox.network."""
         config = AppConfig(
             network_config={"allowLocalBinding": True, "httpProxyPort": 8080}
