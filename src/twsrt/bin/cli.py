@@ -125,6 +125,8 @@ def generate(
 
     all_rules = srt_result.rules + bash_rules
     config.network_config = srt_result.network_config
+    config.filesystem_config = srt_result.filesystem_config
+    config.sandbox_config = srt_result.sandbox_config
 
     if agent == "all":
         generators = list(GENERATORS.values())
@@ -203,6 +205,8 @@ def diff(
 
     all_rules = srt_result.rules + bash_rules
     config.network_config = srt_result.network_config
+    config.filesystem_config = srt_result.filesystem_config
+    config.sandbox_config = srt_result.sandbox_config
 
     if agent == "all":
         generators = list(GENERATORS.values())

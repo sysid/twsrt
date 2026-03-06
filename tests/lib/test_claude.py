@@ -275,6 +275,106 @@ class TestClaudeGeneration:
         assert network["httpProxyPort"] == 8080
 
 
+class TestFilesystemConfig:
+    """US1: Filesystem sandbox config in generated output."""
+
+    def test_all_three_keys_in_sandbox_output(self, gen: ClaudeGenerator) -> None:
+        """All 3 filesystem keys appear under sandbox.filesystem."""
+        config = AppConfig(
+            filesystem_config={
+                "allowWrite": [".", "/tmp"],
+                "denyWrite": ["**/.env", "**/*.pem"],
+                "denyRead": ["~/.ssh", "~/.aws"],
+            }
+        )
+        output = json.loads(gen.generate([], config))
+        fs = output["sandbox"]["filesystem"]
+        assert fs["allowWrite"] == [".", "/tmp"]
+        assert fs["denyWrite"] == ["**/.env", "**/*.pem"]
+        assert fs["denyRead"] == ["~/.ssh", "~/.aws"]
+
+    def test_partial_filesystem_config(self, gen: ClaudeGenerator) -> None:
+        """Only present filesystem keys appear in output."""
+        config = AppConfig(filesystem_config={"denyRead": ["~/.ssh"]})
+        output = json.loads(gen.generate([], config))
+        fs = output["sandbox"]["filesystem"]
+        assert fs["denyRead"] == ["~/.ssh"]
+        assert "allowWrite" not in fs
+        assert "denyWrite" not in fs
+
+    def test_empty_filesystem_config_no_section(
+        self, gen: ClaudeGenerator, config: AppConfig
+    ) -> None:
+        """Empty filesystem_config → no sandbox.filesystem section."""
+        output = json.loads(gen.generate([], config))
+        assert "filesystem" not in output["sandbox"]
+
+    def test_filesystem_coexists_with_network(self, gen: ClaudeGenerator) -> None:
+        """Filesystem and network sections coexist in sandbox."""
+        config = AppConfig(
+            network_config={"allowLocalBinding": True},
+            filesystem_config={"denyRead": ["~/.ssh"]},
+        )
+        rules = [
+            SecurityRule(Scope.NETWORK, Action.ALLOW, "github.com", Source.SRT_NETWORK),
+        ]
+        output = json.loads(gen.generate(rules, config))
+        assert output["sandbox"]["network"]["allowLocalBinding"] is True
+        assert output["sandbox"]["filesystem"]["denyRead"] == ["~/.ssh"]
+
+
+class TestSandboxConfig:
+    """US2: Top-level sandbox keys in generated output."""
+
+    def test_all_four_keys_in_output(self, gen: ClaudeGenerator) -> None:
+        """All 4 top-level sandbox keys appear in output."""
+        config = AppConfig(
+            sandbox_config={
+                "enabled": True,
+                "enableWeakerNetworkIsolation": True,
+                "enableWeakerNestedSandbox": False,
+                "ignoreViolations": {"*": ["/usr/bin"]},
+            }
+        )
+        output = json.loads(gen.generate([], config))
+        sandbox = output["sandbox"]
+        assert sandbox["enabled"] is True
+        assert sandbox["enableWeakerNetworkIsolation"] is True
+        assert sandbox["enableWeakerNestedSandbox"] is False
+        assert sandbox["ignoreViolations"] == {"*": ["/usr/bin"]}
+
+    def test_partial_sandbox_config(self, gen: ClaudeGenerator) -> None:
+        """Only present sandbox keys appear in output."""
+        config = AppConfig(sandbox_config={"enabled": True})
+        output = json.loads(gen.generate([], config))
+        sandbox = output["sandbox"]
+        assert sandbox["enabled"] is True
+        assert "enableWeakerNetworkIsolation" not in sandbox
+        assert "ignoreViolations" not in sandbox
+
+    def test_empty_sandbox_config_no_extra_keys(
+        self, gen: ClaudeGenerator, config: AppConfig
+    ) -> None:
+        """Empty sandbox_config → no top-level sandbox keys in output."""
+        output = json.loads(gen.generate([], config))
+        sandbox = output["sandbox"]
+        # Only "network" should be present (existing behavior)
+        assert "enabled" not in sandbox
+        assert "enableWeakerNetworkIsolation" not in sandbox
+
+    def test_enabled_false_preserved(self, gen: ClaudeGenerator) -> None:
+        """enabled: false is falsy but must appear in output."""
+        config = AppConfig(sandbox_config={"enabled": False})
+        output = json.loads(gen.generate([], config))
+        assert output["sandbox"]["enabled"] is False
+
+    def test_empty_ignore_violations_preserved(self, gen: ClaudeGenerator) -> None:
+        """ignoreViolations: {} is preserved in output."""
+        config = AppConfig(sandbox_config={"ignoreViolations": {}})
+        output = json.loads(gen.generate([], config))
+        assert output["sandbox"]["ignoreViolations"] == {}
+
+
 class TestSelectiveMerge:
     """FR-018: Selective merge for Claude settings.json."""
 
@@ -522,3 +622,122 @@ class TestSelectiveMerge:
         }
         result = selective_merge(target, generated)
         assert result["additionalDirectories"] == ["/tmp/extra"]
+
+    def test_sandbox_excludedcommands_preserved(self, tmp_path: Path) -> None:
+        """US4: Claude-only sandbox.excludedCommands preserved during merge."""
+        existing = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {
+                "excludedCommands": ["docker"],
+                "network": {"allowedDomains": ["old.com"]},
+            },
+        }
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(existing))
+
+        generated = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {"network": {"allowedDomains": ["github.com"]}},
+        }
+        result = selective_merge(target, generated)
+        assert result["sandbox"]["excludedCommands"] == ["docker"]
+
+    def test_sandbox_autoallowbash_preserved(self, tmp_path: Path) -> None:
+        """US4: Claude-only sandbox.autoAllowBashIfSandboxed preserved during merge."""
+        existing = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {
+                "autoAllowBashIfSandboxed": True,
+                "network": {"allowedDomains": []},
+            },
+        }
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(existing))
+
+        generated = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {"network": {"allowedDomains": ["github.com"]}},
+        }
+        result = selective_merge(target, generated)
+        assert result["sandbox"]["autoAllowBashIfSandboxed"] is True
+
+    def test_sandbox_allowunsandboxed_preserved(self, tmp_path: Path) -> None:
+        """US4: Claude-only sandbox.allowUnsandboxedCommands preserved during merge."""
+        existing = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {
+                "allowUnsandboxedCommands": False,
+                "network": {"allowedDomains": []},
+            },
+        }
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(existing))
+
+        generated = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {"network": {"allowedDomains": []}},
+        }
+        result = selective_merge(target, generated)
+        assert result["sandbox"]["allowUnsandboxedCommands"] is False
+
+    def test_sandbox_filesystem_key_by_key_merge(self, tmp_path: Path) -> None:
+        """US4: sandbox.filesystem merged key-by-key, preserving unmanaged keys."""
+        existing = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {
+                "network": {"allowedDomains": []},
+                "filesystem": {
+                    "allowWrite": ["/old"],
+                    "customKey": "preserved",
+                },
+            },
+        }
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(existing))
+
+        generated = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {
+                "network": {"allowedDomains": []},
+                "filesystem": {
+                    "allowWrite": ["/new"],
+                    "denyRead": ["~/.ssh"],
+                },
+            },
+        }
+        result = selective_merge(target, generated)
+        fs = result["sandbox"]["filesystem"]
+        assert fs["allowWrite"] == ["/new"]
+        assert fs["denyRead"] == ["~/.ssh"]
+        assert fs["customKey"] == "preserved"
+
+    def test_sandbox_toplevel_keys_merged(self, tmp_path: Path) -> None:
+        """US4: Top-level sandbox keys merged via update, Claude-only keys preserved."""
+        existing = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {
+                "enabled": False,
+                "autoAllowBashIfSandboxed": True,
+                "excludedCommands": ["docker"],
+                "network": {"allowedDomains": []},
+            },
+        }
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(existing))
+
+        generated = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {
+                "network": {"allowedDomains": []},
+                "enabled": True,
+                "enableWeakerNetworkIsolation": True,
+            },
+        }
+        result = selective_merge(target, generated)
+        sandbox = result["sandbox"]
+        # Generated keys updated
+        assert sandbox["enabled"] is True
+        assert sandbox["enableWeakerNetworkIsolation"] is True
+        # Claude-only keys preserved
+        assert sandbox["autoAllowBashIfSandboxed"] is True
+        assert sandbox["excludedCommands"] == ["docker"]

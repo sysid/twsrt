@@ -223,6 +223,113 @@ class TestClaudeNetworkConfigDrift:
         assert "network.config:socksProxyPort" in result.extra
 
 
+class TestClaudeFilesystemConfigDrift:
+    """US5: Drift detection for filesystem sandbox keys."""
+
+    def test_missing_filesystem_key(self, tmp_path: Path) -> None:
+        """Generated has allowWrite but existing doesn't → missing."""
+        gen = ClaudeGenerator()
+        config = AppConfig(filesystem_config={"allowWrite": [".", "/tmp"]})
+        existing = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {"network": {"allowedDomains": []}},
+        }
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(existing))
+
+        result = gen.diff([], target, config)
+        assert result.matched is False
+        assert "filesystem.config:allowWrite" in result.missing
+
+    def test_extra_filesystem_key(self, tmp_path: Path) -> None:
+        """Existing has denyRead but generated doesn't → extra."""
+        gen = ClaudeGenerator()
+        config = AppConfig()
+        existing = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {
+                "network": {"allowedDomains": []},
+                "filesystem": {"denyRead": ["~/.ssh"]},
+            },
+        }
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(existing))
+
+        result = gen.diff([], target, config)
+        assert result.matched is False
+        assert "filesystem.config:denyRead" in result.extra
+
+    def test_value_mismatch_filesystem_key(self, tmp_path: Path) -> None:
+        """Same key, different value → both missing and extra reported."""
+        gen = ClaudeGenerator()
+        config = AppConfig(filesystem_config={"denyRead": ["~/.ssh"]})
+        existing = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {
+                "network": {"allowedDomains": []},
+                "filesystem": {"denyRead": ["~/.aws"]},
+            },
+        }
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(existing))
+
+        result = gen.diff([], target, config)
+        assert result.matched is False
+        assert "filesystem.config:denyRead" in result.missing
+        assert "filesystem.config:denyRead" in result.extra
+
+
+class TestClaudeSandboxConfigDrift:
+    """US5: Drift detection for top-level sandbox keys."""
+
+    def test_missing_sandbox_key(self, tmp_path: Path) -> None:
+        """Generated has enabled but existing doesn't → missing."""
+        gen = ClaudeGenerator()
+        config = AppConfig(sandbox_config={"enabled": True})
+        existing = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {"network": {"allowedDomains": []}},
+        }
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(existing))
+
+        result = gen.diff([], target, config)
+        assert result.matched is False
+        assert "sandbox.config:enabled" in result.missing
+
+    def test_extra_sandbox_key(self, tmp_path: Path) -> None:
+        """Existing has ignoreViolations but generated doesn't → extra."""
+        gen = ClaudeGenerator()
+        config = AppConfig()
+        existing = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {
+                "network": {"allowedDomains": []},
+                "ignoreViolations": {"*": ["/usr/bin"]},
+            },
+        }
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(existing))
+
+        result = gen.diff([], target, config)
+        assert result.matched is False
+        assert "sandbox.config:ignoreViolations" in result.extra
+
+    def test_matching_all_sandbox_keys_no_drift(self, tmp_path: Path) -> None:
+        """All sandbox keys match → no drift."""
+        gen = ClaudeGenerator()
+        config = AppConfig(
+            filesystem_config={"denyRead": ["~/.ssh"]},
+            sandbox_config={"enabled": True},
+        )
+        generated = json.loads(gen.generate([], config))
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(generated))
+
+        result = gen.diff([], target, config)
+        assert result.matched is True
+
+
 class TestCopilotDrift:
     def test_extra_flag_detected(self, tmp_path: Path) -> None:
         """Existing flags with extra --deny-tool not in bash-rules."""

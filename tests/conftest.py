@@ -12,6 +12,12 @@ import pytest
 SAMPLE_SRT = {
     "enabled": True,
     "allowPty": True,
+    "enableWeakerNetworkIsolation": True,
+    "enableWeakerNestedSandbox": False,
+    "ignoreViolations": {
+        "*": ["/usr/bin", "/System"],
+        "git push": ["/usr/bin/nc"],
+    },
     "filesystem": {
         "denyRead": [
             "**/.env",
@@ -92,12 +98,21 @@ SAMPLE_CLAUDE_SETTINGS = {
         ],
     },
     "sandbox": {
+        "enabled": True,
+        "autoAllowBashIfSandboxed": True,
+        "excludedCommands": ["docker"],
+        "allowUnsandboxedCommands": False,
         "network": {
             "allowedDomains": [
                 "github.com",
                 "pypi.org",
             ]
-        }
+        },
+        "filesystem": {
+            "allowWrite": [".", "/tmp"],
+            "denyWrite": ["**/.env"],
+            "denyRead": ["~/.ssh"],
+        },
     },
     "hooks": {
         "PreToolUse": [

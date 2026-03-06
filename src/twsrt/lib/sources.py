@@ -14,6 +14,21 @@ _NETWORK_CONFIG_KEYS = (
     "socksProxyPort",
 )
 
+# Pass-through filesystem keys (also produce SecurityRules for permissions.deny)
+_FILESYSTEM_CONFIG_KEYS = (
+    "allowWrite",
+    "denyWrite",
+    "denyRead",
+)
+
+# Pass-through top-level sandbox keys
+_SANDBOX_CONFIG_KEYS = (
+    "enabled",
+    "enableWeakerNetworkIsolation",
+    "enableWeakerNestedSandbox",
+    "ignoreViolations",
+)
+
 
 def read_srt(srt_path: Path) -> SrtResult:
     """Parse SRT JSON into SecurityRules and pass-through network config."""
@@ -88,7 +103,18 @@ def read_srt(srt_path: Path) -> SrtResult:
     # Extract pass-through network config keys
     network_config = {k: network[k] for k in _NETWORK_CONFIG_KEYS if k in network}
 
-    return SrtResult(rules=rules, network_config=network_config)
+    # Extract pass-through filesystem config keys
+    filesystem_config = {k: filesystem[k] for k in _FILESYSTEM_CONFIG_KEYS if k in filesystem}
+
+    # Extract pass-through top-level sandbox config keys
+    sandbox_config = {k: data[k] for k in _SANDBOX_CONFIG_KEYS if k in data}
+
+    return SrtResult(
+        rules=rules,
+        network_config=network_config,
+        filesystem_config=filesystem_config,
+        sandbox_config=sandbox_config,
+    )
 
 
 def read_bash_rules(bash_rules_path: Path) -> list[SecurityRule]:

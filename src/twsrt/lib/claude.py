@@ -65,15 +65,20 @@ class ClaudeGenerator:
         network: dict = {"allowedDomains": domains}
         network.update(config.network_config)
 
+        sandbox: dict = {"network": network}
+
+        if config.filesystem_config:
+            sandbox["filesystem"] = dict(config.filesystem_config)
+
+        sandbox.update(config.sandbox_config)
+
         output = {
             "permissions": {
                 "deny": deny,
                 "ask": ask,
                 "allow": allow,
             },
-            "sandbox": {
-                "network": network,
-            },
+            "sandbox": sandbox,
         }
         return json.dumps(output, indent=2)
 
@@ -115,7 +120,11 @@ class ClaudeGenerator:
             extra.append(f"network:{d}")
 
         # Compare pass-through network config keys
-        from twsrt.lib.sources import _NETWORK_CONFIG_KEYS
+        from twsrt.lib.sources import (
+            _FILESYSTEM_CONFIG_KEYS,
+            _NETWORK_CONFIG_KEYS,
+            _SANDBOX_CONFIG_KEYS,
+        )
 
         gen_network = generated.get("sandbox", {}).get("network", {})
         ext_network = existing.get("sandbox", {}).get("network", {})
@@ -128,9 +137,38 @@ class ClaudeGenerator:
                 elif gen_val is None and ext_val is not None:
                     extra.append(f"network.config:{key}")
                 else:
-                    # Value mismatch — report both
                     missing.append(f"network.config:{key}")
                     extra.append(f"network.config:{key}")
+
+        # Compare pass-through filesystem config keys
+        gen_filesystem = generated.get("sandbox", {}).get("filesystem", {})
+        ext_filesystem = existing.get("sandbox", {}).get("filesystem", {})
+        for key in _FILESYSTEM_CONFIG_KEYS:
+            gen_val = gen_filesystem.get(key)
+            ext_val = ext_filesystem.get(key)
+            if gen_val != ext_val:
+                if gen_val is not None and ext_val is None:
+                    missing.append(f"filesystem.config:{key}")
+                elif gen_val is None and ext_val is not None:
+                    extra.append(f"filesystem.config:{key}")
+                else:
+                    missing.append(f"filesystem.config:{key}")
+                    extra.append(f"filesystem.config:{key}")
+
+        # Compare pass-through top-level sandbox config keys
+        gen_sandbox = generated.get("sandbox", {})
+        ext_sandbox = existing.get("sandbox", {})
+        for key in _SANDBOX_CONFIG_KEYS:
+            gen_val = gen_sandbox.get(key)
+            ext_val = ext_sandbox.get(key)
+            if gen_val != ext_val:
+                if gen_val is not None and ext_val is None:
+                    missing.append(f"sandbox.config:{key}")
+                elif gen_val is None and ext_val is not None:
+                    extra.append(f"sandbox.config:{key}")
+                else:
+                    missing.append(f"sandbox.config:{key}")
+                    extra.append(f"sandbox.config:{key}")
 
         return DiffResult(
             agent=self.name,
@@ -167,12 +205,14 @@ def _is_webfetch_entry(entry: str) -> bool:
 def selective_merge(target: Path, generated: dict) -> dict:
     """Merge generated permissions into existing settings.json.
 
-    FR-018: Selective merge rules:
+    Selective merge rules:
     - permissions.deny: fully replaced
     - permissions.ask: fully replaced
     - permissions.allow: WebFetch(domain:*) entries replaced,
       blanket allows, mcp__ allows, and project-specific allows preserved
     - sandbox.network: key-by-key merge (preserves unmanaged keys)
+    - sandbox.filesystem: key-by-key merge (preserves unmanaged keys)
+    - sandbox top-level keys: dict.update() (preserves Claude-only keys)
     - hooks, plugins, additionalDirectories: preserved unchanged
     """
     existing = json.loads(target.read_text())
@@ -188,9 +228,20 @@ def selective_merge(target: Path, generated: dict) -> dict:
     generated_allow = generated["permissions"].get("allow", [])
     existing["permissions"]["allow"] = preserved + generated_allow
 
-    # Merge sandbox.network key-by-key (preserves unmanaged keys like allowManagedDomainsOnly)
+    # Merge sandbox sections key-by-key (preserves unmanaged/Claude-only keys)
     existing.setdefault("sandbox", {})
+    gen_sandbox = generated.get("sandbox", {})
+
     existing["sandbox"].setdefault("network", {})
-    existing["sandbox"]["network"].update(generated["sandbox"]["network"])
+    existing["sandbox"]["network"].update(gen_sandbox.get("network", {}))
+
+    if "filesystem" in gen_sandbox:
+        existing["sandbox"].setdefault("filesystem", {})
+        existing["sandbox"]["filesystem"].update(gen_sandbox["filesystem"])
+
+    # Merge top-level sandbox keys (enabled, enableWeaker*, ignoreViolations)
+    for key, value in gen_sandbox.items():
+        if key not in ("network", "filesystem"):
+            existing["sandbox"][key] = value
 
     return existing

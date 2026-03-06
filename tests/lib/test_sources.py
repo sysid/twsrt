@@ -276,6 +276,114 @@ class TestReadSrtNetworkConfig:
         assert "allowLocalBinding" in result.network_config
 
 
+class TestReadSrtFilesystemConfig:
+    """Tests for filesystem_config extraction from SRT (005 FR-001)."""
+
+    def test_all_three_keys_present(self, tmp_path: Path) -> None:
+        """All 3 filesystem config keys are extracted."""
+        srt = {
+            "filesystem": {
+                "allowWrite": [".", "/tmp"],
+                "denyWrite": ["**/.env", "**/*.pem"],
+                "denyRead": ["~/.ssh", "~/.aws"],
+            },
+        }
+        p = tmp_path / "srt.json"
+        p.write_text(json.dumps(srt))
+        result = read_srt(p)
+        assert result.filesystem_config["allowWrite"] == [".", "/tmp"]
+        assert result.filesystem_config["denyWrite"] == ["**/.env", "**/*.pem"]
+        assert result.filesystem_config["denyRead"] == ["~/.ssh", "~/.aws"]
+
+    def test_partial_keys(self, tmp_path: Path) -> None:
+        """Only present filesystem keys appear in filesystem_config."""
+        srt = {
+            "filesystem": {
+                "denyRead": ["~/.ssh"],
+            },
+        }
+        p = tmp_path / "srt.json"
+        p.write_text(json.dumps(srt))
+        result = read_srt(p)
+        assert result.filesystem_config == {"denyRead": ["~/.ssh"]}
+
+    def test_no_filesystem_section(self, tmp_path: Path) -> None:
+        """SRT with no filesystem section → empty filesystem_config."""
+        srt = {"network": {"allowedDomains": ["github.com"]}}
+        p = tmp_path / "srt.json"
+        p.write_text(json.dumps(srt))
+        result = read_srt(p)
+        assert result.filesystem_config == {}
+
+    def test_empty_array_preserved(self, tmp_path: Path) -> None:
+        """Empty allowWrite list is preserved (not omitted)."""
+        srt = {
+            "filesystem": {
+                "allowWrite": [],
+            },
+        }
+        p = tmp_path / "srt.json"
+        p.write_text(json.dumps(srt))
+        result = read_srt(p)
+        assert result.filesystem_config["allowWrite"] == []
+
+
+class TestReadSrtSandboxConfig:
+    """Tests for sandbox_config extraction from SRT (005 FR-004, FR-007)."""
+
+    def test_all_four_keys_present(self, tmp_path: Path) -> None:
+        """All 4 sandbox config keys are extracted."""
+        srt = {
+            "enabled": True,
+            "enableWeakerNetworkIsolation": True,
+            "enableWeakerNestedSandbox": False,
+            "ignoreViolations": {"*": ["/usr/bin"]},
+        }
+        p = tmp_path / "srt.json"
+        p.write_text(json.dumps(srt))
+        result = read_srt(p)
+        assert result.sandbox_config["enabled"] is True
+        assert result.sandbox_config["enableWeakerNetworkIsolation"] is True
+        assert result.sandbox_config["enableWeakerNestedSandbox"] is False
+        assert result.sandbox_config["ignoreViolations"] == {"*": ["/usr/bin"]}
+
+    def test_partial_keys(self, tmp_path: Path) -> None:
+        """Only present sandbox keys appear in sandbox_config."""
+        srt = {"enabled": True}
+        p = tmp_path / "srt.json"
+        p.write_text(json.dumps(srt))
+        result = read_srt(p)
+        assert result.sandbox_config == {"enabled": True}
+
+    def test_no_sandbox_keys(self, tmp_path: Path) -> None:
+        """SRT with no top-level sandbox keys → empty sandbox_config."""
+        srt = {"network": {"allowedDomains": ["github.com"]}}
+        p = tmp_path / "srt.json"
+        p.write_text(json.dumps(srt))
+        result = read_srt(p)
+        assert result.sandbox_config == {}
+
+    def test_excludes_allowpty(self, tmp_path: Path) -> None:
+        """allowPty is NOT in sandbox_config (no Claude counterpart)."""
+        srt = {
+            "enabled": True,
+            "allowPty": True,
+        }
+        p = tmp_path / "srt.json"
+        p.write_text(json.dumps(srt))
+        result = read_srt(p)
+        assert "allowPty" not in result.sandbox_config
+        assert "enabled" in result.sandbox_config
+
+    def test_enabled_false_preserved(self, tmp_path: Path) -> None:
+        """enabled: false is a valid value and must be preserved."""
+        srt = {"enabled": False}
+        p = tmp_path / "srt.json"
+        p.write_text(json.dumps(srt))
+        result = read_srt(p)
+        assert result.sandbox_config["enabled"] is False
+
+
 class TestReadBashRules:
     def test_deny_rules(self, bash_rules_file: Path) -> None:
         rules = read_bash_rules(bash_rules_file)

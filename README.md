@@ -150,6 +150,8 @@ twsrt diff claude             # Verify: exit 0 = no drift
 [SRT](https://github.com/anthropic-experimental/sandbox-runtime) is a dependency and needs to be
 installed separately.
 
+> GOTCHA: [sandbox write allowlist being hardcoded](https://github.com/anthropics/claude-code/issues/10377#issuecomment-3468689124)
+
 ### `~/.srt-settings.json` (SRT — prerequisite)
 
 SRT configuration is the primary
@@ -216,6 +218,38 @@ Where Tool = Read, Write, Edit, MultiEdit. Directory vs file detection uses the
 filesystem at generation time; glob patterns and unknown paths are treated as
 bare patterns (no `/**` suffix for globs, `/**` added for unknown paths).
 
+## Sandbox Key Mapping
+
+Claude Code's `sandbox` section has 17 configurable keys. twsrt manages a subset of them
+(sourced from `.srt-settings.json`) and never touches the rest:
+
+| Claude Code Key | SRT Source | Status |
+|---|---|---|
+| `sandbox.network.allowedDomains` | `network.allowedDomains` | **Managed** |
+| `sandbox.network.deniedDomains` | `network.deniedDomains` | **Managed** |
+| `sandbox.network.allowLocalBinding` | `network.allowLocalBinding` | **Managed** (pass-through) |
+| `sandbox.network.allowUnixSockets` | `network.allowUnixSockets` | **Managed** (pass-through) |
+| `sandbox.network.allowAllUnixSockets` | `network.allowAllUnixSockets` | **Managed** (pass-through) |
+| `sandbox.network.httpProxyPort` | `network.httpProxyPort` | **Managed** (pass-through) |
+| `sandbox.network.socksProxyPort` | `network.socksProxyPort` | **Managed** (pass-through) |
+| `sandbox.filesystem.allowWrite` | `filesystem.allowWrite` | **Managed** (pass-through) |
+| `sandbox.filesystem.denyWrite` | `filesystem.denyWrite` | **Managed** (pass-through) |
+| `sandbox.filesystem.denyRead` | `filesystem.denyRead` | **Managed** (pass-through) |
+| `sandbox.enabled` | `enabled` | **Managed** (pass-through) |
+| `sandbox.enableWeakerNetworkIsolation` | `enableWeakerNetworkIsolation` | **Managed** (pass-through) |
+| `sandbox.enableWeakerNestedSandbox` | `enableWeakerNestedSandbox` | **Managed** (pass-through) |
+| `sandbox.ignoreViolations` | `ignoreViolations` | **Managed** (pass-through) |
+| `sandbox.excludedCommands` | *(no SRT source)* | **Claude-only** — never generated, never removed |
+| `sandbox.autoAllowBashIfSandboxed` | *(no SRT source)* | **Claude-only** — never generated, never removed |
+| `sandbox.allowUnsandboxedCommands` | *(no SRT source)* | **Claude-only** — never generated, never removed |
+
+**Pass-through** keys are copied verbatim from SRT to Claude settings without transformation.
+If a key is absent from SRT, it is omitted from generated output (never set to a default).
+
+**Claude-only** keys exist only in Claude Code's schema and have no SRT equivalent.
+`twsrt generate` never creates them, and `twsrt generate --write` preserves them via
+selective merge. They are invisible to twsrt.
+
 ## Merge Behavior (`--write`)
 
 When writing to `~/.claude/settings.json`, twsrt uses **selective merge** — it does not
@@ -227,6 +261,8 @@ overwrite the entire file. Each section has its own merge strategy:
 | `permissions.ask` | **Fully replaced** | All existing ask entries removed, replaced with generated ones |
 | `permissions.allow` | **Selective merge** | Only `WebFetch(domain:...)` entries replaced; everything else preserved |
 | `sandbox.network` | **Key-by-key merge** | `dict.update()` — generated keys overwrite, unmanaged keys preserved |
+| `sandbox.filesystem` | **Key-by-key merge** | `dict.update()` — generated keys overwrite, unmanaged keys preserved |
+| `sandbox.*` (top-level) | **Key-by-key merge** | `enabled`, `enableWeaker*`, `ignoreViolations` overwrite; Claude-only keys preserved |
 | `hooks` | **Preserved** | Untouched |
 | `additionalDirectories` | **Preserved** | Untouched |
 | All other keys | **Preserved** | Untouched |

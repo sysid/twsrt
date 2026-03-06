@@ -50,10 +50,12 @@ class SecurityRule:
 
 @dataclass
 class SrtResult:
-    """Result from parsing SRT settings: rules + pass-through network config."""
+    """Result from parsing SRT settings: rules + pass-through config."""
 
     rules: list[SecurityRule]
     network_config: dict[str, Any] = field(default_factory=dict)
+    filesystem_config: dict[str, Any] = field(default_factory=dict)
+    sandbox_config: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -69,6 +71,8 @@ class AppConfig:
     )
     copilot_output_path: Path | None = None
     network_config: dict[str, Any] = field(default_factory=dict)
+    filesystem_config: dict[str, Any] = field(default_factory=dict)
+    sandbox_config: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
