@@ -74,7 +74,7 @@ class AppConfig:
         default_factory=lambda: Path("~/.config/twsrt/bash-rules.json").expanduser()
     )
     claude_settings_path: Path = field(
-        default_factory=lambda: Path("~/.claude/settings.json").expanduser()
+        default_factory=lambda: Path("~/.claude/settings.full.json").expanduser()
     )
     copilot_output_path: Path | None = None
     claude_yolo_path: Path | None = None
@@ -83,6 +83,11 @@ class AppConfig:
     filesystem_config: dict[str, Any] = field(default_factory=dict)
     sandbox_config: dict[str, Any] = field(default_factory=dict)
     yolo: bool = False
+
+    @property
+    def symlink_anchor(self) -> Path:
+        """The fixed path Claude Code reads — always settings.json in the target dir."""
+        return self.claude_settings_path.parent / "settings.json"
 
 
 @dataclass

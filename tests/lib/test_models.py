@@ -115,8 +115,17 @@ class TestAppConfig:
         config = AppConfig()
         assert str(config.srt_path).endswith(".srt-settings.json")
         assert str(config.bash_rules_path).endswith("bash-rules.json")
-        assert str(config.claude_settings_path).endswith("settings.json")
+        assert str(config.claude_settings_path).endswith("settings.full.json")
         assert config.copilot_output_path is None
+
+    def test_symlink_anchor_derived_from_claude_settings_path(self) -> None:
+        config = AppConfig()
+        assert str(config.symlink_anchor).endswith("settings.json")
+        assert config.symlink_anchor.parent == config.claude_settings_path.parent
+
+    def test_symlink_anchor_follows_custom_path(self) -> None:
+        config = AppConfig(claude_settings_path=Path("/custom/dir/settings.full.json"))
+        assert config.symlink_anchor == Path("/custom/dir/settings.json")
 
     def test_tilde_expansion(self) -> None:
         config = AppConfig()
