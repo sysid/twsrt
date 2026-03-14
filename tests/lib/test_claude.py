@@ -711,6 +711,7 @@ class TestSelectiveMerge:
         assert fs["denyRead"] == ["~/.ssh"]
         assert fs["customKey"] == "preserved"
 
+
 class TestClaudeYoloGeneration:
     """YOLO mode: deny-only permissions, no ask, keep allow (WebFetch)."""
 
@@ -778,7 +779,6 @@ class TestClaudeYoloGeneration:
         deny = output["permissions"]["deny"]
         assert "Read(**/.aws)" in deny
         assert "Write(**/.env)" in deny
-
 
     def test_sandbox_toplevel_keys_merged(self, tmp_path: Path) -> None:
         """US4: Top-level sandbox keys merged via update, Claude-only keys preserved."""

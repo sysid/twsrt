@@ -65,20 +65,7 @@ Example for collaboration of the two layers:
 
 
 You then start your agent either with SRT builtin (e.g. claude-code, pi-mono via extenstion) or with `srt` as
-wrapper, e.g. copilot-cli.
-
-```bash
-srt -c "copilot \
-    --allow-tool 'shell(*)' \
-    --allow-tool 'read' \
-    --allow-tool 'edit' \
-    --allow-tool 'write' \
-    --deny-tool 'shell(rm)' \
-    --deny-tool 'shell(rmdir)' \
-    --deny-tool 'shell(dd)' \
-    --deny-tool 'shell(mkfs)' \
-    ...
-```
+wrapper.
 
 For the full security analysis and threat model see [SECURITY_CONCEPT.md](SECURITY_CONCEPT.md).
 
@@ -96,67 +83,54 @@ It generates security configurations for:
 
 **Key invariant**: Canonical source files, edited by user. 
 
-### Installation
-
-```bash
-pip install twsrt
-```
 
 ### Usage
 
-#### Initialize config directory
-
 ```bash
+pip install twsrt
+
+#### Initialize config directory
 twsrt init                    # Creates ~/.config/twsrt/ with config.toml + bash-rules.json
 twsrt init --force            # Overwrite existing files
-```
 
 #### Generate agent configs
-
-```bash
 twsrt generate claude         # Print Claude Code permissions to stdout
 twsrt generate copilot        # Print Copilot CLI flags to stdout
 twsrt generate                # Generate for all agents
 
 twsrt generate claude --write # Write to settings.full.json, symlink settings.json → it
 twsrt generate claude -n -w   # Dry run: show what would be written
-```
-
-#### YOLO mode
-
-YOLO mode generates deny-only configs — no `ask` rules. Use this with Claude's
-`--dangerously-skip-permissions` or Copilot's `--yolo` (`--allow-all`) flag.
-Deny rules still override the permissive mode in both agents.
-
-```bash
-twsrt generate --yolo claude         # Claude: JSON with permissions.deny only (no ask key)
-twsrt generate --yolo copilot        # Copilot: --yolo flag + --deny-tool/--deny-url only
-twsrt generate --yolo claude --write # Write to settings.yolo.json (selective merge)
-
-twsrt diff --yolo claude             # Compare against settings.yolo.json
-twsrt diff --yolo                    # Check all yolo configs
-```
-
-Target files default to inserting `.yolo` before the extension (e.g.
-`settings.full.json` → `settings.full.yolo.json`). Override with explicit paths in
-`config.toml` (see [Configuration](#configuration)).
 
 #### Edit canonical sources
-
-```bash
 twsrt edit srt                # Open ~/.srt-settings.json in $EDITOR
 twsrt edit bash               # Open ~/.config/twsrt/bash-rules.json in $EDITOR
 twsrt edit                    # Show available sources
-```
 
 #### Detect configuration drift
-
-```bash
 twsrt diff claude             # Compare generated vs existing target file
 twsrt diff                    # Check all agents
+twsrt diff --yolo             # Compare against yolo-specific config files
 ```
 
 Exit codes: `0` = no drift, `1` = drift detected, `2` = missing file.
+
+`diff` compares a **freshly generated config** (from your current SRT + bash rule sources)
+against the **existing agent config file on disk**:
+
+```
+  Canonical sources                          Agent config on disk
+  (SRT rules + bash rules)                   (e.g. settings.full.json)
+          |                                           |
+          v                                           v
+    [ generate in memory ]  ──── compare ────  [ read from disk ]
+          |                                           |
+          +--- missing: in generated but not on disk (rules not yet applied)
+          +--- extra:   on disk but not in generated  (out-of-band edits)
+```
+
+This detects two kinds of drift: unapplied rule changes (you edited SRT/bash rules
+but forgot to `generate --write`) and out-of-band modifications (someone edited the
+agent config directly).
 
 #### Typical workflow
 
@@ -230,6 +204,8 @@ With `-w`, twsrt writes to `settings.full.json` and creates a symlink from
 
 If `settings.json` is a regular file (first run / migration), it is moved to `settings.full.json`
 automatically.
+
+You run your agent either with SRT builtin (e.g. claude-code) or via extensions, e.g. pi-mono)
 
 Sections twsrt does **not** manage (hooks, additionalDirectories,
 MCP allows, blanket tool allows, etc.) are preserved untouched.

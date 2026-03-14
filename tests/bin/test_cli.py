@@ -633,9 +633,7 @@ class TestYoloGenerateClaude:
         srt = {"network": {"allowedDomains": ["github.com"]}}
         bash_rules = {"deny": ["rm", "sudo"], "ask": ["git push", "pip install"]}
         config = _make_config(tmp_path, srt, bash_rules)
-        result = runner.invoke(
-            app, ["-c", str(config), "generate", "--yolo", "claude"]
-        )
+        result = runner.invoke(app, ["-c", str(config), "generate", "--yolo", "claude"])
         assert result.exit_code == 0, result.output
         output = json.loads(result.output)
         assert "ask" not in output["permissions"]
@@ -751,9 +749,7 @@ class TestYoloGenerateAll:
         srt = {"network": {"allowedDomains": ["github.com"]}}
         bash_rules = {"deny": ["rm"], "ask": ["git push"]}
         config = _make_config(tmp_path, srt, bash_rules)
-        result = runner.invoke(
-            app, ["-c", str(config), "generate", "--yolo"]
-        )
+        result = runner.invoke(app, ["-c", str(config), "generate", "--yolo"])
         assert result.exit_code == 0, result.output
         # Both agent headers present
         assert "--- claude ---" in result.output
@@ -810,7 +806,9 @@ class TestYoloGenerateCopilot:
             app, ["-c", str(config), "generate", "--yolo", "copilot"]
         )
         assert result.exit_code == 0, result.output
-        lines = [line.strip() for line in result.output.strip().split("\n") if line.strip()]
+        lines = [
+            line.strip() for line in result.output.strip().split("\n") if line.strip()
+        ]
         assert lines[0].startswith("--yolo")
         # No --allow-url or --allow-tool
         assert "--allow-url" not in result.output
@@ -1003,7 +1001,13 @@ class TestSymlinkDiffCommand:
 
         # Write matching content to target (settings.full.json)
         from twsrt.lib.claude import ClaudeGenerator
-        from twsrt.lib.models import AppConfig as AC, SecurityRule, Scope, Action, Source
+        from twsrt.lib.models import (
+            AppConfig as AC,
+            SecurityRule,
+            Scope,
+            Action,
+            Source,
+        )
 
         gen = ClaudeGenerator()
         rules = [SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES)]
@@ -1025,7 +1029,13 @@ class TestSymlinkDiffCommand:
 
         # Write matching yolo content
         from twsrt.lib.claude import ClaudeGenerator
-        from twsrt.lib.models import AppConfig as AC, SecurityRule, Scope, Action, Source
+        from twsrt.lib.models import (
+            AppConfig as AC,
+            SecurityRule,
+            Scope,
+            Action,
+            Source,
+        )
 
         gen = ClaudeGenerator()
         rules = [
