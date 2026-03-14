@@ -11,7 +11,7 @@ from typing import Optional
 
 import typer
 
-from twsrt.lib.models import AppConfig
+from twsrt.lib.models import AppConfig, yolo_path
 
 __version__ = "0.3.1"
 
@@ -106,6 +106,9 @@ def generate(
     dry_run: bool = typer.Option(
         False, "--dry-run", "-n", help="Show what would be written"
     ),
+    yolo: bool = typer.Option(
+        False, "--yolo", help="YOLO mode: deny-only config, no ask rules"
+    ),
 ) -> None:
     """Generate agent-specific security config from canonical sources."""
     from twsrt.lib.agent import GENERATORS
@@ -127,6 +130,7 @@ def generate(
     config.network_config = srt_result.network_config
     config.filesystem_config = srt_result.filesystem_config
     config.sandbox_config = srt_result.sandbox_config
+    config.yolo = yolo
 
     if agent == "all":
         generators = list(GENERATORS.values())
@@ -144,7 +148,7 @@ def generate(
 
         if write and not dry_run:
             if gen.name == "claude":
-                target = config.claude_settings_path
+                target = _resolve_claude_target(config)
                 if target.exists():
                     generated = json.loads(output)
                     merged = selective_merge(target, generated)
@@ -154,7 +158,7 @@ def generate(
                     target.write_text(output + "\n")
                 typer.echo(f"Wrote: {target}")
             elif gen.name == "copilot":
-                target = config.copilot_output_path
+                target = _resolve_copilot_target(config)
                 if target:
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_text(output + "\n")
@@ -164,9 +168,11 @@ def generate(
         elif dry_run and write:
             typer.echo(f"--- Dry run: {gen.name} ---")
             if gen.name == "claude":
-                typer.echo(f"Would write to: {config.claude_settings_path}")
-            elif gen.name == "copilot" and config.copilot_output_path:
-                typer.echo(f"Would write to: {config.copilot_output_path}")
+                typer.echo(f"Would write to: {_resolve_claude_target(config)}")
+            elif gen.name == "copilot":
+                target = _resolve_copilot_target(config)
+                if target:
+                    typer.echo(f"Would write to: {target}")
             typer.echo(output)
         else:
             if len(generators) > 1:
@@ -174,12 +180,30 @@ def generate(
             typer.echo(output)
 
 
-def _get_target_path(gen_name: str, config: AppConfig) -> Path | None:
-    """Resolve target file path for an agent."""
+def _resolve_claude_target(config: AppConfig) -> Path:
+    """Resolve Claude target path: yolo path in yolo mode, standard otherwise."""
+    if config.yolo:
+        return config.claude_yolo_path or yolo_path(config.claude_settings_path)
+    return config.claude_settings_path
+
+
+def _resolve_copilot_target(config: AppConfig) -> Path | None:
+    """Resolve Copilot target path: yolo path in yolo mode, standard otherwise."""
+    if config.yolo:
+        if config.copilot_yolo_path:
+            return config.copilot_yolo_path
+        if config.copilot_output_path:
+            return yolo_path(config.copilot_output_path)
+        return None
+    return config.copilot_output_path
+
+
+def _resolve_diff_target(gen_name: str, config: AppConfig) -> Path | None:
+    """Resolve target path for diff: yolo path in yolo mode, standard otherwise."""
     if gen_name == "claude":
-        return config.claude_settings_path
+        return _resolve_claude_target(config)
     elif gen_name == "copilot":
-        return config.copilot_output_path
+        return _resolve_copilot_target(config)
     return None
 
 
@@ -187,6 +211,9 @@ def _get_target_path(gen_name: str, config: AppConfig) -> Path | None:
 def diff(
     ctx: typer.Context,
     agent: str = typer.Argument("all", help="Target agent: claude, copilot, or all"),
+    yolo: bool = typer.Option(
+        False, "--yolo", help="YOLO mode: diff against yolo-specific config files"
+    ),
 ) -> None:
     """Compare generated config against existing agent config files."""
     from twsrt.lib.agent import GENERATORS
@@ -207,6 +234,7 @@ def diff(
     config.network_config = srt_result.network_config
     config.filesystem_config = srt_result.filesystem_config
     config.sandbox_config = srt_result.sandbox_config
+    config.yolo = yolo
 
     if agent == "all":
         generators = list(GENERATORS.values())
@@ -221,7 +249,7 @@ def diff(
 
     has_drift = False
     for gen in generators:
-        target = _get_target_path(gen.name, config)
+        target = _resolve_diff_target(gen.name, config)
         if target is None or not target.exists():
             typer.echo(
                 f"Error: Target file not found for {gen.name}: {target}", err=True

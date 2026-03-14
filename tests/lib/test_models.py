@@ -1,5 +1,7 @@
 """Tests for models: SecurityRule, enums, AppConfig, DiffResult."""
 
+from pathlib import Path
+
 import pytest
 
 from twsrt.lib.models import (
@@ -140,3 +142,37 @@ class TestDiffResult:
     def test_no_drift(self) -> None:
         result = DiffResult(agent="copilot", missing=[], extra=[], matched=True)
         assert result.matched is True
+
+
+class TestYoloPath:
+    def test_json_extension(self) -> None:
+        from twsrt.lib.models import yolo_path
+
+        result = yolo_path(Path("/home/user/.claude/settings.json"))
+        assert result == Path("/home/user/.claude/settings.yolo.json")
+
+    def test_txt_extension(self) -> None:
+        from twsrt.lib.models import yolo_path
+
+        result = yolo_path(Path("copilot-flags.txt"))
+        assert result == Path("copilot-flags.yolo.txt")
+
+    def test_no_extension(self) -> None:
+        from twsrt.lib.models import yolo_path
+
+        result = yolo_path(Path("config"))
+        assert result == Path("config.yolo")
+
+
+class TestAppConfigYoloFields:
+    def test_yolo_defaults_to_false(self) -> None:
+        config = AppConfig()
+        assert config.yolo is False
+
+    def test_claude_yolo_path_defaults_to_none(self) -> None:
+        config = AppConfig()
+        assert config.claude_yolo_path is None
+
+    def test_copilot_yolo_path_defaults_to_none(self) -> None:
+        config = AppConfig()
+        assert config.copilot_yolo_path is None

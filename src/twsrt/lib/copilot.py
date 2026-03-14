@@ -20,6 +20,10 @@ class CopilotGenerator:
     def generate(self, rules: list[SecurityRule], config: AppConfig) -> str:
         """Generate Copilot CLI flags from security rules."""
         flags: list[str] = []
+
+        if config.yolo:
+            flags.append("--yolo")
+
         allow_write_seen = False
 
         for rule in rules:
@@ -27,25 +31,31 @@ class CopilotGenerator:
                 flags.append(f"--deny-tool 'shell({rule.pattern})'")
 
             elif rule.scope == Scope.EXECUTE and rule.action == Action.ASK:
-                # FR-012: lossy mapping — ask → deny-tool with warning
-                flags.append(f"--deny-tool 'shell({rule.pattern})'")
-                print(
-                    f"Warning: Bash ask rule '{rule.pattern}' mapped to "
-                    f"--deny-tool for copilot (no ask equivalent)",
-                    file=sys.stderr,
-                )
+                if config.yolo:
+                    # Yolo mode: skip ASK rules entirely (--yolo subsumes them)
+                    pass
+                else:
+                    # FR-012: lossy mapping — ask → deny-tool with warning
+                    flags.append(f"--deny-tool 'shell({rule.pattern})'")
+                    print(
+                        f"Warning: Bash ask rule '{rule.pattern}' mapped to "
+                        f"--deny-tool for copilot (no ask equivalent)",
+                        file=sys.stderr,
+                    )
 
             elif rule.scope == Scope.WRITE and rule.action == Action.ALLOW:
-                # FR-008: allowWrite → allow-tool flags (deduplicated)
-                if not allow_write_seen:
-                    allow_write_seen = True
-                    flags.append("--allow-tool 'shell(*)'")
-                    flags.append("--allow-tool 'read'")
-                    flags.append("--allow-tool 'edit'")
-                    flags.append("--allow-tool 'write'")
+                if not config.yolo:
+                    # FR-008: allowWrite → allow-tool flags (deduplicated)
+                    if not allow_write_seen:
+                        allow_write_seen = True
+                        flags.append("--allow-tool 'shell(*)'")
+                        flags.append("--allow-tool 'read'")
+                        flags.append("--allow-tool 'edit'")
+                        flags.append("--allow-tool 'write'")
 
             elif rule.scope == Scope.NETWORK and rule.action == Action.ALLOW:
-                flags.append(f"--allow-url '{rule.pattern}'")
+                if not config.yolo:
+                    flags.append(f"--allow-url '{rule.pattern}'")
 
             elif rule.scope == Scope.NETWORK and rule.action == Action.DENY:
                 flags.append(f"--deny-url '{rule.pattern}'")

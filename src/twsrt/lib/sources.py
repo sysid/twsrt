@@ -104,7 +104,9 @@ def read_srt(srt_path: Path) -> SrtResult:
     network_config = {k: network[k] for k in _NETWORK_CONFIG_KEYS if k in network}
 
     # Extract pass-through filesystem config keys
-    filesystem_config = {k: filesystem[k] for k in _FILESYSTEM_CONFIG_KEYS if k in filesystem}
+    filesystem_config = {
+        k: filesystem[k] for k in _FILESYSTEM_CONFIG_KEYS if k in filesystem
+    }
 
     # Extract pass-through top-level sandbox config keys
     sandbox_config = {k: data[k] for k in _SANDBOX_CONFIG_KEYS if k in data}

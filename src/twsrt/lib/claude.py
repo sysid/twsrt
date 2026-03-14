@@ -58,9 +58,10 @@ class ClaudeGenerator:
                 deny.append(f"Bash({rule.pattern} *)")
 
             elif rule.scope == Scope.EXECUTE and rule.action == Action.ASK:
-                # FR-011: Bash ask — bare command + wildcard
-                ask.append(f"Bash({rule.pattern})")
-                ask.append(f"Bash({rule.pattern} *)")
+                # FR-011: Bash ask — bare command + wildcard (skip in yolo mode)
+                if not config.yolo:
+                    ask.append(f"Bash({rule.pattern})")
+                    ask.append(f"Bash({rule.pattern} *)")
 
         network: dict = {"allowedDomains": domains}
         network.update(config.network_config)
@@ -72,12 +73,12 @@ class ClaudeGenerator:
 
         sandbox.update(config.sandbox_config)
 
+        permissions: dict = {"deny": deny, "allow": allow}
+        if not config.yolo:
+            permissions["ask"] = ask
+
         output = {
-            "permissions": {
-                "deny": deny,
-                "ask": ask,
-                "allow": allow,
-            },
+            "permissions": permissions,
             "sandbox": sandbox,
         }
         return json.dumps(output, indent=2)
@@ -220,7 +221,10 @@ def selective_merge(target: Path, generated: dict) -> dict:
     # Replace deny and ask fully
     existing.setdefault("permissions", {})
     existing["permissions"]["deny"] = generated["permissions"]["deny"]
-    existing["permissions"]["ask"] = generated["permissions"]["ask"]
+    if "ask" in generated["permissions"]:
+        existing["permissions"]["ask"] = generated["permissions"]["ask"]
+    else:
+        existing["permissions"].pop("ask", None)
 
     # Selective merge for allow: strip WebFetch entries, keep everything else
     existing_allow = existing["permissions"].get("allow", [])

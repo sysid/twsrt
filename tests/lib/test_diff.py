@@ -330,6 +330,97 @@ class TestClaudeSandboxConfigDrift:
         assert result.matched is True
 
 
+class TestClaudeYoloDiff:
+    """T021: Claude diff in yolo mode compares against yolo config."""
+
+    def test_yolo_diff_no_drift(self, tmp_path: Path) -> None:
+        """Matching yolo config → matched=True."""
+        gen = ClaudeGenerator()
+        config = AppConfig(yolo=True)
+        rules = [
+            SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
+            SecurityRule(Scope.EXECUTE, Action.ASK, "git push", Source.BASH_RULES),
+        ]
+        generated = json.loads(gen.generate(rules, config))
+        target = tmp_path / "settings.yolo.json"
+        target.write_text(json.dumps(generated))
+
+        result = gen.diff(rules, target, config)
+        assert result.matched is True
+
+    def test_yolo_diff_detects_deny_drift(self, tmp_path: Path) -> None:
+        """Missing deny rule in yolo config → drift detected."""
+        gen = ClaudeGenerator()
+        config = AppConfig(yolo=True)
+        rules = [
+            SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
+            SecurityRule(Scope.EXECUTE, Action.DENY, "sudo", Source.BASH_RULES),
+        ]
+        # Existing only has rm
+        existing = {
+            "permissions": {
+                "deny": ["Bash(rm)", "Bash(rm *)"],
+                "allow": [],
+            },
+            "sandbox": {"network": {"allowedDomains": []}},
+        }
+        target = tmp_path / "settings.yolo.json"
+        target.write_text(json.dumps(existing))
+
+        result = gen.diff(rules, target, config)
+        assert result.matched is False
+        assert any("sudo" in m for m in result.missing)
+
+    def test_yolo_diff_no_ask_comparison(self, tmp_path: Path) -> None:
+        """Yolo diff ignores ask section — no ask key in generated or target."""
+        gen = ClaudeGenerator()
+        config = AppConfig(yolo=True)
+        rules = [
+            SecurityRule(Scope.EXECUTE, Action.ASK, "git push", Source.BASH_RULES),
+            SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
+        ]
+        generated = json.loads(gen.generate(rules, config))
+        assert "ask" not in generated["permissions"]
+
+        target = tmp_path / "settings.yolo.json"
+        target.write_text(json.dumps(generated))
+
+        result = gen.diff(rules, target, config)
+        assert result.matched is True
+
+
+class TestCopilotYoloDiff:
+    """T022: Copilot diff in yolo mode compares against yolo config."""
+
+    def test_yolo_diff_no_drift(self, tmp_path: Path) -> None:
+        gen = CopilotGenerator()
+        config = AppConfig(yolo=True)
+        rules = [
+            SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
+        ]
+        output = gen.generate(rules, config)
+        target = tmp_path / "copilot-flags.yolo.txt"
+        target.write_text(output + "\n")
+
+        result = gen.diff(rules, target, config)
+        assert result.matched is True
+
+    def test_yolo_diff_detects_missing_deny(self, tmp_path: Path) -> None:
+        gen = CopilotGenerator()
+        config = AppConfig(yolo=True)
+        rules = [
+            SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
+            SecurityRule(Scope.EXECUTE, Action.DENY, "sudo", Source.BASH_RULES),
+        ]
+        # Target only has yolo + rm
+        target = tmp_path / "copilot-flags.yolo.txt"
+        target.write_text("--yolo \\\n--deny-tool 'shell(rm)' \\\n")
+
+        result = gen.diff(rules, target, config)
+        assert result.matched is False
+        assert "--deny-tool 'shell(sudo)'" in result.missing
+
+
 class TestCopilotDrift:
     def test_extra_flag_detected(self, tmp_path: Path) -> None:
         """Existing flags with extra --deny-tool not in bash-rules."""

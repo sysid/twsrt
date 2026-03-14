@@ -711,6 +711,75 @@ class TestSelectiveMerge:
         assert fs["denyRead"] == ["~/.ssh"]
         assert fs["customKey"] == "preserved"
 
+class TestClaudeYoloGeneration:
+    """YOLO mode: deny-only permissions, no ask, keep allow (WebFetch)."""
+
+    def test_yolo_output_has_deny_and_allow_but_no_ask(
+        self, gen: ClaudeGenerator, config: AppConfig
+    ) -> None:
+        """T007: yolo produces deny + allow, no ask key."""
+        config.yolo = True
+        rules = [
+            SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
+            SecurityRule(Scope.EXECUTE, Action.ASK, "git push", Source.BASH_RULES),
+            SecurityRule(Scope.NETWORK, Action.ALLOW, "github.com", Source.SRT_NETWORK),
+        ]
+        output = json.loads(gen.generate(rules, config))
+        assert "Bash(rm)" in output["permissions"]["deny"]
+        assert "Bash(rm *)" in output["permissions"]["deny"]
+        assert "ask" not in output["permissions"]
+        assert "WebFetch(domain:github.com)" in output["permissions"]["allow"]
+        assert output["sandbox"]["network"]["allowedDomains"] == ["github.com"]
+
+    def test_yolo_filters_ask_from_deny(
+        self, gen: ClaudeGenerator, config: AppConfig
+    ) -> None:
+        """T008: ASK-derived Bash entries absent from deny in yolo mode."""
+        config.yolo = True
+        rules = [
+            SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
+            SecurityRule(Scope.EXECUTE, Action.ASK, "git push", Source.BASH_RULES),
+            SecurityRule(Scope.EXECUTE, Action.ASK, "pip install", Source.BASH_RULES),
+        ]
+        output = json.loads(gen.generate(rules, config))
+        deny = output["permissions"]["deny"]
+        assert "Bash(rm)" in deny
+        assert "Bash(rm *)" in deny
+        assert "Bash(git push)" not in deny
+        assert "Bash(git push *)" not in deny
+        assert "Bash(pip install)" not in deny
+
+    def test_yolo_no_ask_rules_same_as_standard_minus_ask_key(
+        self, gen: ClaudeGenerator, config: AppConfig
+    ) -> None:
+        """T009: with no ASK rules, yolo output identical to standard except no ask key."""
+        rules = [
+            SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
+            SecurityRule(Scope.NETWORK, Action.ALLOW, "github.com", Source.SRT_NETWORK),
+        ]
+        standard = json.loads(gen.generate(rules, config))
+        config.yolo = True
+        yolo = json.loads(gen.generate(rules, config))
+        assert yolo["permissions"]["deny"] == standard["permissions"]["deny"]
+        assert yolo["permissions"]["allow"] == standard["permissions"]["allow"]
+        assert "ask" not in yolo["permissions"]
+        assert yolo["sandbox"] == standard["sandbox"]
+
+    def test_yolo_preserves_srt_deny_rules(
+        self, gen: ClaudeGenerator, config: AppConfig
+    ) -> None:
+        """SRT-derived deny rules (READ/DENY, WRITE/DENY) preserved in yolo mode."""
+        config.yolo = True
+        rules = [
+            SecurityRule(Scope.READ, Action.DENY, "**/.aws", Source.SRT_FILESYSTEM),
+            SecurityRule(Scope.WRITE, Action.DENY, "**/.env", Source.SRT_FILESYSTEM),
+        ]
+        output = json.loads(gen.generate(rules, config))
+        deny = output["permissions"]["deny"]
+        assert "Read(**/.aws)" in deny
+        assert "Write(**/.env)" in deny
+
+
     def test_sandbox_toplevel_keys_merged(self, tmp_path: Path) -> None:
         """US4: Top-level sandbox keys merged via update, Claude-only keys preserved."""
         existing = {

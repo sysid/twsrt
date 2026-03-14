@@ -35,6 +35,17 @@ def load_config(config_path: Path) -> AppConfig:
         else None
     )
 
+    claude_yolo_path = (
+        Path(targets["claude_settings_yolo"]).expanduser()
+        if "claude_settings_yolo" in targets
+        else None
+    )
+    copilot_yolo_path = (
+        Path(targets["copilot_output_yolo"]).expanduser()
+        if "copilot_output_yolo" in targets
+        else None
+    )
+
     config = AppConfig()
     if srt_path is not None:
         config.srt_path = srt_path
@@ -44,5 +55,9 @@ def load_config(config_path: Path) -> AppConfig:
         config.claude_settings_path = claude_settings_path
     if copilot_output_path is not None:
         config.copilot_output_path = copilot_output_path
+    if claude_yolo_path is not None:
+        config.claude_yolo_path = claude_yolo_path
+    if copilot_yolo_path is not None:
+        config.copilot_yolo_path = copilot_yolo_path
 
     return config

@@ -58,6 +58,13 @@ class SrtResult:
     sandbox_config: dict[str, Any] = field(default_factory=dict)
 
 
+def yolo_path(original: Path) -> Path:
+    """Derive a yolo variant path by inserting '.yolo' before the file extension."""
+    if original.suffix:
+        return original.with_suffix(f".yolo{original.suffix}")
+    return original.with_name(f"{original.name}.yolo")
+
+
 @dataclass
 class AppConfig:
     srt_path: Path = field(
@@ -70,9 +77,12 @@ class AppConfig:
         default_factory=lambda: Path("~/.claude/settings.json").expanduser()
     )
     copilot_output_path: Path | None = None
+    claude_yolo_path: Path | None = None
+    copilot_yolo_path: Path | None = None
     network_config: dict[str, Any] = field(default_factory=dict)
     filesystem_config: dict[str, Any] = field(default_factory=dict)
     sandbox_config: dict[str, Any] = field(default_factory=dict)
+    yolo: bool = False
 
 
 @dataclass

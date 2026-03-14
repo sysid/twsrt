@@ -177,3 +177,68 @@ class TestCopilotLossyMapping:
         assert (
             "no ask equivalent" in captured.err.lower() or "ask" in captured.err.lower()
         )
+
+
+class TestCopilotYoloGeneration:
+    """T013-T015: Copilot YOLO mode generates --yolo + deny-only flags."""
+
+    def test_yolo_output_starts_with_yolo_flag(
+        self, gen: CopilotGenerator, config: AppConfig
+    ) -> None:
+        """T013: yolo output starts with --yolo, has --deny-tool for DENY only, no --allow-*."""
+        config.yolo = True
+        rules = [
+            SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
+            SecurityRule(Scope.EXECUTE, Action.ASK, "git push", Source.BASH_RULES),
+            SecurityRule(Scope.WRITE, Action.ALLOW, ".", Source.SRT_FILESYSTEM),
+            SecurityRule(Scope.NETWORK, Action.ALLOW, "github.com", Source.SRT_NETWORK),
+        ]
+        output = gen.generate(rules, config)
+        lines = [line.strip() for line in output.strip().split("\n") if line.strip()]
+
+        # First line must be --yolo
+        assert lines[0].startswith("--yolo")
+
+        # DENY rule present
+        assert any("--deny-tool 'shell(rm)'" in line for line in lines)
+
+        # ASK rule absent (not mapped to --deny-tool in yolo mode)
+        assert not any("git push" in line for line in lines)
+
+        # No --allow-tool or --allow-url (subsumed by --yolo)
+        assert not any("--allow-tool" in line for line in lines)
+        assert not any("--allow-url" in line for line in lines)
+
+    def test_yolo_includes_deny_url(
+        self, gen: CopilotGenerator, config: AppConfig
+    ) -> None:
+        """T014: yolo mode includes --deny-url for NETWORK/DENY rules."""
+        config.yolo = True
+        rules = [
+            SecurityRule(Scope.NETWORK, Action.DENY, "evil.com", Source.SRT_NETWORK),
+            SecurityRule(Scope.NETWORK, Action.ALLOW, "github.com", Source.SRT_NETWORK),
+        ]
+        output = gen.generate(rules, config)
+        assert "--deny-url 'evil.com'" in output
+        assert "--allow-url" not in output
+
+    def test_yolo_no_ask_rules_no_warning(
+        self,
+        gen: CopilotGenerator,
+        config: AppConfig,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """T015: yolo mode with no ASK rules emits no lossy-mapping warning."""
+        config.yolo = True
+        rules = [
+            SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
+        ]
+        output = gen.generate(rules, config)
+        captured = capsys.readouterr()
+
+        # Should have --yolo flag and deny entries
+        assert "--yolo" in output
+        assert "--deny-tool 'shell(rm)'" in output
+
+        # No lossy mapping warning
+        assert captured.err == ""

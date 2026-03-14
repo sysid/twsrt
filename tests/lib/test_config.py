@@ -37,3 +37,32 @@ class TestLoadConfig:
         config = load_config(toml_file)
         assert "~" not in str(config.srt_path)
         assert "~" not in str(config.bash_rules_path)
+
+
+class TestYoloConfigLoading:
+    def test_yolo_paths_loaded_when_present(self, tmp_twsrt_dir: Path) -> None:
+        toml_file = tmp_twsrt_dir / "config.toml"
+        toml_file.write_text(
+            '[sources]\nsrt = "~/.srt-settings.json"\n'
+            'bash_rules = "~/.config/twsrt/bash-rules.json"\n'
+            "[targets]\n"
+            'claude_settings_yolo = "~/.claude/settings.yolo.json"\n'
+            'copilot_output_yolo = "~/.config/twsrt/copilot-flags.yolo.txt"\n'
+        )
+        config = load_config(toml_file)
+        assert config.claude_yolo_path is not None
+        assert str(config.claude_yolo_path).endswith("settings.yolo.json")
+        assert "~" not in str(config.claude_yolo_path)
+        assert config.copilot_yolo_path is not None
+        assert str(config.copilot_yolo_path).endswith("copilot-flags.yolo.txt")
+        assert "~" not in str(config.copilot_yolo_path)
+
+    def test_yolo_paths_none_when_absent(self, tmp_twsrt_dir: Path) -> None:
+        toml_file = tmp_twsrt_dir / "config.toml"
+        toml_file.write_text(
+            '[sources]\nsrt = "~/.srt-settings.json"\n'
+            'bash_rules = "~/.config/twsrt/bash-rules.json"\n'
+        )
+        config = load_config(toml_file)
+        assert config.claude_yolo_path is None
+        assert config.copilot_yolo_path is None
