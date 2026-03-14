@@ -7,26 +7,29 @@ Agent security configuration generator — translates canonical security rules i
 
 ## The Problem
 
+### Insufficient
+
 AI coding agents (Claude Code, Copilot CLI, etc.) each have their own permission model and
 configuration format. Maintaining security rules independently per agent leads to configuration
 drift, and coverage gaps.
 
-Meanwhile, Anthropic's [Sandbox Runtime Tool
+### Better
+Anthropic's [Sandbox Runtime Tool
 (SRT)](https://github.com/anthropic-experimental/sandbox-runtime) enforces OS-level restrictions
-(filesystem deny, network allowlists) for Bash commands via kernel sandboxing. But SRT cannot
+ for Bash commands via kernel sandboxing. But SRT cannot
 control an agent's built-in tools (Read, Write, Edit, WebFetch) — those run inside the agent's own
 process.
 
-## The Solution: Defense in Depth
+## Solution: Defense in Depth (Use Both)
 
-`twsrt` tries to bridge the gap. It reads the same SRT policy that enforces OS-level Bash
-restrictions and translates it into application-level rules for every agent's built-in tools:
+`twsrt` bridges the gap. It reads the **same SRT policy** that enforces OS-level Bash
+restrictions and translates it into application-level rules for the agent's built-in tools:
 
 ```
                 CANONICAL SOURCES (human-maintained)
                 ====================================
-                ~/.srt-settings.json        — OS-level sandbox rules
-                ~/.config/twsrt/bash-rules.json — command deny/ask rules
+                ~/.srt-settings.json        — OS-level sandbox rules (SRT)
+                ~/.config/twsrt/bash-rules.json — APP-level deny/ask rules
                           |
                           v
                 +-----------------+
@@ -37,7 +40,8 @@ restrictions and translates it into application-level rules for every agent's bu
             +------------+------------+
             v            v            v
      Claude Code    Copilot CLI    (future agents)
-     settings.json  --flag args
+     settings.full.json  --flag args
+     (symlinked from settings.json)
 
                 ENFORCEMENT LAYERS
                 ==================
@@ -45,9 +49,12 @@ restrictions and translates it into application-level rules for every agent's bu
      Layer 2 (App): Agent permissions — tool-level deny/ask (all tools)
 ```
 
-This gives you **two layers** for the most dangerous attack vector (Bash commands accessing
-credentials or network) and **one consistent layer** for built-in tools — all generated from a
+This gives **two layers** for the most dangerous attack vector (Bash commands accessing
+credentials or network) and **one consistent layer** for built-in tools — generated from a
 single source of truth.
+
+Example for collaboration of the two layers:
+
 
 | Access Path | SRT (Layer 1) | Agent Permissions (Layer 2) | Depth |
 |---|---|---|---|
@@ -79,23 +86,19 @@ For the full security analysis and threat model see [SECURITY_CONCEPT.md](SECURI
 
 `twsrt` reads two canonical sources:
 
-- **SRT settings** (`~/.srt-settings.json`) — filesystem read/write deny rules, write allow rules, network domain allowlists
-- **Bash rules** (`~/.config/twsrt/bash-rules.json`) — command deny/ask rules for Bash execution
+- **SRT settings** (`~/.srt-settings.json`) — OS-level enforced sandbox rules
+- **Bash rules** (`~/.config/twsrt/bash-rules.json`) — APP-level enforced deny/ask rules for Bash tool execution
 
 It generates security configurations for:
 
-- **Claude Code** (`~/.claude/settings.json`) — permissions.deny, permissions.ask, permissions.allow, sandbox.network
+- **Claude Code** (`~/.claude/settings.full.json`, symlinked from `settings.json`) — permissions.deny, permissions.ask, permissions.allow, sandbox.network
 - **Copilot CLI** — `--allow-tool` and `--deny-tool` flag snippets
 
-**Key invariant**: Source files are never written by twsrt. Target managed sections are never hand-edited.
+**Key invariant**: Canonical source files, edited by user. 
 
 ### Installation
 
 ```bash
-# Install as editable uv tool
-make install
-
-# Or via pip
 pip install twsrt
 ```
 
@@ -115,7 +118,7 @@ twsrt generate claude         # Print Claude Code permissions to stdout
 twsrt generate copilot        # Print Copilot CLI flags to stdout
 twsrt generate                # Generate for all agents
 
-twsrt generate claude --write # Write to ~/.claude/settings.json (selective merge)
+twsrt generate claude --write # Write to settings.full.json, symlink settings.json → it
 twsrt generate claude -n -w   # Dry run: show what would be written
 ```
 
@@ -135,7 +138,7 @@ twsrt diff --yolo                    # Check all yolo configs
 ```
 
 Target files default to inserting `.yolo` before the extension (e.g.
-`settings.json` → `settings.yolo.json`). Override with explicit paths in
+`settings.full.json` → `settings.full.yolo.json`). Override with explicit paths in
 `config.toml` (see [Configuration](#configuration)).
 
 #### Edit canonical sources
@@ -149,7 +152,7 @@ twsrt edit                    # Show available sources
 #### Detect configuration drift
 
 ```bash
-twsrt diff claude             # Compare generated vs existing settings.json
+twsrt diff claude             # Compare generated vs existing target file
 twsrt diff                    # Check all agents
 ```
 
@@ -168,7 +171,6 @@ twsrt diff claude             # Verify: exit 0 = no drift
 ## Copilot Configuration (`generate copilot -w`)
 
 **Target file**: `copilot_output` from `config.toml` (stdout if omitted)
-**Write behavior**: Full overwrite of target file
 
 Copilot has no settings file — it uses CLI flags. `twsrt generate copilot` produces a
 line-continuation block you paste into your launch command:
@@ -184,15 +186,14 @@ line-continuation block you paste into your launch command:
 --allow-url '*.github.com' \
 ```
 
-With `-w` the entire target file is replaced — there is no merge logic.
-
 **Lossy mappings**: Copilot has no `ask` equivalent. Bash ask rules are mapped to
 `--deny-tool` with a stderr warning. `allowWrite` rules emit `--allow-tool` flags
 (shell, read, edit, write). Network deny rules emit `--deny-url`.
 
 **YOLO mode** (`generate --yolo copilot`): Outputs `--yolo` as first flag, followed
-by `--deny-tool` and `--deny-url` only. No `--allow-*` flags (subsumed by `--yolo`),
-no ASK-to-deny mapping (no warning). Deny rules take precedence over `--yolo`:
+by `--deny-tool` and `--deny-url` only. 
+
+Deny rules take precedence over `--yolo`:
 
 ```
 --yolo \
@@ -201,24 +202,47 @@ no ASK-to-deny mapping (no warning). Deny rules take precedence over `--yolo`:
 --deny-url 'evil.com' \
 ```
 
+Run copilot with sandbox `srt` as wrapper:
+
+```bash
+srt -c "copilot \
+    --allow-tool 'shell(*)' \
+    --allow-tool 'read' \
+    --allow-tool 'edit' \
+    --allow-tool 'write' \
+    --deny-tool 'shell(rm)' \
+    --deny-tool 'shell(rmdir)' \
+    --deny-tool 'shell(dd)' \
+    --deny-tool 'shell(mkfs)' \
+    ...
+```
+
 ## Claude Configuration (`generate claude -w`)
 
-**Target file**: `~/.claude/settings.json`
-**Write behavior**: Selective merge — twsrt owns specific sections and preserves everything else
+**Target file**: `~/.claude/settings.full.json` (configured via `claude_settings` in config.toml)
 
-With `-w`, twsrt reads the existing `settings.json`, updates only the sections it manages,
-and writes the result back. Sections it does **not** manage (hooks, additionalDirectories,
+**Symlink**: `~/.claude/settings.json` → `settings.full.json` (created/updated automatically)
+
+**Write behavior**: Selective merge — `twsrt` owns only specific sections and preserves everything else
+
+With `-w`, twsrt writes to `settings.full.json` and creates a symlink from
+`settings.json` to the target. 
+
+If `settings.json` is a regular
+file (first run / migration), it is moved to `settings.full.json` automatically.
+
+Sections twsrt does **not** manage (hooks, additionalDirectories,
 MCP allows, blanket tool allows, etc.) are preserved untouched.
 
 ### Merge strategy per section
 
 | Section | Strategy | Detail |
 |---|---|---|
-| `permissions.deny` | **Fully replaced** | All existing deny entries removed, replaced with generated ones |
-| `permissions.ask` | **Fully replaced** | All existing ask entries removed, replaced with generated ones |
-| `permissions.allow` | **Selective** | Only `WebFetch(domain:...)` entries replaced; all other allows preserved |
-| `sandbox.network` | **Key-by-key merge** | Generated keys overwrite, unmanaged keys preserved |
-| `sandbox.filesystem` | **Key-by-key merge** | Generated keys overwrite, unmanaged keys preserved |
+| `permissions.deny` | **Fully replaced** | |
+| `permissions.ask` | **Fully replaced** | |
+| `permissions.allow` | **Selective** | Only `WebFetch(domain:...)` entries replaced; existing allows preserved |
+| `sandbox.network` | **Key-by-key merge** | unmanaged keys preserved |
+| `sandbox.filesystem` | **Key-by-key merge** | unmanaged keys preserved |
 | `sandbox.*` (top-level) | **Key-by-key merge** | `enabled`, `enableWeaker*`, `ignoreViolations` overwrite; Claude-only keys preserved |
 | `hooks` | **Preserved** | Untouched |
 | `additionalDirectories` | **Preserved** | Untouched |
@@ -226,7 +250,7 @@ MCP allows, blanket tool allows, etc.) are preserved untouched.
 
 ### Example: before and after `generate claude -w`
 
-**Existing `~/.claude/settings.json`** (hand-maintained):
+**Existing `~/.claude/settings.full.json`** (hand-maintained):
 
 ```json
 {
@@ -317,8 +341,11 @@ bash deny `rm`/`sudo`, bash ask `git push`, denyRead `~/.aws`):
 ```
 
 **YOLO mode** (`generate --yolo claude -w`): Same selective merge, but the `permissions.ask`
-key is removed entirely. Deny rules still apply — Claude's `--dangerously-skip-permissions`
-does not override deny entries. Target defaults to `settings.yolo.json`.
+section is removed.
+Target defaults to `settings.yolo.json`.
+
+Deny rules still apply — Claude's `--dangerously-skip-permissions` does not override deny entries.
+
 
 **What changed** (twsrt-managed) vs **what didn't** (user-managed):
 
@@ -348,9 +375,9 @@ installed separately.
 
 ### `~/.srt-settings.json` (SRT — prerequisite)
 
-SRT configuration is the primary
-canonical source that defines OS-level enforcement boundaries. **twsrt** reads it to
-generate matching agent-level rules:
+SRT configuration is the canonical source that defines OS-level enforcement boundaries. 
+
+**twsrt** reads it to generate matching agent-level rules:
 
 ```json
 {
@@ -383,7 +410,7 @@ srt = "~/.srt-settings.json"
 bash_rules = "~/.config/twsrt/bash-rules.json"
 
 [targets]
-claude_settings = "~/.claude/settings.json"
+claude_settings = "~/.claude/settings.full.json"
 ```
 
 Full config with all optional keys:
@@ -394,7 +421,7 @@ srt = "~/.srt-settings.json"
 bash_rules = "~/.config/twsrt/bash-rules.json"
 
 [targets]
-claude_settings = "~/.claude/settings.json"
+claude_settings = "~/.claude/settings.full.json"
 copilot_output = "~/.config/twsrt/copilot-flags.txt"    # optional, stdout if omitted
 
 # YOLO target overrides (optional — defaults to inserting .yolo before extension)

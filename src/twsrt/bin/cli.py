@@ -62,7 +62,12 @@ srt = "~/.srt-settings.json"
 bash_rules = "~/.config/twsrt/bash-rules.json"
 
 [targets]
-claude_settings = "~/.claude/settings.json"
+claude_settings = "~/.claude/settings.full.json"
+# copilot_output = "~/.config/twsrt/copilot-flags.txt"    # optional, stdout if omitted
+
+# YOLO target overrides (optional — defaults to inserting .yolo before extension)
+# claude_settings_yolo = "~/.claude/settings.yolo.json"
+# copilot_output_yolo = "~/.config/twsrt/copilot-flags.yolo.txt"  # optional, stdout if omitted
 """
 
 # Default bash-rules.json content
@@ -149,6 +154,21 @@ def generate(
         if write and not dry_run:
             if gen.name == "claude":
                 target = _resolve_claude_target(config)
+                anchor = config.symlink_anchor
+
+                from twsrt.lib.symlink import (
+                    ensure_symlink,
+                    prepare_claude_target,
+                )
+
+                try:
+                    migration_msg = prepare_claude_target(anchor, target)
+                    if migration_msg:
+                        typer.echo(migration_msg)
+                except FileExistsError as e:
+                    typer.echo(str(e), err=True)
+                    raise typer.Exit(1)
+
                 if target.exists():
                     generated = json.loads(output)
                     merged = selective_merge(target, generated)
@@ -156,6 +176,9 @@ def generate(
                 else:
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_text(output + "\n")
+
+                ensure_symlink(target, anchor)
+
                 typer.echo(f"Wrote: {target}")
             elif gen.name == "copilot":
                 target = _resolve_copilot_target(config)

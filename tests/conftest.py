@@ -158,7 +158,7 @@ def config_toml_file(
     tmp_path: Path,
 ) -> Path:
     """Write sample config.toml with correct paths."""
-    claude_settings = tmp_path / ".claude" / "settings.json"
+    claude_settings = tmp_path / ".claude" / "settings.full.json"
     claude_settings.parent.mkdir(parents=True, exist_ok=True)
     claude_settings.write_text(json.dumps(SAMPLE_CLAUDE_SETTINGS, indent=2))
 
@@ -176,7 +176,7 @@ def config_toml_file(
 @pytest.fixture
 def claude_settings_file(tmp_path: Path) -> Path:
     """Write sample Claude settings.json to a temp file."""
-    p = tmp_path / ".claude" / "settings.json"
+    p = tmp_path / ".claude" / "settings.full.json"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(SAMPLE_CLAUDE_SETTINGS, indent=2))
     return p
