@@ -57,6 +57,18 @@ class TestYoloConfigLoading:
         assert str(config.copilot_yolo_path).endswith("copilot-flags.yolo.txt")
         assert "~" not in str(config.copilot_yolo_path)
 
+    def test_claude_settings_rejects_anchor_name(self, tmp_twsrt_dir: Path) -> None:
+        """claude_settings = 'settings.json' must be rejected — it's the symlink anchor."""
+        toml_file = tmp_twsrt_dir / "config.toml"
+        toml_file.write_text(
+            '[sources]\nsrt = "~/.srt-settings.json"\n'
+            'bash_rules = "~/.config/twsrt/bash-rules.json"\n'
+            "[targets]\n"
+            'claude_settings = "~/.claude/settings.json"\n'
+        )
+        with pytest.raises(ValueError, match="reserved.*symlink anchor"):
+            load_config(toml_file)
+
     def test_yolo_paths_none_when_absent(self, tmp_twsrt_dir: Path) -> None:
         toml_file = tmp_twsrt_dir / "config.toml"
         toml_file.write_text(

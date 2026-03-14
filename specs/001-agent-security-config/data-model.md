@@ -121,7 +121,7 @@ Application configuration loaded from `~/.config/twsrt/config.toml`.
 |-------|------|---------|-------------|
 | srt_path | `Path` | `~/.srt-settings.json` | Path to SRT settings |
 | bash_rules_path | `Path` | `~/.config/twsrt/bash-rules.json` | Path to Bash rules |
-| claude_settings_path | `Path` | `~/.claude/settings.json` | Claude target path |
+| claude_settings_path | `Path` | `~/.claude/settings.full.json` | Claude target path |
 | copilot_output_path | `Path \| None` | `None` (stdout) | Copilot output path |
 
 ### DiffResult
@@ -195,6 +195,6 @@ srt = "~/.srt-settings.json"
 bash_rules = "~/.config/twsrt/bash-rules.json"
 
 [targets]
-claude_settings = "~/.claude/settings.json"
+claude_settings = "~/.claude/settings.full.json"
 # copilot_output = "~/.config/twsrt/copilot-flags.txt"  # optional, stdout if omitted
 ```

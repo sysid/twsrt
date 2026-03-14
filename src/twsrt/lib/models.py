@@ -59,10 +59,17 @@ class SrtResult:
 
 
 def yolo_path(original: Path) -> Path:
-    """Derive a yolo variant path by inserting '.yolo' before the file extension."""
-    if original.suffix:
-        return original.with_suffix(f".yolo{original.suffix}")
-    return original.with_name(f"{original.name}.yolo")
+    """Derive a yolo variant path: replace all suffixes except the last with '.yolo'.
+
+    settings.full.json → settings.yolo.json
+    settings.json      → settings.yolo.json
+    copilot-flags.txt  → copilot-flags.yolo.txt
+    config             → config.yolo
+    """
+    if not original.suffix:
+        return original.with_name(f"{original.name}.yolo")
+    root_stem = original.name.removesuffix("".join(original.suffixes))
+    return original.with_name(f"{root_stem}.yolo{original.suffix}")
 
 
 @dataclass

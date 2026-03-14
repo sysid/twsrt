@@ -526,12 +526,12 @@ class TestSymlinkYoloGenerateClaude:
             app, ["-c", str(config), "generate", "--yolo", "claude", "--write"]
         )
         assert result.exit_code == 0, result.output
-        yolo_target = claude_dir / "settings.full.yolo.json"
+        yolo_target = claude_dir / "settings.yolo.json"
         assert yolo_target.exists()
         assert anchor.is_symlink()
         import os
 
-        assert os.readlink(str(anchor)) == "settings.full.yolo.json"
+        assert os.readlink(str(anchor)) == "settings.yolo.json"
         written = json.loads(yolo_target.read_text())
         assert "ask" not in written["permissions"]
 
@@ -545,7 +545,7 @@ class TestSymlinkYoloGenerateClaude:
         claude_dir.mkdir(parents=True, exist_ok=True)
         full_target = claude_dir / "settings.full.json"
         anchor = claude_dir / "settings.json"
-        yolo_target = claude_dir / "settings.full.yolo.json"
+        yolo_target = claude_dir / "settings.yolo.json"
 
         # Create regular settings.json
         existing = {
@@ -577,7 +577,7 @@ class TestSymlinkYoloGenerateClaude:
         claude_dir.mkdir(parents=True, exist_ok=True)
         full_target = claude_dir / "settings.full.json"
         anchor = claude_dir / "settings.json"
-        yolo_target = claude_dir / "settings.full.yolo.json"
+        yolo_target = claude_dir / "settings.yolo.json"
 
         anchor.write_text('{"anchor": true}')
         yolo_target.write_text('{"yolo": true}')
@@ -619,7 +619,7 @@ class TestSymlinkYoloGenerateClaude:
         assert anchor.is_symlink()
         import os
 
-        assert os.readlink(str(anchor)) == "settings.full.yolo.json"
+        assert os.readlink(str(anchor)) == "settings.yolo.json"
 
 
 # --- YOLO Mode Tests ---
@@ -650,7 +650,7 @@ class TestYoloGenerateClaude:
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
         settings_full = claude_dir / "settings.full.json"
-        yolo_settings_path = claude_dir / "settings.full.yolo.json"
+        yolo_settings_path = claude_dir / "settings.yolo.json"
         anchor = claude_dir / "settings.json"
 
         # Update config to include claude_settings target
@@ -670,7 +670,7 @@ class TestYoloGenerateClaude:
         assert anchor.is_symlink()
         import os
 
-        assert os.readlink(str(anchor)) == "settings.full.yolo.json"
+        assert os.readlink(str(anchor)) == "settings.yolo.json"
 
     def test_yolo_generate_claude_merges_into_existing_yolo_file(
         self, tmp_path: Path
@@ -683,7 +683,7 @@ class TestYoloGenerateClaude:
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
         settings_full = claude_dir / "settings.full.json"
-        yolo_settings_path = claude_dir / "settings.full.yolo.json"
+        yolo_settings_path = claude_dir / "settings.yolo.json"
 
         # Pre-populate yolo file with user-managed keys (hooks, custom allows)
         existing = {
@@ -782,7 +782,7 @@ class TestYoloGenerateAll:
         )
         assert result.exit_code == 0, result.output
 
-        yolo_settings = claude_dir / "settings.full.yolo.json"
+        yolo_settings = claude_dir / "settings.yolo.json"
         yolo_copilot = tmp_path / "copilot-flags.yolo.txt"
 
         assert yolo_settings.exists()

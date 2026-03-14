@@ -132,7 +132,7 @@ srt = "~/.srt-settings.json"
 bash_rules = "~/.config/twsrt/bash-rules.json"
 
 [targets]
-claude_settings = "~/.claude/settings.json"
+claude_settings = "~/.claude/settings.full.json"
 ```
 
 ## Error Messages

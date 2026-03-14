@@ -166,6 +166,13 @@ class TestYoloPath:
         result = yolo_path(Path("copilot-flags.txt"))
         assert result == Path("copilot-flags.yolo.txt")
 
+    def test_compound_extension(self) -> None:
+        """settings.full.json → settings.yolo.json (strip variant, keep final ext)."""
+        from twsrt.lib.models import yolo_path
+
+        result = yolo_path(Path("/home/user/.claude/settings.full.json"))
+        assert result == Path("/home/user/.claude/settings.yolo.json")
+
     def test_no_extension(self) -> None:
         from twsrt.lib.models import yolo_path
 
