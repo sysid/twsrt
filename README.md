@@ -220,12 +220,16 @@ srt -c "copilot \
 ## Claude Configuration (`generate claude -w`)
 
 **Target file**: `~/.claude/settings.full.json` (configured via `claude_settings` in config.toml)
+
 **Symlink**: `~/.claude/settings.json` → `settings.full.json` (created/updated automatically)
+
 **Write behavior**: Selective merge — `twsrt` owns only specific sections and preserves everything else
 
-With `-w`, twsrt writes to `settings.full.json` and creates an atomic symlink from
-`settings.json` (which Claude Code reads) to the target. If `settings.json` is a regular
-file (first run / migration), it is moved to `settings.full.json` automatically.
+With `-w`, twsrt writes to `settings.full.json` and creates a symlink from
+`settings.json` to the target. 
+
+If `settings.json` is a regular file (first run / migration), it is moved to `settings.full.json`
+automatically.
 
 Sections twsrt does **not** manage (hooks, additionalDirectories,
 MCP allows, blanket tool allows, etc.) are preserved untouched.
@@ -340,6 +344,8 @@ bash deny `rm`/`sudo`, bash ask `git push`, denyRead `~/.aws`):
 section is removed.
 
 Target defaults to `settings.yolo.json`.
+
+Deny rules still apply — Claude's `--dangerously-skip-permissions` does not override deny entries.
 
 **What changed** (twsrt-managed) vs **what didn't** (user-managed):
 
