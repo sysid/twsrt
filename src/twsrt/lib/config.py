@@ -46,7 +46,10 @@ def load_config(config_path: Path) -> AppConfig:
         else None
     )
 
-    if claude_settings_path is not None and claude_settings_path.name == "settings.json":
+    if (
+        claude_settings_path is not None
+        and claude_settings_path.name == "settings.json"
+    ):
         raise ValueError(
             "claude_settings must not be 'settings.json' — that path is reserved "
             "for the symlink anchor. Use 'settings.full.json' instead."

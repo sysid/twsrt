@@ -39,19 +39,17 @@ restrictions and translates it into application-level rules for the agent's buil
                          |
             +------------+------------+
             v            v            v
-     Claude Code    Copilot CLI    (future agents)
-     settings.full.json  --flag args
-     (symlinked from settings.json)
+     Claude Code    Copilot CLI    (tbd future agents)
+     settings.json  --flag args
 
                 ENFORCEMENT LAYERS
                 ==================
      Layer 1 (OS):  SRT sandbox — kernel-level deny (Bash only)
-     Layer 2 (App): Agent permissions — tool-level deny/ask (all tools)
+     Layer 2 (App): Agent permissions — agent-level deny/ask (all tools)
 ```
 
-This gives **two layers** for the most dangerous attack vector (Bash commands accessing
-credentials or network) and **one consistent layer** for built-in tools — generated from a
-single source of truth.
+This gives two layers of protection for the most dangerous attack vector (Bash commands accessing
+credentials or network) and one layer for built-in tools — **generated from a single source of truth**.
 
 Example for collaboration of the two layers:
 
@@ -64,22 +62,22 @@ Example for collaboration of the two layers:
 | `WebFetch(evil.com)` | Not covered | Tool-level allow check | One layer |
 
 
-You then start your agent either with SRT builtin (e.g. claude-code, pi-mono via extenstion) or with `srt` as
-wrapper.
-
 For the full security analysis and threat model see [SECURITY_CONCEPT.md](SECURITY_CONCEPT.md).
+
+For pi-mono solution see [twsrt](https://github.com/sysid/pi-extensions/tree/main/packages/sandbox).
 
 ## Overview
 
-`twsrt` reads two canonical sources:
+`twsrt` reads canonical rule configuration sources:
 
-- **SRT settings** (`~/.srt-settings.json`) — OS-level enforced sandbox rules
-- **Bash rules** (`~/.config/twsrt/bash-rules.json`) — APP-level enforced deny/ask rules for Bash tool execution
+1. **SRT settings** (`~/.srt-settings.json`) — OS-level enforced sandbox rules
+2. **Bash rules** (`~/.config/twsrt/bash-rules.json`) — APP-level enforced deny/ask rules for Bash tool execution
 
 It generates security configurations for:
 
-- **Claude Code** (`~/.claude/settings.full.json`, symlinked from `settings.json`) — permissions.deny, permissions.ask, permissions.allow, sandbox.network
-- **Copilot CLI** — `--allow-tool` and `--deny-tool` flag snippets
+- **Claude Code** (`~/.claude/settings.json` — permissions + sandbox configuration
+- **Copilot CLI** — `--allow-tool` and `--deny-tool` code snippets for used in calling
+  copilot
 
 **Key invariant**: Canonical source files, edited by user. 
 
@@ -144,10 +142,8 @@ twsrt diff claude             # Verify: exit 0 = no drift
 
 ## Copilot Configuration (`generate copilot -w`)
 
-**Target file**: `copilot_output` from `config.toml` (stdout if omitted)
-
 Copilot has no settings file — it uses CLI flags. `twsrt generate copilot` produces a
-line-continuation block you paste into your launch command:
+line-continuation code snippet you paste into your launch command:
 
 ```
 --allow-tool 'shell(*)' \
@@ -160,12 +156,16 @@ line-continuation block you paste into your launch command:
 --allow-url '*.github.com' \
 ```
 
-**Lossy mappings**: Copilot has no `ask` equivalent. Bash ask rules are mapped to
-`--deny-tool` with a stderr warning. `allowWrite` rules emit `--allow-tool` flags
+**Lossy mappings**: Copilot has no `ask` equivalent. So ask rules are conservatively mapped to
+`--deny-tool`. 
+
+`allowWrite` rules emit `--allow-tool` flags
 (shell, read, edit, write). Network deny rules emit `--deny-url`.
 
 **YOLO mode** (`generate --yolo copilot`): Outputs `--yolo` as first flag, followed
 by `--deny-tool` and `--deny-url` only. 
+
+ONLY USE THIS TOGETHER WITH SRT !!
 
 Deny rules take precedence over `--yolo`:
 
@@ -193,22 +193,20 @@ srt -c "copilot \
 
 ## Claude Configuration (`generate claude -w`)
 
-**Target file**: `~/.claude/settings.full.json` (configured via `claude_settings` in config.toml)
+**Target file**: `~/.claude/settings.full|yolo.json` (configured via `claude_settings` in config.toml)
 
-**Symlink**: `~/.claude/settings.json` → `settings.full.json` (created/updated automatically)
+**Symlink**: `~/.claude/settings.json` → `settings.full|yolo.json` (created/updated automatically)
 
-**Write behavior**: Selective merge — `twsrt` owns only specific sections and preserves everything else
-
-With `-w`, twsrt writes to `settings.full.json` and creates a symlink from
+With `-w`, twsrt writes to `settings.full|yolo.json` and creates a symlink from
 `settings.json` to the target. 
 
-If `settings.json` is a regular file (first run / migration), it is moved to `settings.full.json`
+If `settings.json` is a regular file (e.g. first run), it is moved to `settings.full|yolo.json`
 automatically.
 
-You run your agent either with SRT builtin (e.g. claude-code) or via extensions, e.g. pi-mono)
+You run your agent either with SRT builtin (e.g. claude-code) or via an extensions, e.g. pi-mono.
 
-Sections twsrt does **not** manage (hooks, additionalDirectories,
-MCP allows, blanket tool allows, etc.) are preserved untouched.
+**Selective merge**: `twsrt` updates only specific sections and preserves everything else:
+- hooks, additionalDirectories, MCP allows, blanket tool allows, etc. are untouched
 
 ### Merge strategy per section
 
@@ -347,13 +345,13 @@ Deny rules still apply — Claude's `--dangerously-skip-permissions` does not ov
 [SRT](https://github.com/anthropic-experimental/sandbox-runtime) is a dependency and needs to be
 installed separately.
 
-> GOTCHA: [sandbox write allowlist being hardcoded](https://github.com/anthropics/claude-code/issues/10377#issuecomment-3468689124)
+> GOTCHA: [sandbox write allowlist is hardcoded and currently cannot be managed in claude-code](https://github.com/anthropics/claude-code/issues/10377#issuecomment-3468689124)
 
 ### `~/.srt-settings.json` (SRT — prerequisite)
 
-SRT configuration is the canonical source that defines OS-level enforcement boundaries. 
+[SRT configuration](https://github.com/anthropic-experimental/sandbox-runtime?tab=readme-ov-file#configuration) is the canonical source that defines OS-level enforcement boundaries. 
 
-**twsrt** reads it to generate matching agent-level rules:
+**twsrt** reads it to generate equivalent agent-level rules:
 
 ```json
 {
