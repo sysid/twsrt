@@ -55,6 +55,10 @@ build: clean format  ## format and build
 publish:  ## publish to PyPI
 	uv run twine upload --verbose dist/*
 
+.PHONY: install-srt
+install-srt:  ## install Anthropic Sandbox Runtime globally via npm
+	npm install -g @anthropic-ai/sandbox-runtime
+
 .PHONY: install
 install:  ## install as uv tool
 	uv tool install -e .
