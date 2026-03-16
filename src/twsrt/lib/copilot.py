@@ -38,7 +38,7 @@ class CopilotGenerator:
                     # FR-012: lossy mapping — ask → deny-tool with warning
                     flags.append(f"--deny-tool 'shell({rule.pattern})'")
                     print(
-                        f"Warning: Bash ask rule '{rule.pattern}' mapped to "
+                        f"INFO: Bash ask rule '{rule.pattern}' mapped to "
                         f"--deny-tool for copilot (no ask equivalent)",
                         file=sys.stderr,
                     )
