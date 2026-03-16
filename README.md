@@ -62,6 +62,8 @@ Example for collaboration of the two layers:
 | `WebFetch(evil.com)` | Not covered | Tool-level allow check | One layer |
 
 
+![demo](./doc/demo.gif)
+
 For the full security analysis and threat model see [SECURITY_CONCEPT.md](SECURITY_CONCEPT.md).
 
 For pi-mono solution see [twsrt](https://github.com/sysid/pi-extensions/tree/main/packages/sandbox).
