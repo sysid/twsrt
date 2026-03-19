@@ -48,7 +48,7 @@ class CopilotGenerator:
                     # FR-008: allowWrite → allow-tool flags (deduplicated)
                     if not allow_write_seen:
                         allow_write_seen = True
-                        flags.append("--allow-tool 'shell()'")
+                        flags.append("--allow-tool 'shell'")
                         flags.append("--allow-tool 'read'")
                         flags.append("--allow-tool 'edit'")
                         flags.append("--allow-tool 'write'")

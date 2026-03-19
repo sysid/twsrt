@@ -37,7 +37,7 @@ class TestCopilotGeneration:
             SecurityRule(Scope.WRITE, Action.ALLOW, "/tmp", Source.SRT_FILESYSTEM),
         ]
         output = gen.generate(rules, config)
-        assert "--allow-tool 'shell()'" in output
+        assert "--allow-tool 'shell'" in output
         assert "--allow-tool 'read'" in output
         assert "--allow-tool 'edit'" in output
         assert "--allow-tool 'write'" in output
