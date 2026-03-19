@@ -13,7 +13,7 @@ import typer
 
 from twsrt.lib.models import AppConfig, yolo_path
 
-__version__ = "0.4.3"
+__version__ = "0.4.4"
 
 app = typer.Typer(
     name="twsrt",
