@@ -1,7 +1,6 @@
-<p align="center">
-  <img src="doc/logo_twsrt_300x300.png" alt="twsrt logo" width="300">
+<p align="left">
+  <img src="doc/twsrt-logo.png" width="300" />
 </p>
-
 
 Agent security configuration generator — translates canonical security rules into agent-specific configs.
 
@@ -9,18 +8,17 @@ Agent security configuration generator — translates canonical security rules i
 
 ### Insufficient
 
-AI coding agents (Claude Code, Copilot CLI, etc.) each have their own permission model and
+AI coding agents (Claude Code, Copilot CLI, PI, etc.) each have their own permission model and
 configuration format. Maintaining security rules independently per agent leads to configuration
 drift, and coverage gaps.
 
 ### Better
-Anthropic's [Sandbox Runtime Tool
-(SRT)](https://github.com/anthropic-experimental/sandbox-runtime) enforces OS-level restrictions
- for Bash commands via kernel sandboxing. But SRT cannot
+[Sandbox Runtime Improved (based on Anthrophic's srt)](https://github.com/sysid/sandbox-runtime-improved) enforces OS-level restrictions
+ for Bash commands via **kernel sandboxing**. However, `srti` cannot
 control an agent's built-in tools (Read, Write, Edit, WebFetch) — those run inside the agent's own
 process.
 
-## Solution: Defense in Depth (Use Both)
+## Solution: Defense in Depth
 
 `twsrt` bridges the gap. It reads the **same SRT policy** that enforces OS-level Bash
 restrictions and translates it into application-level rules for the agent's built-in tools:
@@ -42,6 +40,7 @@ restrictions and translates it into application-level rules for the agent's buil
      Claude Code    Copilot CLI    (tbd future agents)
      settings.json  --flag args
 
+
                 ENFORCEMENT LAYERS
                 ==================
      Layer 1 (OS):  SRT sandbox — kernel-level deny (Bash only)
@@ -49,7 +48,7 @@ restrictions and translates it into application-level rules for the agent's buil
 ```
 
 This gives two layers of protection for the most dangerous attack vector (Bash commands accessing
-credentials or network) and one layer for built-in tools — **generated from a single source of truth**.
+credentials or network) and one layer for built-in tools — generated from a **single source of truth**.
 
 Example for collaboration of the two layers:
 
@@ -345,7 +344,11 @@ Deny rules still apply — Claude's `--dangerously-skip-permissions` does not ov
 ## Configuration
 
 [SRT](https://github.com/anthropic-experimental/sandbox-runtime) is a dependency and needs to be
-installed separately.
+installed separately. The recommended fork with proxy and browser support:
+
+```bash
+npm install -g @sysid/sandbox-runtime-improved
+```
 
 > GOTCHA: [sandbox write allowlist is hardcoded and currently cannot be managed in claude-code](https://github.com/anthropics/claude-code/issues/10377#issuecomment-3468689124)
 
