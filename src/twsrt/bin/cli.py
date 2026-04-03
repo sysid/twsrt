@@ -68,6 +68,15 @@ claude_settings = "~/.claude/settings.full.json"
 # YOLO target overrides (optional — defaults to inserting .yolo before extension)
 # claude_settings_yolo = "~/.claude/settings.yolo.json"
 # copilot_output_yolo = "~/.config/twsrt/copilot-flags.yolo.txt"  # optional, stdout if omitted
+
+# Mode-specific sandbox overrides (applied after SRT values, take precedence)
+[sandbox_overrides.yolo]
+enabled = true
+autoAllowBashIfSandboxed = true
+allowUnsandboxedCommands = false
+
+[sandbox_overrides.full]
+enabled = false
 """
 
 # Default bash-rules.json content
@@ -136,6 +145,7 @@ def generate(
     config.filesystem_config = srt_result.filesystem_config
     config.sandbox_config = srt_result.sandbox_config
     config.yolo = yolo
+    config.apply_sandbox_overrides()
 
     if agent == "all":
         generators = list(GENERATORS.values())
@@ -258,6 +268,7 @@ def diff(
     config.filesystem_config = srt_result.filesystem_config
     config.sandbox_config = srt_result.sandbox_config
     config.yolo = yolo
+    config.apply_sandbox_overrides()
 
     if agent == "all":
         generators = list(GENERATORS.values())

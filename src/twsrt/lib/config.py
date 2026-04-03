@@ -55,6 +55,8 @@ def load_config(config_path: Path) -> AppConfig:
             "for the symlink anchor. Use 'settings.full.json' instead."
         )
 
+    sandbox_overrides = data.get("sandbox_overrides", {})
+
     config = AppConfig()
     if srt_path is not None:
         config.srt_path = srt_path
@@ -68,5 +70,7 @@ def load_config(config_path: Path) -> AppConfig:
         config.claude_yolo_path = claude_yolo_path
     if copilot_yolo_path is not None:
         config.copilot_yolo_path = copilot_yolo_path
+    if sandbox_overrides:
+        config.sandbox_overrides = sandbox_overrides
 
     return config

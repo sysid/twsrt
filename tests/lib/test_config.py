@@ -78,3 +78,56 @@ class TestYoloConfigLoading:
         config = load_config(toml_file)
         assert config.claude_yolo_path is None
         assert config.copilot_yolo_path is None
+
+
+class TestSandboxOverrides:
+    def test_sandbox_overrides_loaded(self, tmp_twsrt_dir: Path) -> None:
+        """sandbox_overrides sections are loaded from TOML."""
+        toml_file = tmp_twsrt_dir / "config.toml"
+        toml_file.write_text(
+            '[sources]\nsrt = "~/.srt-settings.json"\n'
+            'bash_rules = "~/.config/twsrt/bash-rules.json"\n'
+            "\n"
+            "[sandbox_overrides.yolo]\n"
+            "enabled = true\n"
+            "autoAllowBashIfSandboxed = true\n"
+            "allowUnsandboxedCommands = false\n"
+            "\n"
+            "[sandbox_overrides.full]\n"
+            "enabled = false\n"
+        )
+        config = load_config(toml_file)
+        assert config.sandbox_overrides == {
+            "yolo": {
+                "enabled": True,
+                "autoAllowBashIfSandboxed": True,
+                "allowUnsandboxedCommands": False,
+            },
+            "full": {
+                "enabled": False,
+            },
+        }
+
+    def test_sandbox_overrides_empty_when_absent(self, tmp_twsrt_dir: Path) -> None:
+        """No sandbox_overrides section → empty dict."""
+        toml_file = tmp_twsrt_dir / "config.toml"
+        toml_file.write_text(
+            '[sources]\nsrt = "~/.srt-settings.json"\n'
+            'bash_rules = "~/.config/twsrt/bash-rules.json"\n'
+        )
+        config = load_config(toml_file)
+        assert config.sandbox_overrides == {}
+
+    def test_sandbox_overrides_partial(self, tmp_twsrt_dir: Path) -> None:
+        """Only yolo overrides, no full overrides."""
+        toml_file = tmp_twsrt_dir / "config.toml"
+        toml_file.write_text(
+            '[sources]\nsrt = "~/.srt-settings.json"\n'
+            'bash_rules = "~/.config/twsrt/bash-rules.json"\n'
+            "\n"
+            "[sandbox_overrides.yolo]\n"
+            "enabled = true\n"
+        )
+        config = load_config(toml_file)
+        assert config.sandbox_overrides == {"yolo": {"enabled": True}}
+        assert "full" not in config.sandbox_overrides

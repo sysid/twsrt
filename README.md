@@ -406,7 +406,25 @@ copilot_output = "~/.config/twsrt/copilot-flags.txt"    # optional, stdout if om
 # YOLO target overrides (optional — defaults to inserting .yolo before extension)
 # claude_settings_yolo = "~/.claude/settings.yolo.json"
 # copilot_output_yolo = "~/.config/twsrt/copilot-flags.yolo.txt"
+
+# Mode-specific sandbox overrides (applied after SRT values, take precedence)
+[sandbox_overrides.yolo]
+enabled = true
+autoAllowBashIfSandboxed = true
+allowUnsandboxedCommands = false
+
+[sandbox_overrides.full]
+enabled = false
 ```
+
+Sandbox overrides let you enforce different sandbox postures per mode.
+When `--yolo` is used, overrides from `[sandbox_overrides.yolo]` are applied;
+otherwise `[sandbox_overrides.full]` is used. These override SRT-sourced values
+and flow through selective merge to update existing settings files.
+
+Typical use: `claude-yolo` enforces sandbox (safety net when skipping
+permission prompts), while `claude-full` disables it (user approves each action
+interactively).
 
 ### `~/.config/twsrt/bash-rules.json`
 
@@ -463,15 +481,17 @@ Claude Code's `sandbox` section has 17 configurable keys. twsrt manages a subset
 | `sandbox.enableWeakerNestedSandbox` | `enableWeakerNestedSandbox` | **Managed** (pass-through) |
 | `sandbox.ignoreViolations` | `ignoreViolations` | **Managed** (pass-through) |
 | `sandbox.excludedCommands` | *(no SRT source)* | **Claude-only** — never generated, never removed |
-| `sandbox.autoAllowBashIfSandboxed` | *(no SRT source)* | **Claude-only** — never generated, never removed |
-| `sandbox.allowUnsandboxedCommands` | *(no SRT source)* | **Claude-only** — never generated, never removed |
+| `sandbox.autoAllowBashIfSandboxed` | *(no SRT source)* | **Claude-only** — preserved by default; overridable via `[sandbox_overrides]` |
+| `sandbox.allowUnsandboxedCommands` | *(no SRT source)* | **Claude-only** — preserved by default; overridable via `[sandbox_overrides]` |
 
 **Pass-through** keys are copied verbatim from SRT to Claude settings without transformation.
 If a key is absent from SRT, it is omitted from generated output (never set to a default).
 
 **Claude-only** keys exist only in Claude Code's schema and have no SRT equivalent.
-`twsrt generate` never creates them, and `twsrt generate --write` preserves them via
-selective merge. They are invisible to twsrt.
+By default `twsrt generate` never creates them, and `twsrt generate --write` preserves
+them via selective merge. However, `[sandbox_overrides]` in config.toml can explicitly
+set any sandbox key (including Claude-only keys like `autoAllowBashIfSandboxed`) per mode,
+allowing different sandbox postures for yolo vs full mode.
 
 ## Development
 

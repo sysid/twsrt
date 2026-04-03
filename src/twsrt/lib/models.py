@@ -89,7 +89,18 @@ class AppConfig:
     network_config: dict[str, Any] = field(default_factory=dict)
     filesystem_config: dict[str, Any] = field(default_factory=dict)
     sandbox_config: dict[str, Any] = field(default_factory=dict)
+    sandbox_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
     yolo: bool = False
+
+    def apply_sandbox_overrides(self) -> None:
+        """Merge mode-specific sandbox overrides into sandbox_config.
+
+        Selects "yolo" or "full" overrides based on self.yolo flag,
+        then updates sandbox_config so overrides take precedence over SRT values.
+        """
+        mode = "yolo" if self.yolo else "full"
+        overrides = self.sandbox_overrides.get(mode, {})
+        self.sandbox_config.update(overrides)
 
     @property
     def symlink_anchor(self) -> Path:

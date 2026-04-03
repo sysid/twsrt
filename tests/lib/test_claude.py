@@ -712,6 +712,95 @@ class TestSelectiveMerge:
         assert fs["customKey"] == "preserved"
 
 
+class TestSandboxOverridesInGeneration:
+    """Sandbox overrides applied per-mode affect generated output."""
+
+    def test_yolo_overrides_applied(self, gen: ClaudeGenerator) -> None:
+        """Yolo sandbox overrides appear in generated output."""
+        config = AppConfig(
+            sandbox_config={"enabled": True},
+            sandbox_overrides={
+                "yolo": {"enabled": True, "autoAllowBashIfSandboxed": True},
+            },
+            yolo=True,
+        )
+        config.apply_sandbox_overrides()
+        output = json.loads(gen.generate([], config))
+        assert output["sandbox"]["enabled"] is True
+        assert output["sandbox"]["autoAllowBashIfSandboxed"] is True
+
+    def test_full_overrides_applied(self, gen: ClaudeGenerator) -> None:
+        """Full mode sandbox overrides appear in generated output."""
+        config = AppConfig(
+            sandbox_config={"enabled": True},
+            sandbox_overrides={
+                "full": {"enabled": False},
+            },
+            yolo=False,
+        )
+        config.apply_sandbox_overrides()
+        output = json.loads(gen.generate([], config))
+        assert output["sandbox"]["enabled"] is False
+
+    def test_overrides_override_srt_values(self, gen: ClaudeGenerator) -> None:
+        """Overrides take precedence over SRT-sourced sandbox_config."""
+        config = AppConfig(
+            sandbox_config={"enabled": True, "enableWeakerNetworkIsolation": True},
+            sandbox_overrides={
+                "full": {"enabled": False},
+            },
+            yolo=False,
+        )
+        config.apply_sandbox_overrides()
+        output = json.loads(gen.generate([], config))
+        # Override wins
+        assert output["sandbox"]["enabled"] is False
+        # Non-overridden SRT value preserved
+        assert output["sandbox"]["enableWeakerNetworkIsolation"] is True
+
+    def test_no_overrides_preserves_srt(self, gen: ClaudeGenerator) -> None:
+        """Without overrides, SRT values pass through unchanged."""
+        config = AppConfig(
+            sandbox_config={"enabled": True},
+            sandbox_overrides={},
+            yolo=False,
+        )
+        config.apply_sandbox_overrides()
+        output = json.loads(gen.generate([], config))
+        assert output["sandbox"]["enabled"] is True
+
+    def test_overrides_merged_into_selective_merge(self, tmp_path: Path) -> None:
+        """Overrides flow through selective_merge to update existing settings."""
+        gen = ClaudeGenerator()
+        config = AppConfig(
+            sandbox_config={"enabled": True},
+            sandbox_overrides={
+                "full": {"enabled": False, "autoAllowBashIfSandboxed": False},
+            },
+            yolo=False,
+        )
+        config.apply_sandbox_overrides()
+        output = json.loads(gen.generate([], config))
+
+        existing = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {
+                "enabled": True,
+                "autoAllowBashIfSandboxed": True,
+                "excludedCommands": ["docker"],
+                "network": {"allowedDomains": []},
+            },
+        }
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(existing))
+
+        result = selective_merge(target, output)
+        assert result["sandbox"]["enabled"] is False
+        assert result["sandbox"]["autoAllowBashIfSandboxed"] is False
+        # Claude-only key NOT in overrides is preserved
+        assert result["sandbox"]["excludedCommands"] == ["docker"]
+
+
 class TestClaudeYoloGeneration:
     """YOLO mode: deny-only permissions, no ask, keep allow (WebFetch)."""
 
