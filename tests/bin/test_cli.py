@@ -183,8 +183,9 @@ class TestUS1AcceptanceScenarios:
             assert f"Write({path}/**)" in deny
             assert f"Edit({path})" in deny
             assert f"Edit({path}/**)" in deny
-            assert f"MultiEdit({path})" in deny
-            assert f"MultiEdit({path}/**)" in deny
+            # MultiEdit was removed from Claude Code (merged into Edit)
+            assert f"MultiEdit({path})" not in deny
+            assert f"MultiEdit({path}/**)" not in deny
 
     def test_scenario_2_allow_write_no_output(self, tmp_path: Path) -> None:
         """allowWrite produces no Claude output."""
@@ -251,7 +252,7 @@ class TestUS1AcceptanceScenarios:
         assert "Bash(pip install *)" in ask
 
     def test_scenario_6_deny_write(self, tmp_path: Path) -> None:
-        """denyWrite → Write/Edit/MultiEdit in deny (no Read)."""
+        """denyWrite → Write/Edit in deny (no Read, no MultiEdit)."""
         srt = {
             "filesystem": {
                 "denyWrite": ["**/.env", "**/*.pem"],
@@ -266,6 +267,8 @@ class TestUS1AcceptanceScenarios:
         assert "Edit(**/.env)" in deny
         assert "Write(**/*.pem)" in deny
         assert "Edit(**/*.pem)" in deny
+        assert "MultiEdit(**/.env)" not in deny
+        assert "MultiEdit(**/*.pem)" not in deny
 
     def test_scenario_7_selective_merge(self, tmp_path: Path) -> None:
         """Selective merge preserves hooks, mcp__, blanket allows."""

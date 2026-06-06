@@ -39,8 +39,9 @@ class TestClaudeGeneration:
         assert f"Write({aws_dir}/**)" in deny
         assert f"Edit({aws_dir})" in deny
         assert f"Edit({aws_dir}/**)" in deny
-        assert f"MultiEdit({aws_dir})" in deny
-        assert f"MultiEdit({aws_dir}/**)" in deny
+        # MultiEdit was removed from Claude Code (merged into Edit)
+        assert f"MultiEdit({aws_dir})" not in deny
+        assert f"MultiEdit({aws_dir}/**)" not in deny
 
     def test_deny_read_file_generates_bare_only(
         self, gen: ClaudeGenerator, config: AppConfig, tmp_path: Path
@@ -56,7 +57,7 @@ class TestClaudeGeneration:
         assert f"Read({netrc})" in deny
         assert f"Write({netrc})" in deny
         assert f"Edit({netrc})" in deny
-        assert f"MultiEdit({netrc})" in deny
+        assert f"MultiEdit({netrc})" not in deny
         # No recursive patterns for files
         assert f"Read({netrc}/**)" not in deny
         assert f"Write({netrc}/**)" not in deny
@@ -102,7 +103,7 @@ class TestClaudeGeneration:
         deny = output["permissions"]["deny"]
         assert "Write(**/.env)" in deny
         assert "Edit(**/.env)" in deny
-        assert "MultiEdit(**/.env)" in deny
+        assert "MultiEdit(**/.env)" not in deny
         # Should NOT include Read for write-only deny
         assert "Read(**/.env)" not in deny
 
@@ -174,7 +175,7 @@ class TestClaudeGeneration:
         assert "Read(**/.env)" in deny
         assert "Write(**/.env)" in deny
         assert "Edit(**/.env)" in deny
-        assert "MultiEdit(**/.env)" in deny
+        assert "MultiEdit(**/.env)" not in deny
 
     def test_denied_domains_generate_webfetch_deny(
         self, gen: ClaudeGenerator, config: AppConfig
