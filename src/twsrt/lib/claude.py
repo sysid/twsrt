@@ -26,17 +26,18 @@ class ClaudeGenerator:
 
         for rule in rules:
             if rule.scope == Scope.READ and rule.action == Action.DENY:
-                # FR-006: denyRead → deny ALL file tools
-                # (MultiEdit was removed from Claude Code — merged into Edit)
+                # FR-006: denyRead → deny reading and all file-editing.
+                # Edit(path) is the only editing rule Claude Code's file
+                # permission checks match — it covers every file-editing tool.
+                # Write(path)/MultiEdit(path) are never consulted.
                 # Bare pattern always included; /** only for directories
-                for tool in ("Read", "Write", "Edit"):
+                for tool in ("Read", "Edit"):
                     deny.append(f"{tool}({rule.pattern})")
                     if _is_directory_pattern(rule.pattern):
                         deny.append(f"{tool}({rule.pattern}/**)")
 
             elif rule.scope == Scope.WRITE and rule.action == Action.DENY:
-                # FR-007: denyWrite → deny write tools only
-                deny.append(f"Write({rule.pattern})")
+                # FR-007: denyWrite → deny file-editing only (no Read)
                 deny.append(f"Edit({rule.pattern})")
 
             elif rule.scope == Scope.WRITE and rule.action == Action.ALLOW:

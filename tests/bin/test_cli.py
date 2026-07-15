@@ -165,7 +165,7 @@ class TestUS1AcceptanceScenarios:
     """All 7 acceptance scenarios from spec.md US1."""
 
     def test_scenario_1_deny_read_all_file_tools(self, tmp_path: Path) -> None:
-        """denyRead generates deny for ALL file tools."""
+        """denyRead generates deny for reading and editing (Edit covers all file-editing tools)."""
         srt = {
             "filesystem": {
                 "denyRead": ["~/.aws", "~/.ssh"],
@@ -179,11 +179,12 @@ class TestUS1AcceptanceScenarios:
         for path in ["~/.aws", "~/.ssh"]:
             assert f"Read({path})" in deny
             assert f"Read({path}/**)" in deny
-            assert f"Write({path})" in deny
-            assert f"Write({path}/**)" in deny
             assert f"Edit({path})" in deny
             assert f"Edit({path}/**)" in deny
-            # MultiEdit was removed from Claude Code (merged into Edit)
+            # Only Edit(path) is matched by Claude Code's file permission
+            # checks — Write and MultiEdit rules are dead config.
+            assert f"Write({path})" not in deny
+            assert f"Write({path}/**)" not in deny
             assert f"MultiEdit({path})" not in deny
             assert f"MultiEdit({path}/**)" not in deny
 
@@ -252,7 +253,7 @@ class TestUS1AcceptanceScenarios:
         assert "Bash(pip install *)" in ask
 
     def test_scenario_6_deny_write(self, tmp_path: Path) -> None:
-        """denyWrite → Write/Edit in deny (no Read, no MultiEdit)."""
+        """denyWrite → Edit in deny (no Read, no Write, no MultiEdit)."""
         srt = {
             "filesystem": {
                 "denyWrite": ["**/.env", "**/*.pem"],
@@ -263,10 +264,10 @@ class TestUS1AcceptanceScenarios:
         assert result.exit_code == 0
         output = json.loads(result.output)
         deny = output["permissions"]["deny"]
-        assert "Write(**/.env)" in deny
         assert "Edit(**/.env)" in deny
-        assert "Write(**/*.pem)" in deny
         assert "Edit(**/*.pem)" in deny
+        assert "Write(**/.env)" not in deny
+        assert "Write(**/*.pem)" not in deny
         assert "MultiEdit(**/.env)" not in deny
         assert "MultiEdit(**/*.pem)" not in deny
 

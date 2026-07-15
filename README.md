@@ -272,12 +272,8 @@ bash deny `rm`/`sudo`, bash ask `git push`, denyRead `~/.aws`):
     "deny": [
       "Read(~/.aws)",
       "Read(~/.aws/**)",
-      "Write(~/.aws)",
-      "Write(~/.aws/**)",
       "Edit(~/.aws)",
       "Edit(~/.aws/**)",
-      "MultiEdit(~/.aws)",
-      "MultiEdit(~/.aws/**)",
       "Bash(rm)",
       "Bash(rm *)",
       "Bash(sudo)",
@@ -445,7 +441,7 @@ Comprehensive example:
 |-----------------|-------------|-------------|
 | denyRead directory | Tool(path) + Tool(path/**) in deny | (SRT enforces) |
 | denyRead file | Tool(path) in deny | (SRT enforces) |
-| denyWrite pattern | Write/Edit/MultiEdit in deny | (SRT enforces) |
+| denyWrite pattern | Edit(pattern) in deny | (SRT enforces) |
 | allowWrite path | (no output) | --allow-tool flags |
 | allowedDomains domain | WebFetch(domain:X) in allow + sandbox.network | (SRT enforces) |
 | deniedDomains domain | WebFetch(domain:X) in deny | --deny-url |
@@ -455,9 +451,12 @@ Comprehensive example:
 **YOLO mode differences**: Bash ask rules are skipped entirely. Copilot `--allow-*`
 flags are omitted (subsumed by `--yolo`). Claude `permissions.ask` key is removed.
 
-Where Tool = Read, Write, Edit, MultiEdit. Directory vs file detection uses the
-filesystem at generation time; glob patterns and unknown paths are treated as
-bare patterns (no `/**` suffix for globs, `/**` added for unknown paths).
+Where Tool = Read, Edit. Claude Code matches file permissions on `Edit(path)`
+only — a single `Edit` rule covers every file-editing tool (Write, Edit,
+NotebookEdit), so no separate `Write(path)` rule is emitted. Directory vs file
+detection uses the filesystem at generation time; glob patterns and unknown
+paths are treated as bare patterns (no `/**` suffix for globs, `/**` added for
+unknown paths).
 
 ### Sandbox Key Mapping
 

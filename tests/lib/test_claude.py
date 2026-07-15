@@ -35,11 +35,12 @@ class TestClaudeGeneration:
         deny = output["permissions"]["deny"]
         assert f"Read({aws_dir})" in deny
         assert f"Read({aws_dir}/**)" in deny
-        assert f"Write({aws_dir})" in deny
-        assert f"Write({aws_dir}/**)" in deny
         assert f"Edit({aws_dir})" in deny
         assert f"Edit({aws_dir}/**)" in deny
-        # MultiEdit was removed from Claude Code (merged into Edit)
+        # Only Edit(path) is matched by Claude Code's file permission checks —
+        # Write and MultiEdit rules are dead config.
+        assert f"Write({aws_dir})" not in deny
+        assert f"Write({aws_dir}/**)" not in deny
         assert f"MultiEdit({aws_dir})" not in deny
         assert f"MultiEdit({aws_dir}/**)" not in deny
 
@@ -55,12 +56,12 @@ class TestClaudeGeneration:
         output = json.loads(gen.generate(rules, config))
         deny = output["permissions"]["deny"]
         assert f"Read({netrc})" in deny
-        assert f"Write({netrc})" in deny
         assert f"Edit({netrc})" in deny
+        assert f"Write({netrc})" not in deny
         assert f"MultiEdit({netrc})" not in deny
         # No recursive patterns for files
         assert f"Read({netrc}/**)" not in deny
-        assert f"Write({netrc}/**)" not in deny
+        assert f"Edit({netrc}/**)" not in deny
 
     def test_deny_read_glob_pattern_generates_bare_only(
         self, gen: ClaudeGenerator, config: AppConfig
@@ -72,9 +73,10 @@ class TestClaudeGeneration:
         output = json.loads(gen.generate(rules, config))
         deny = output["permissions"]["deny"]
         assert "Read(**/.aws)" in deny
-        assert "Write(**/.aws)" in deny
+        assert "Edit(**/.aws)" in deny
         # Glob patterns should not get /** appended
         assert "Read(**/.aws/**)" not in deny
+        assert "Edit(**/.aws/**)" not in deny
 
     def test_deny_read_nonexistent_path_assumes_directory(
         self, gen: ClaudeGenerator, config: AppConfig, tmp_path: Path
@@ -95,17 +97,29 @@ class TestClaudeGeneration:
     def test_deny_write_generates_write_tools(
         self, gen: ClaudeGenerator, config: AppConfig
     ) -> None:
-        """FR-007: denyWrite generates deny for write tools only."""
+        """FR-007: denyWrite generates Edit deny only (Edit covers all file-editing tools)."""
         rules = [
             SecurityRule(Scope.WRITE, Action.DENY, "**/.env", Source.SRT_FILESYSTEM),
         ]
         output = json.loads(gen.generate(rules, config))
         deny = output["permissions"]["deny"]
-        assert "Write(**/.env)" in deny
         assert "Edit(**/.env)" in deny
+        assert "Write(**/.env)" not in deny
         assert "MultiEdit(**/.env)" not in deny
         # Should NOT include Read for write-only deny
         assert "Read(**/.env)" not in deny
+
+    def test_no_write_tool_rules_emitted(
+        self, gen: ClaudeGenerator, config: AppConfig
+    ) -> None:
+        """Claude Code matches file permissions on Edit(path) only — Write(path) is dead config."""
+        rules = [
+            SecurityRule(Scope.READ, Action.DENY, "**/.aws", Source.SRT_FILESYSTEM),
+            SecurityRule(Scope.WRITE, Action.DENY, "**/.env", Source.SRT_FILESYSTEM),
+        ]
+        output = json.loads(gen.generate(rules, config))
+        deny = output["permissions"]["deny"]
+        assert [entry for entry in deny if entry.startswith("Write(")] == []
 
     def test_allow_write_no_output(
         self, gen: ClaudeGenerator, config: AppConfig
@@ -173,8 +187,8 @@ class TestClaudeGeneration:
         deny = output["permissions"]["deny"]
         # **/.env is a glob pattern → bare only, no /** expansion
         assert "Read(**/.env)" in deny
-        assert "Write(**/.env)" in deny
         assert "Edit(**/.env)" in deny
+        assert "Write(**/.env)" not in deny
         assert "MultiEdit(**/.env)" not in deny
 
     def test_denied_domains_generate_webfetch_deny(
@@ -868,7 +882,7 @@ class TestClaudeYoloGeneration:
         output = json.loads(gen.generate(rules, config))
         deny = output["permissions"]["deny"]
         assert "Read(**/.aws)" in deny
-        assert "Write(**/.env)" in deny
+        assert "Edit(**/.env)" in deny
 
     def test_sandbox_toplevel_keys_merged(self, tmp_path: Path) -> None:
         """US4: Top-level sandbox keys merged via update, Claude-only keys preserved."""

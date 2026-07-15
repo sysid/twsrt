@@ -158,15 +158,15 @@ option:
 ### 3.4 Least Privilege
 
 **denyRead implies denyWrite**: If a path is sensitive enough to deny reading,
-it must not be writable either. A `denyRead` entry generates deny rules for
-ALL file tools — Read, Write, Edit, and MultiEdit:
+it must not be writable either. A `denyRead` entry denies both reading and every
+form of editing. Claude Code matches file permissions on `Read(path)` and
+`Edit(path)` — a single `Edit` rule covers all file-editing tools (Write, Edit,
+NotebookEdit), so those two rules are sufficient:
 
 ```
 denyRead: ["~/.aws"]
     → deny: Read(~/.aws), Read(~/.aws/**)
-            Write(~/.aws), Write(~/.aws/**)
             Edit(~/.aws), Edit(~/.aws/**)
-            MultiEdit(~/.aws), MultiEdit(~/.aws/**)
 ```
 
 This prevents the agent from exfiltrating credentials by writing them to a
@@ -393,14 +393,20 @@ with three permission tiers: `deny` (blocked), `ask` (prompt user), and
 
 | Canonical Rule | Claude Code Output | Notes |
 |---|---|---|
-| denyRead directory (e.g., `~/.aws`) | `Read(~/.aws)`, `Read(~/.aws/**)`, `Write(~/.aws)`, `Write(~/.aws/**)`, `Edit(~/.aws)`, `Edit(~/.aws/**)`, `MultiEdit(~/.aws)`, `MultiEdit(~/.aws/**)` in deny | All file tools blocked; bare + recursive |
-| denyRead file (e.g., `~/.netrc`) | `Read(~/.netrc)`, `Write(~/.netrc)`, `Edit(~/.netrc)`, `MultiEdit(~/.netrc)` in deny | All file tools blocked; bare only (no `/**`) |
-| denyRead glob (e.g., `**/.env`) | `Read(**/.env)`, `Write(**/.env)`, `Edit(**/.env)`, `MultiEdit(**/.env)` in deny | Glob preserved as-is |
-| denyWrite pattern | `Write({pattern})`, `Edit({pattern})`, `MultiEdit({pattern})` in deny | Write tools only (Read not included) |
+| denyRead directory (e.g., `~/.aws`) | `Read(~/.aws)`, `Read(~/.aws/**)`, `Edit(~/.aws)`, `Edit(~/.aws/**)` in deny | Reading + all editing blocked; bare + recursive |
+| denyRead file (e.g., `~/.netrc`) | `Read(~/.netrc)`, `Edit(~/.netrc)` in deny | Reading + all editing blocked; bare only (no `/**`) |
+| denyRead glob (e.g., `**/.env`) | `Read(**/.env)`, `Edit(**/.env)` in deny | Glob preserved as-is |
+| denyWrite pattern | `Edit({pattern})` in deny | Editing only (Read not included) |
 | allowWrite path | No output | SRT enforces for Bash; Claude already has blanket allows |
 | allowedDomains domain | `WebFetch(domain:{domain})` in allow + domain in `sandbox.network.allowedDomains` | Full fidelity |
 | Bash deny command | `Bash({cmd})`, `Bash({cmd} *)` in deny | Bare + wildcard catches subcommands |
 | Bash ask command | `Bash({cmd})`, `Bash({cmd} *)` in ask | Bare + wildcard catches subcommands |
+
+**Why no `Write(path)` rule**: Claude Code's file permission checks match
+`Edit(path)` only, and a single `Edit` rule covers every file-editing tool
+(Write, Edit, NotebookEdit). `Write(path)` and `MultiEdit(path)` rules are never
+consulted and are rejected at startup as unmatched, so twsrt does not emit them.
+The Bash write path is enforced independently by `sandbox.filesystem.denyWrite`.
 
 **Directory vs file detection**: twsrt checks the filesystem at generation time.
 If the expanded path is a regular file, no `/**` suffix is added. If it is a
