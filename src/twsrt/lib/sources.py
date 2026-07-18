@@ -131,6 +131,16 @@ def read_bash_rules(bash_rules_path: Path) -> list[SecurityRule]:
 
     rules: list[SecurityRule] = []
 
+    for cmd in data.get("allow", []):
+        rules.append(
+            SecurityRule(
+                scope=Scope.EXECUTE,
+                action=Action.ALLOW,
+                pattern=cmd,
+                source=Source.BASH_RULES,
+            )
+        )
+
     for cmd in data.get("deny", []):
         rules.append(
             SecurityRule(

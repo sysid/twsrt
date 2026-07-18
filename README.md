@@ -37,8 +37,8 @@ restrictions and translates it into application-level rules for the agent's buil
                          |
             +------------+------------+
             v            v            v
-     Claude Code    Copilot CLI    (tbd future agents)
-     settings.json  --flag args
+     Claude Code    Copilot CLI       Codex
+     settings.json  --flag args       config.toml + .rules
 
 
                 ENFORCEMENT LAYERS
@@ -79,6 +79,8 @@ It generates security configurations for:
 - **Claude Code** (`~/.claude/settings.json` — permissions + sandbox configuration
 - **Copilot CLI** — `--allow-tool` and `--deny-tool` code snippets for used in calling
   copilot
+- **Codex** (`~/.codex/config.toml` + `~/.codex/rules/twsrt.rules`) — a native
+  user-level permission profile plus escalation rules
 
 **Key invariant**: Canonical source files, edited by user. 
 
@@ -95,10 +97,12 @@ twsrt init --force            # Overwrite existing files
 #### Generate agent configs
 twsrt generate claude         # Print Claude Code permissions to stdout
 twsrt generate copilot        # Print Copilot CLI flags to stdout
+twsrt generate codex          # Preview Codex profile + escalation rules
 twsrt generate                # Generate for all agents
 
 twsrt generate claude --write # Write to settings.full.json, symlink settings.json → it
 twsrt generate claude -n -w   # Dry run: show what would be written
+twsrt generate codex --write  # Merge profile and write twsrt.rules
 
 #### Edit canonical sources
 twsrt edit srt                # Open ~/.srt-settings.json in $EDITOR
@@ -107,6 +111,7 @@ twsrt edit                    # Show available sources
 
 #### Detect configuration drift
 twsrt diff claude             # Compare generated vs existing target file
+twsrt diff codex              # Compare owned profile + twsrt.rules
 twsrt diff                    # Check all agents
 twsrt diff --yolo             # Compare against yolo-specific config files
 ```
@@ -337,6 +342,40 @@ Deny rules still apply — Claude's `--dangerously-skip-permissions` does not ov
   sandbox.excludedCommands  ← PRESERVED (Claude-only key, invisible to twsrt)
 ```
 
+## Codex Configuration (`generate codex -w`)
+
+Codex uses its native permission-profile model. twsrt compiles the SRT
+filesystem/network intent into a profile named `twsrt` and selects it through
+`default_permissions`. The profile extends `:read-only`, then adds only the
+writes and network destinations present in the canonical SRT source.
+
+The user-level targets require no root access:
+
+- `~/.codex/config.toml` — selectively merged; only `default_permissions`,
+  `approval_policy`, `approvals_reviewer`, `allow_login_shell`, and
+  `[permissions.twsrt]` are owned by twsrt.
+- `~/.codex/rules/twsrt.rules` — fully generated from `bash-rules.json`.
+
+Restart Codex after generation. Active sessions do not reload permission
+profiles or `.rules` files.
+
+All other Codex configuration is preserved, including projects, MCP servers,
+headers, WebSearch, apps, and `shell_environment_policy`. Preview and diff
+output contain only managed security data, so foreign credentials are never
+printed.
+
+Codex execution rules have a narrower scope than Claude Bash permissions:
+they control requests to execute outside the sandbox. A command already
+permitted inside the filesystem/network sandbox does not consult those rules.
+twsrt prints this limitation on every Codex generation and deliberately does
+not install an incomplete `PreToolUse` hook.
+
+Some SRT fields cannot be translated without widening access. Codex generation
+therefore skips them with warnings: `allowLocalBinding`, socket directory
+entries, integer proxy ports, Mach lookup, violation-reporting exceptions, and
+weaker-isolation switches. Exact Unix socket paths are supported. A disabled
+canonical SRT sandbox or a malformed `/~/...` path fails generation.
+
 ## Configuration
 
 [SRT](https://github.com/anthropic-experimental/sandbox-runtime) is a dependency and needs to be
@@ -386,6 +425,8 @@ bash_rules = "~/.config/twsrt/bash-rules.json"
 
 [targets]
 claude_settings = "~/.claude/settings.full.json"
+codex_config = "~/.codex/config.toml"
+codex_rules = "~/.codex/rules/twsrt.rules"
 ```
 
 Full config with all optional keys:
@@ -397,6 +438,8 @@ bash_rules = "~/.config/twsrt/bash-rules.json"
 
 [targets]
 claude_settings = "~/.claude/settings.full.json"
+codex_config = "~/.codex/config.toml"
+codex_rules = "~/.codex/rules/twsrt.rules"
 copilot_output = "~/.config/twsrt/copilot-flags.txt"    # optional, stdout if omitted
 
 # YOLO target overrides (optional — defaults to inserting .yolo before extension)
@@ -426,6 +469,7 @@ interactively).
 
 ```json
 {
+  "allow": ["gh pr view"],
   "deny": ["rm", "sudo", "git push --force"],
   "ask": ["git push", "git commit", "pip install"]
 }
@@ -437,16 +481,18 @@ Comprehensive example:
 ## Rule and Security Mappings
 ### Rule Mapping
 
-| SRT / Bash Rule | Claude Code | Copilot CLI |
-|-----------------|-------------|-------------|
-| denyRead directory | Tool(path) + Tool(path/**) in deny | (SRT enforces) |
-| denyRead file | Tool(path) in deny | (SRT enforces) |
-| denyWrite pattern | Edit(pattern) in deny | (SRT enforces) |
-| allowWrite path | (no output) | --allow-tool flags |
-| allowedDomains domain | WebFetch(domain:X) in allow + sandbox.network | (SRT enforces) |
-| deniedDomains domain | WebFetch(domain:X) in deny | --deny-url |
-| Bash deny cmd | Bash(cmd) + Bash(cmd *) in deny | --deny-tool 'shell(cmd)' |
-| Bash ask cmd | Bash(cmd) + Bash(cmd *) in ask | --deny-tool (lossy, warns) |
+| SRT / Bash Rule | Claude Code | Copilot CLI | Codex |
+|-----------------|-------------|-------------|-------|
+| denyRead directory | Tool(path) + Tool(path/**) in deny | (SRT enforces) | filesystem `deny` |
+| denyRead file | Tool(path) in deny | (SRT enforces) | filesystem `deny` |
+| denyWrite exact path | Edit(path) in deny | (SRT enforces) | filesystem `read` |
+| denyWrite glob | Edit(pattern) in deny | (SRT enforces) | filesystem `deny` (stricter; warns) |
+| allowWrite path | (no output) | --allow-tool flags | filesystem `write` |
+| allowedDomains domain | WebFetch(domain:X) + sandbox.network | (SRT enforces) | domain `allow` |
+| deniedDomains domain | WebFetch(domain:X) in deny | --deny-url | domain `deny` |
+| Bash allow cmd | (no output) | (no output) | prefix `allow` |
+| Bash deny cmd | Bash(cmd) + Bash(cmd *) in deny | --deny-tool 'shell(cmd)' | prefix `forbidden` |
+| Bash ask cmd | Bash(cmd) + Bash(cmd *) in ask | --deny-tool (lossy, warns) | prefix `prompt` |
 
 **YOLO mode differences**: Bash ask rules are skipped entirely. Copilot `--allow-*`
 flags are omitted (subsumed by `--yolo`). Claude `permissions.ask` key is removed.

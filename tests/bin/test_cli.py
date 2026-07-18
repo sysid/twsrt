@@ -142,6 +142,74 @@ class TestGenerate:
         result = runner.invoke(app, ["-c", str(config_toml_file), "generate", "claude"])
         assert result.exit_code == 0
 
+    def test_generate_codex_previews_config_and_rules(
+        self, config_toml_file: Path
+    ) -> None:
+        result = runner.invoke(app, ["-c", str(config_toml_file), "generate", "codex"])
+
+        assert result.exit_code == 0, result.output
+        assert 'default_permissions = "twsrt"' in result.output
+        assert "twsrt.rules" in result.output
+        assert 'decision = "forbidden"' in result.output
+
+    def test_generate_codex_write_uses_configured_user_targets(
+        self, config_toml_file: Path, tmp_path: Path
+    ) -> None:
+        result = runner.invoke(
+            app,
+            ["-c", str(config_toml_file), "generate", "codex", "--write"],
+        )
+
+        assert result.exit_code == 0, result.output
+        codex_config = tmp_path / ".codex" / "config.toml"
+        codex_rules = tmp_path / ".codex" / "rules" / "twsrt.rules"
+        assert codex_config.exists()
+        assert codex_rules.exists()
+        assert "Wrote:" in result.output
+        assert "Restart Codex" in result.output
+
+    def test_generate_codex_yolo_write_is_rejected_without_modifying_rules(
+        self, config_toml_file: Path, tmp_path: Path
+    ) -> None:
+        codex_rules = tmp_path / ".codex" / "rules" / "twsrt.rules"
+        codex_rules.parent.mkdir(parents=True)
+        codex_rules.write_text("existing prompt rules\n")
+
+        result = runner.invoke(
+            app,
+            [
+                "-c",
+                str(config_toml_file),
+                "generate",
+                "codex",
+                "--yolo",
+                "--write",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "preview-only" in result.output
+        assert codex_rules.read_text() == "existing prompt rules\n"
+
+    def test_generate_codex_dry_run_does_not_write(
+        self, config_toml_file: Path, tmp_path: Path
+    ) -> None:
+        result = runner.invoke(
+            app,
+            [
+                "-c",
+                str(config_toml_file),
+                "generate",
+                "codex",
+                "--write",
+                "--dry-run",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Would write to:" in result.output
+        assert not (tmp_path / ".codex" / "config.toml").exists()
+
 
 # --- US1 Acceptance Scenario Integration Tests ---
 
@@ -795,6 +863,31 @@ class TestYoloGenerateAll:
         assert anchor.is_symlink()
         assert not copilot_path.exists()
 
+    def test_yolo_generate_all_with_codex_preflights_before_writing_any_target(
+        self, tmp_path: Path
+    ) -> None:
+        config = _make_config(tmp_path, {}, {"deny": ["rm"], "ask": ["git push"]})
+        claude_target = tmp_path / ".claude" / "settings.full.json"
+        codex_config = tmp_path / ".codex" / "config.toml"
+        codex_rules = tmp_path / ".codex" / "rules" / "twsrt.rules"
+        config.write_text(
+            config.read_text()
+            + "\n[targets]\n"
+            + f'claude_settings = "{claude_target}"\n'
+            + f'codex_config = "{codex_config}"\n'
+            + f'codex_rules = "{codex_rules}"\n'
+        )
+
+        result = runner.invoke(
+            app, ["-c", str(config), "generate", "--yolo", "--write"]
+        )
+
+        assert result.exit_code == 1
+        assert "preview-only" in result.output
+        assert not claude_target.exists()
+        assert not codex_config.exists()
+        assert not codex_rules.exists()
+
 
 class TestYoloGenerateCopilot:
     """T016: CLI integration tests for generate --yolo copilot."""
@@ -1069,6 +1162,73 @@ class TestSymlinkDiffCommand:
 
 
 class TestDiffCommand:
+    def test_diff_all_skips_codex_when_targets_are_not_configured(
+        self, tmp_path: Path
+    ) -> None:
+        config = _make_config(tmp_path, {"enabled": True})
+        claude_target = tmp_path / ".claude" / "settings.full.json"
+        copilot_target = tmp_path / "copilot-flags.txt"
+        config.write_text(
+            config.read_text()
+            + "\n[targets]\n"
+            + f'claude_settings = "{claude_target}"\n'
+            + f'copilot_output = "{copilot_target}"\n'
+        )
+        for agent in ("claude", "copilot"):
+            write_result = runner.invoke(
+                app, ["-c", str(config), "generate", agent, "--write"]
+            )
+            assert write_result.exit_code == 0, write_result.output
+
+        result = runner.invoke(
+            app,
+            ["-c", str(config), "diff"],
+            env={"HOME": str(tmp_path)},
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "claude: no drift" in result.output
+        assert "copilot: no drift" in result.output
+        assert "codex" not in result.output.lower()
+
+    def test_diff_codex_no_drift_exits_0(self, tmp_path: Path) -> None:
+        config = _make_config(tmp_path, {"enabled": True})
+        codex_config = tmp_path / ".codex" / "config.toml"
+        codex_rules = tmp_path / ".codex" / "rules" / "twsrt.rules"
+        config.write_text(
+            config.read_text()
+            + "\n[targets]\n"
+            + f'codex_config = "{codex_config}"\n'
+            + f'codex_rules = "{codex_rules}"\n'
+        )
+        write_result = runner.invoke(
+            app, ["-c", str(config), "generate", "codex", "--write"]
+        )
+        assert write_result.exit_code == 0, write_result.output
+
+        result = runner.invoke(app, ["-c", str(config), "diff", "codex"])
+
+        assert result.exit_code == 0, result.output
+        assert "codex: no drift" in result.output
+
+    def test_diff_codex_missing_rules_exits_2(self, tmp_path: Path) -> None:
+        config = _make_config(tmp_path, {"enabled": True})
+        codex_config = tmp_path / ".codex" / "config.toml"
+        codex_config.parent.mkdir(parents=True)
+        codex_config.write_text("")
+        codex_rules = tmp_path / ".codex" / "rules" / "twsrt.rules"
+        config.write_text(
+            config.read_text()
+            + "\n[targets]\n"
+            + f'codex_config = "{codex_config}"\n'
+            + f'codex_rules = "{codex_rules}"\n'
+        )
+
+        result = runner.invoke(app, ["-c", str(config), "diff", "codex"])
+
+        assert result.exit_code == 2
+        assert str(codex_rules) in result.output
+
     def test_diff_claude_with_drift_exits_1(self, tmp_path: Path) -> None:
         srt = {
             "filesystem": {

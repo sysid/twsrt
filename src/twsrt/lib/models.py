@@ -84,11 +84,19 @@ class AppConfig:
         default_factory=lambda: Path("~/.claude/settings.full.json").expanduser()
     )
     copilot_output_path: Path | None = None
+    codex_config_path: Path = field(
+        default_factory=lambda: Path("~/.codex/config.toml").expanduser()
+    )
+    codex_rules_path: Path = field(
+        default_factory=lambda: Path("~/.codex/rules/twsrt.rules").expanduser()
+    )
+    codex_targets_configured: bool = False
     claude_yolo_path: Path | None = None
     copilot_yolo_path: Path | None = None
     network_config: dict[str, Any] = field(default_factory=dict)
     filesystem_config: dict[str, Any] = field(default_factory=dict)
     sandbox_config: dict[str, Any] = field(default_factory=dict)
+    srt_sandbox_enabled: bool | None = None
     sandbox_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
     yolo: bool = False
 

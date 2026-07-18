@@ -2,7 +2,7 @@
 
 ## 1. Executive Summary
 
-AI coding agents (Claude Code, GitHub Copilot CLI, pi-mono) operate with
+AI coding agents (Claude Code, GitHub Copilot CLI, Codex, pi-mono) operate with
 broad access to the developer's filesystem, network, and shell. Each agent
 implements its own permission model with its own configuration format. This
 heterogeneity creates a systemic risk: security rules must be maintained
@@ -32,7 +32,8 @@ Neither layer alone is sufficient; together they close each other's gaps
                            │
               ┌────────────┼────────────┐
               ▼            ▼            ▼
-     Claude Code     Copilot CLI    pi-mono
+     Claude Code     Copilot CLI    Codex                 pi-mono
+                                    config.toml + .rules
      settings.json   --flag args    (planned)
 
                     ENFORCEMENT LAYERS
@@ -464,7 +465,36 @@ This is a deliberate **fail-safe**: it is better to block a command entirely
 than to allow it without the intended human confirmation step. The warning
 ensures administrators are aware of the fidelity loss.
 
-### 6.3 pi-mono (Planned)
+### 6.3 Codex
+
+Codex receives a user-level named permission profile in
+`~/.codex/config.toml` and execution-prefix rules in
+`~/.codex/rules/twsrt.rules`. The permission profile is the enforcement
+boundary for local subprocesses: filesystem entries map to `write`, `read`, or
+`deny`, while network traffic is constrained to the canonical domain and exact
+Unix-socket allowlists.
+
+Codex cannot express read-only access for wildcard file patterns. Exact
+`denyWrite` paths compile to `read`; wildcard `denyWrite` patterns compile to
+`deny`, blocking both reads and writes, with an explicit warning. This is a
+deliberate fail-safe narrowing rather than silently permitting writes.
+
+twsrt also fixes the local approval posture to `on-request`, assigns approvals
+to the human user, and disables login shells. It does not manage WebSearch,
+MCP/apps, connectors, or subprocess environment inheritance in this version.
+
+Codex prefix rules apply only when a command requests execution outside the
+sandbox. Consequently Bash deny/ask intent is only a best-fit translation, not
+equivalent enforcement for commands already allowed inside the sandbox. Hooks
+are not used as a compensating control because Codex documents their command
+interception as incomplete and does not support hook-driven `ask` decisions.
+
+User-level configuration is operationally convenient and requires no root
+access, but it is not administrator-enforced: a user can deliberately bypass
+it with full-access or ignore-user-configuration options. Machine-enforced
+non-bypassability would require managed configuration outside the user profile.
+
+### 6.4 pi-mono (Planned)
 
 pi-mono support is architecturally planned but not yet implemented. The
 `AgentGenerator` protocol allows adding new agents by implementing three
@@ -592,6 +622,7 @@ twsrt init                              # Creates ~/.config/twsrt/ with defaults
 # Ensure ~/.srt-settings.json exists    # SRT config (typically pre-existing)
 twsrt generate claude --write           # Generate + write Claude settings
 twsrt generate copilot                  # Print Copilot flags to stdout
+twsrt generate codex --write            # Merge user profile + write rules
 ```
 
 ### 8.2 Policy Change Workflow

@@ -34,6 +34,14 @@ def load_config(config_path: Path) -> AppConfig:
         if "copilot_output" in targets
         else None
     )
+    codex_config_path = (
+        Path(targets["codex_config"]).expanduser()
+        if "codex_config" in targets
+        else None
+    )
+    codex_rules_path = (
+        Path(targets["codex_rules"]).expanduser() if "codex_rules" in targets else None
+    )
 
     claude_yolo_path = (
         Path(targets["claude_settings_yolo"]).expanduser()
@@ -58,6 +66,9 @@ def load_config(config_path: Path) -> AppConfig:
     sandbox_overrides = data.get("sandbox_overrides", {})
 
     config = AppConfig()
+    config.codex_targets_configured = (
+        "codex_config" in targets and "codex_rules" in targets
+    )
     if srt_path is not None:
         config.srt_path = srt_path
     if bash_rules_path is not None:
@@ -66,6 +77,10 @@ def load_config(config_path: Path) -> AppConfig:
         config.claude_settings_path = claude_settings_path
     if copilot_output_path is not None:
         config.copilot_output_path = copilot_output_path
+    if codex_config_path is not None:
+        config.codex_config_path = codex_config_path
+    if codex_rules_path is not None:
+        config.codex_rules_path = codex_rules_path
     if claude_yolo_path is not None:
         config.claude_yolo_path = claude_yolo_path
     if copilot_yolo_path is not None:

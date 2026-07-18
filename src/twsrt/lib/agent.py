@@ -24,11 +24,13 @@ class AgentGenerator(Protocol):
 def _build_registry() -> dict[str, AgentGenerator]:
     """Build the generators registry. Import here to avoid circular imports."""
     from twsrt.lib.claude import ClaudeGenerator
+    from twsrt.lib.codex import CodexGenerator
     from twsrt.lib.copilot import CopilotGenerator
 
     return {
         "claude": ClaudeGenerator(),
         "copilot": CopilotGenerator(),
+        "codex": CodexGenerator(),
     }
 
 

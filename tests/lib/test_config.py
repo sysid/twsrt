@@ -38,6 +38,29 @@ class TestLoadConfig:
         assert "~" not in str(config.srt_path)
         assert "~" not in str(config.bash_rules_path)
 
+    def test_codex_targets_have_user_level_defaults(self, tmp_path: Path) -> None:
+        config = load_config(tmp_path / "missing.toml")
+
+        assert str(config.codex_config_path).endswith(".codex/config.toml")
+        assert str(config.codex_rules_path).endswith(".codex/rules/twsrt.rules")
+        assert config.codex_targets_configured is False
+
+    def test_loads_codex_targets(self, tmp_twsrt_dir: Path, tmp_path: Path) -> None:
+        config_path = tmp_twsrt_dir / "config.toml"
+        codex_config = tmp_path / ".codex" / "config.toml"
+        codex_rules = tmp_path / ".codex" / "rules" / "twsrt.rules"
+        config_path.write_text(
+            "[targets]\n"
+            f'codex_config = "{codex_config}"\n'
+            f'codex_rules = "{codex_rules}"\n'
+        )
+
+        config = load_config(config_path)
+
+        assert config.codex_config_path == codex_config
+        assert config.codex_rules_path == codex_rules
+        assert config.codex_targets_configured is True
+
 
 class TestYoloConfigLoading:
     def test_yolo_paths_loaded_when_present(self, tmp_twsrt_dir: Path) -> None:

@@ -66,6 +66,8 @@ bash_rules = "{bash_rules_path}"
 
 [targets]
 claude_settings = "{claude_settings_path}"
+codex_config = "{codex_config_path}"
+codex_rules = "{codex_rules_path}"
 """
 
 
@@ -161,6 +163,8 @@ def config_toml_file(
     claude_settings = tmp_path / ".claude" / "settings.full.json"
     claude_settings.parent.mkdir(parents=True, exist_ok=True)
     claude_settings.write_text(json.dumps(SAMPLE_CLAUDE_SETTINGS, indent=2))
+    codex_config = tmp_path / ".codex" / "config.toml"
+    codex_rules = tmp_path / ".codex" / "rules" / "twsrt.rules"
 
     p = tmp_twsrt_dir / "config.toml"
     p.write_text(
@@ -168,6 +172,8 @@ def config_toml_file(
             srt_path=str(srt_file),
             bash_rules_path=str(bash_rules_file),
             claude_settings_path=str(claude_settings),
+            codex_config_path=str(codex_config),
+            codex_rules_path=str(codex_rules),
         )
     )
     return p

@@ -177,6 +177,20 @@ class TestReadSrt:
         assert {r.pattern for r in network_rules} == {"github.com", "pypi.org"}
 
 
+class TestReadBashAllowRules:
+    def test_allow_rules_are_preserved_as_execute_allow(self, tmp_path: Path) -> None:
+        path = tmp_path / "bash-rules.json"
+        path.write_text(json.dumps({"allow": ["gh pr view"], "deny": [], "ask": []}))
+
+        rules = read_bash_rules(path)
+
+        assert len(rules) == 1
+        assert rules[0].scope == Scope.EXECUTE
+        assert rules[0].action == Action.ALLOW
+        assert rules[0].pattern == "gh pr view"
+        assert rules[0].source == Source.BASH_RULES
+
+
 class TestReadSrtNetworkConfig:
     """Tests for network_config extraction from SRT (FR-001, FR-003)."""
 
