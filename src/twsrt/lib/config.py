@@ -66,9 +66,7 @@ def load_config(config_path: Path) -> AppConfig:
     sandbox_overrides = data.get("sandbox_overrides", {})
 
     config = AppConfig()
-    config.codex_targets_configured = (
-        "codex_config" in targets and "codex_rules" in targets
-    )
+    config.codex_targets_configured = "codex_config" in targets
     if srt_path is not None:
         config.srt_path = srt_path
     if bash_rules_path is not None:

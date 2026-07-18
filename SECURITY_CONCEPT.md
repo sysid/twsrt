@@ -269,6 +269,18 @@ single-source model with drift detection eliminates the configuration
 management failures that are, in practice, the most common cause of
 security gaps.
 
+**2026 update — native-sandbox convergence**: All three supported agents now
+ship native OS sandboxes (Claude Code: built-in Seatbelt/bwrap, opt-in;
+Copilot CLI: local sandbox in public preview; Codex: kernel sandbox
+always-on). This shifts twsrt's durable core toward compiling one canonical
+statement of restrictions (deny-paths + domains) into each agent's *native*
+sandbox/profile configuration — a high-fidelity translation everywhere. The
+bash-rules app layer remains a per-agent best-effort supplement:
+Claude-primary (full deny/ask fidelity), deny-only for Copilot, and
+forbidden-only sandbox-escape rules for Codex. Bash-rules translation is
+frozen for new agents; new agents get restrictions-only compilation by
+default.
+
 
 ## 4. Architecture
 
@@ -467,27 +479,72 @@ ensures administrators are aware of the fidelity loss.
 
 ### 6.3 Codex
 
-Codex receives a user-level named permission profile in
-`~/.codex/config.toml` and execution-prefix rules in
-`~/.codex/rules/twsrt.rules`. The permission profile is the enforcement
-boundary for local subprocesses: filesystem entries map to `write`, `read`, or
-`deny`, while network traffic is constrained to the canonical domain and exact
-Unix-socket allowlists.
+Codex ships an always-on kernel sandbox of its own. twsrt therefore compiles
+only **restrictions** into a user-level named permission profile in
+`~/.codex/config.toml` (extending the built-in `:workspace` base) plus
+`deny`-only execution-prefix rules in `~/.codex/rules/twsrt.rules`. The
+profile is the enforcement boundary for local subprocesses; the prefix rules
+govern only requests to execute **outside** the sandbox. Upstream status:
+permission profiles are Beta, `.rules` files are Experimental.
 
-Codex cannot express read-only access for wildcard file patterns. Exact
-`denyWrite` paths compile to `read`; wildcard `denyWrite` patterns compile to
-`deny`, blocking both reads and writes, with an explicit warning. This is a
-deliberate fail-safe narrowing rather than silently permitting writes.
+#### 6.3.1 Translation Table
 
-twsrt also fixes the local approval posture to `on-request`, assigns approvals
-to the human user, and disables login shells. It does not manage WebSearch,
-MCP/apps, connectors, or subprocess environment inheritance in this version.
+| Canonical Rule | Codex Output | Notes |
+|---|---|---|
+| denyRead path/glob | filesystem `deny` | Blocks Codex's default read-everything posture |
+| denyWrite exact path | filesystem `read` | Read-only |
+| denyWrite glob | filesystem `deny` + warning | **Lossy narrowing**: Codex cannot express read-only for globs; deny blocks reads too (fail-safe) |
+| allowWrite path | Not compiled + warning | See 6.3.2 |
+| allowedDomains / deniedDomains | network `domains` allow/deny | `domains` table always emitted; empty map blocks all domain traffic (allowlist semantics) |
+| Exact Unix socket path | network `unix_sockets` allow | Directory entries skipped with warning |
+| Bash deny command | `prefix_rule(..., decision = "forbidden")` | Hard deny instead of default prompt for sandbox-escape requests; rules file only generated while `codex_rules` is set in config.toml (optional) |
+| Bash ask command | Not compiled + warning | See 6.3.2 |
+| Bash allow command | Not compiled + warning | See 6.3.2 |
 
-Codex prefix rules apply only when a command requests execution outside the
-sandbox. Consequently Bash deny/ask intent is only a best-fit translation, not
-equivalent enforcement for commands already allowed inside the sandbox. Hooks
-are not used as a compensating control because Codex documents their command
-interception as incomplete and does not support hook-driven `ask` decisions.
+#### 6.3.2 Deliberately Not Compiled
+
+Three canonical rule classes are skipped for Codex, each with a
+generation-time warning. All three skips follow the same principle: **never
+weaken Codex's default posture**.
+
+- **SRT `allowWrite` paths.** Codex governs writes through its per-project
+  trust model (workspace + tmp writable, `.git`/`.codex`/`.agents`
+  protected). Compiling a path like `~/dev` as a direct `write` entry would
+  make it writable in *every* session regardless of working directory —
+  bypassing per-project trust and the `.git` protection that only applies to
+  workspace roots. A widening, not a translation.
+- **bash-rules `allow` commands.** In Codex's rules language,
+  `decision = "allow"` means "run this command **outside the sandbox**
+  without prompting" — auto-approved unsandboxed execution. That is strictly
+  weaker than Codex's default, which prompts for every escalation request.
+  The canonical `allow` intent ("don't ask, still sandboxed") does not
+  survive translation, so it is not emitted.
+- **bash-rules `ask` commands.** `decision = "prompt"` restates what Codex
+  does by default for every out-of-sandbox request. Emitting ~50 prompt
+  rules adds bulk, not security.
+
+Consequently Codex output is identical in yolo and full mode, and the entire
+Bash deny list is only enforced at the sandbox boundary: a command running
+*inside* the writable workspace (e.g. `git reset --hard`) never consults the
+prefix rules. Codex has no in-sandbox command gate; the kernel sandbox is the
+enforcement layer there. Hooks are not used as a compensating control because
+Codex documents their command interception as incomplete and does not support
+hook-driven `ask` decisions.
+
+#### 6.3.3 Pinned Invariants
+
+twsrt owns four top-level keys in the managed `config.toml` and checks them
+for drift; each defends a distinct silent-weakening vector:
+
+| Key | Value | Defends against |
+|---|---|---|
+| `default_permissions` | `"twsrt"` | Profile deselected out-of-band |
+| `approval_policy` | `"on-request"` | A stale `never` auto-approving escalations |
+| `approvals_reviewer` | `"user"` | Delegating approval decisions to the model |
+| `allow_login_shell` | `false` | Login-shell environments bypassing the profile (stricter than Codex's default `true`) |
+
+twsrt does not manage WebSearch, MCP/apps, connectors, or subprocess
+environment inheritance in this version.
 
 User-level configuration is operationally convenient and requires no root
 access, but it is not administrator-enforced: a user can deliberately bypass
@@ -604,6 +661,17 @@ posture differs by access path:
 | Bash commands accessing denied network | **High** — proxy-enforced by SRT |
 | Built-in tools accessing denied paths | **Medium** — depends on agent enforcement quality |
 | Built-in tools accessing denied network | **Medium** — depends on agent enforcement quality |
+| Codex out-of-sandbox escalation | **Medium** — user-level config, layer-bypassing possible (see below) |
+
+**Codex profile silent deactivation**: If a legacy `sandbox_mode` /
+`sandbox_workspace_write` setting appears in *any* loaded Codex config layer
+(managed, team, project, config profile) or `--sandbox` is passed on the CLI,
+Codex silently falls back to the legacy sandbox settings and ignores
+`default_permissions` — no error is raised. twsrt's `_reject_legacy_sandbox`
+guard is fail-safe only for the managed `config.toml` it owns; other layers
+are invisible to it. Mitigations: twsrt prints a reminder on every Codex
+generate/diff, and `codex doctor` shows the effective sandbox posture — run
+it after changing any other config layer.
 
 **Recommendation**: For the highest-value secrets (cloud credentials, SSH
 keys, GPG keys), rely on the SRT sandbox as the primary control. Ensure

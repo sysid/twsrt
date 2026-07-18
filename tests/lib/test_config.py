@@ -42,7 +42,7 @@ class TestLoadConfig:
         config = load_config(tmp_path / "missing.toml")
 
         assert str(config.codex_config_path).endswith(".codex/config.toml")
-        assert str(config.codex_rules_path).endswith(".codex/rules/twsrt.rules")
+        assert config.codex_rules_path is None
         assert config.codex_targets_configured is False
 
     def test_loads_codex_targets(self, tmp_twsrt_dir: Path, tmp_path: Path) -> None:
@@ -59,6 +59,21 @@ class TestLoadConfig:
 
         assert config.codex_config_path == codex_config
         assert config.codex_rules_path == codex_rules
+        assert config.codex_targets_configured is True
+
+    def test_codex_rules_target_is_optional(
+        self, tmp_twsrt_dir: Path, tmp_path: Path
+    ) -> None:
+        config_path = tmp_twsrt_dir / "config.toml"
+        codex_config = tmp_path / ".codex" / "config.toml"
+        config_path.write_text(
+            "[targets]\n" + f'codex_config = "{codex_config}"\n'
+        )
+
+        config = load_config(config_path)
+
+        assert config.codex_config_path == codex_config
+        assert config.codex_rules_path is None
         assert config.codex_targets_configured is True
 
 

@@ -64,7 +64,7 @@ bash_rules = "~/.config/twsrt/bash-rules.json"
 [targets]
 claude_settings = "~/.claude/settings.full.json"
 codex_config = "~/.codex/config.toml"
-codex_rules = "~/.codex/rules/twsrt.rules"
+codex_rules = "~/.codex/rules/twsrt.rules"    # optional: omit to skip escalation rules
 # copilot_output = "~/.config/twsrt/copilot-flags.txt"    # optional, stdout if omitted
 
 # YOLO target overrides (optional — defaults to inserting .yolo before extension)
@@ -165,19 +165,6 @@ def generate(
         )
         raise typer.Exit(1)
 
-    if (
-        write
-        and not dry_run
-        and yolo
-        and any(gen.name == "codex" for gen in generators)
-    ):
-        typer.echo(
-            "Error: Codex YOLO generation is preview-only; --yolo --write "
-            "would overwrite the normal rules file.",
-            err=True,
-        )
-        raise typer.Exit(1)
-
     for gen in generators:
         try:
             output = gen.generate(all_rules, config)
@@ -188,8 +175,7 @@ def generate(
         if gen.name == "codex":
             from twsrt.lib.codex import CodexGenerator
 
-            codex = CodexGenerator()
-            for warning in codex.compatibility_warnings(config, all_rules):
+            for warning in CodexGenerator().compatibility_warnings(config, all_rules):
                 typer.echo(f"Warning: {warning}", err=True)
             typer.echo(
                 "Warning: Codex execution rules apply only to requests to run "
@@ -243,7 +229,8 @@ def generate(
                     typer.echo(f"Error: {e}", err=True)
                     raise typer.Exit(1)
                 typer.echo(f"Wrote: {config.codex_config_path}")
-                typer.echo(f"Wrote: {config.codex_rules_path}")
+                if config.codex_rules_path is not None:
+                    typer.echo(f"Wrote: {config.codex_rules_path}")
                 typer.echo(
                     "Restart Codex to load the updated permission profile and rules."
                 )
@@ -257,7 +244,8 @@ def generate(
                     typer.echo(f"Would write to: {target}")
             elif gen.name == "codex":
                 typer.echo(f"Would write to: {config.codex_config_path}")
-                typer.echo(f"Would write to: {config.codex_rules_path}")
+                if config.codex_rules_path is not None:
+                    typer.echo(f"Would write to: {config.codex_rules_path}")
             typer.echo(output)
         else:
             if len(generators) > 1:
@@ -349,7 +337,11 @@ def diff(
             )
             raise typer.Exit(2)
 
-        if gen.name == "codex" and not config.codex_rules_path.exists():
+        if (
+            gen.name == "codex"
+            and config.codex_rules_path is not None
+            and not config.codex_rules_path.exists()
+        ):
             typer.echo(
                 f"Error: Target file not found for codex: {config.codex_rules_path}",
                 err=True,
@@ -361,6 +353,11 @@ def diff(
         except ValueError as e:
             typer.echo(f"Error: {e}", err=True)
             raise typer.Exit(1)
+
+        if gen.name == "codex":
+            from twsrt.lib.codex import SILENT_DEACTIVATION_WARNING
+
+            typer.echo(f"Warning: {SILENT_DEACTIVATION_WARNING}", err=True)
 
         if result.matched:
             typer.echo(f"{gen.name}: no drift")

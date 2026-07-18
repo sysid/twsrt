@@ -87,9 +87,8 @@ class AppConfig:
     codex_config_path: Path = field(
         default_factory=lambda: Path("~/.codex/config.toml").expanduser()
     )
-    codex_rules_path: Path = field(
-        default_factory=lambda: Path("~/.codex/rules/twsrt.rules").expanduser()
-    )
+    # None = escalation-rules generation disabled (codex_rules unset in config.toml)
+    codex_rules_path: Path | None = None
     codex_targets_configured: bool = False
     claude_yolo_path: Path | None = None
     copilot_yolo_path: Path | None = None

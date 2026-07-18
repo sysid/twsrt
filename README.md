@@ -6,22 +6,39 @@ Agent security configuration generator — translates canonical security rules i
 
 ## The Problem
 
-### Insufficient
+AI coding agents (Claude Code, Copilot CLI, Codex, ...) each have their own permission
+model and configuration format. Maintaining security rules per agent by hand leads to
+configuration drift and coverage gaps.
 
-AI coding agents (Claude Code, Copilot CLI, PI, etc.) each have their own permission model and
-configuration format. Maintaining security rules independently per agent leads to configuration
-drift, and coverage gaps.
+Kernel sandboxes close part of the gap: [Anthropic Sandbox Runtime](https://github.com/anthropic-experimental/sandbox-runtime)
+(SRT) — and by now each agent's own native sandbox — enforce OS-level filesystem and
+network restrictions. **But a sandbox guards the process boundary: it covers the
+commands an agent spawns.** An agent's built-in tools (Read, Write, Edit, WebFetch)
+run *inside the agent's own process* and are **not** covered by a command-scoped
+sandbox. The exceptions: wrapping the entire agent process (`srt -c "copilot ..."`),
+or an agent like Codex that executes its work through sandboxed subprocesses.
 
-### Better
-[Sandbox Runtime Improved (based on Anthrophic's srt)](https://github.com/sysid/sandbox-runtime-improved) enforces OS-level restrictions
- for Bash commands via **kernel sandboxing**. However, `srti` cannot
-control an agent's built-in tools (Read, Write, Edit, WebFetch) — those run inside the agent's own
-process.
+## Solution: One Canonical Policy, Compiled per Agent
 
-## Solution: Defense in Depth
+**The guiding idea — the Durable Core.** One canonical statement of
+restrictions — *paths no agent may read or write, plus domains agents may
+reach* — compiled into each agent's **native kernel sandbox** config. This
+translation is high-fidelity for every agent (they all natively express
+deny-paths and domains) and survives the churn of per-agent permission
+models. Everything else twsrt emits — bash deny/ask rules, copilot flags —
+is a per-agent best-effort **supplement**: valuable where it is the only
+control (built-in tools running inside the agent process), but never the
+foundation.
 
-`twsrt` bridges the gap. It reads the **same SRT policy** that enforces OS-level Bash
-restrictions and translates it into application-level rules for the agent's built-in tools:
+```
+     DURABLE CORE  (kernel-enforced, high-fidelity everywhere)
+       deny-paths + domains ──► Claude sandbox.* / Codex profile / SRT wrapper
+
+     SUPPLEMENT    (app-enforced, best-effort, per-agent semantics)
+       bash deny/ask rules  ──► Claude permissions / Copilot flags / Codex .rules
+```
+
+How it flows from canonical sources to agents:
 
 ```
                 CANONICAL SOURCES (human-maintained)
@@ -43,29 +60,32 @@ restrictions and translates it into application-level rules for the agent's buil
 
                 ENFORCEMENT LAYERS
                 ==================
-     Layer 1 (OS):  SRT sandbox — kernel-level deny (Bash only)
-     Layer 2 (App): Agent permissions — agent-level deny/ask (all tools)
+     Layer 1 (OS):  kernel sandbox (SRT wrapper or agent-native)
+                    — covers spawned commands, NOT built-in tools
+     Layer 2 (App): agent permission rules — deny/ask for all tools,
+                    the only control over built-in tools in-process
 ```
 
-This gives two layers of protection for the most dangerous attack vector (Bash commands accessing
-credentials or network) and one layer for built-in tools — generated from a **single source of truth**.
+Commands get two layers of protection (kernel + app); built-in tools get one
+(app rules only) — all generated from a **single source of truth** (see
+[Security Boundaries & Invariants](#security-boundaries--invariants)).
 
-Example for collaboration of the two layers:
+How the two layers collaborate:
 
 
-| Access Path | SRT (Layer 1) | Agent Permissions (Layer 2) | Depth |
+| Access Path | Kernel Sandbox (Layer 1) | Agent Permissions (Layer 2) | Depth |
 |---|---|---|---|
 | `Bash(cat ~/.aws/credentials)` | Kernel-enforced deny | Tool-level deny | Two layers |
-| `Read(~/.aws/credentials)` | Not covered | Tool-level deny | One layer |
+| `Read(~/.aws/credentials)` | Not covered (in-process tool) | Tool-level deny | One layer |
 | `Bash(curl evil.com)` | Network proxy blocks | Tool-level deny | Two layers |
-| `WebFetch(evil.com)` | Not covered | Tool-level allow check | One layer |
+| `WebFetch(evil.com)` | Not covered (in-process tool) | Tool-level allow check | One layer |
 
 
 ![demo](./doc/demo.gif)
 
 For the full security analysis and threat model see [SECURITY_CONCEPT.md](SECURITY_CONCEPT.md).
 
-For pi-mono solution see [twsrt](https://github.com/sysid/pi-extensions/tree/main/packages/sandbox).
+For the pi-mono integration see [pi-extensions/sandbox](https://github.com/sysid/pi-extensions/tree/main/packages/sandbox).
 
 ## Overview
 
@@ -76,13 +96,15 @@ For pi-mono solution see [twsrt](https://github.com/sysid/pi-extensions/tree/mai
 
 It generates security configurations for:
 
-- **Claude Code** (`~/.claude/settings.json` — permissions + sandbox configuration
-- **Copilot CLI** — `--allow-tool` and `--deny-tool` code snippets for used in calling
-  copilot
+- **Claude Code** (`~/.claude/settings.json`) — permissions + sandbox configuration
+- **Copilot CLI** — `--allow-tool` / `--deny-tool` flag snippets for the copilot
+  launch command
 - **Codex** (`~/.codex/config.toml` + `~/.codex/rules/twsrt.rules`) — a native
-  user-level permission profile plus escalation rules
+  user-level permission profile plus optional escalation rules
 
-**Key invariant**: Canonical source files, edited by user. 
+**Key invariant**: Only the canonical sources are edited by the user. Generated
+agent configs are compiled artifacts — never edit their managed sections by
+hand; `twsrt diff` detects drift in both directions.
 
 
 ### Usage
@@ -162,16 +184,15 @@ line-continuation code snippet you paste into your launch command:
 --allow-url '*.github.com' \
 ```
 
-**Lossy mappings**: Copilot has no `ask` equivalent. So ask rules are conservatively mapped to
-`--deny-tool`. 
+**Lossy mapping**: Copilot has no `ask` tier, so ask rules are conservatively
+mapped to `--deny-tool` (warned on stderr). `allowWrite` rules emit
+`--allow-tool` flags (shell, read, edit, write); network deny rules emit
+`--deny-url`.
 
-`allowWrite` rules emit `--allow-tool` flags
-(shell, read, edit, write). Network deny rules emit `--deny-url`.
-
-**YOLO mode** (`generate --yolo copilot`): Outputs `--yolo` as first flag, followed
-by `--deny-tool` and `--deny-url` only. 
-
-ONLY USE THIS TOGETHER WITH SRT !!
+**YOLO mode** (`generate --yolo copilot`): outputs `--yolo` as first flag,
+followed by `--deny-tool` and `--deny-url` only. These flags are the only
+app-layer control Copilot has, and nothing kernel-guards its tools —
+**use YOLO only under an SRT wrapper**.
 
 Deny rules take precedence over `--yolo`:
 
@@ -209,7 +230,10 @@ With `-w`, twsrt writes to `settings.full|yolo.json` and creates a symlink from
 If `settings.json` is a regular file (e.g. first run), it is moved to `settings.full|yolo.json`
 automatically.
 
-You run your agent either with SRT builtin (e.g. claude-code) or via an extensions, e.g. pi-mono.
+Claude Code ships a native sandbox (Seatbelt/bwrap) configured via the
+`sandbox` section — it covers sandboxed Bash commands. Built-in tools (Read,
+Write, Edit, WebFetch) run inside the agent process, *outside* that sandbox,
+and are guarded only by the generated `permissions` rules (best-effort).
 
 **Selective merge**: `twsrt` updates only specific sections and preserves everything else:
 - hooks, additionalDirectories, MCP allows, blanket tool allows, etc. are untouched
@@ -344,10 +368,35 @@ Deny rules still apply — Claude's `--dangerously-skip-permissions` does not ov
 
 ## Codex Configuration (`generate codex -w`)
 
-Codex uses its native permission-profile model. twsrt compiles the SRT
-filesystem/network intent into a profile named `twsrt` and selects it through
-`default_permissions`. The profile extends `:read-only`, then adds only the
-writes and network destinations present in the canonical SRT source.
+Codex ships its own always-on kernel sandbox. twsrt therefore compiles only
+**restrictions** into a native permission profile named `twsrt`, selected via
+`default_permissions`. The profile extends the built-in `:workspace` base
+(workspace + tmp writable, `.git`/`.codex`/`.agents` protected) and adds:
+
+- `denyRead` paths → filesystem `deny` (blocks Codex's default read-everything)
+- `denyWrite` exact paths → `read`; `denyWrite` globs → `deny` (stricter,
+  fail-safe — Codex cannot express read-only for globs; warned)
+- `allowedDomains`/`deniedDomains` → network `domains` allowlist. The
+  `domains` table is always emitted, even empty: an empty map blocks all
+  domain traffic, matching SRT allowlist semantics.
+- Exact Unix socket paths → `unix_sockets` allow entries
+
+**Deliberately NOT compiled** (each skip is warned at generation time):
+
+- **SRT `allowWrite` paths.** Codex's per-project trust model governs writes;
+  compiling `~/dev`-style paths would make them writable in *every* session
+  regardless of cwd, bypassing per-project trust and `.git` protection.
+- **bash-rules `allow` commands.** In Codex, an `allow` execution rule means
+  "run **outside the sandbox** without prompting" — auto-approved unsandboxed
+  execution, strictly weaker than the default (prompt on every escalation).
+- **bash-rules `ask` commands.** Codex already prompts for every
+  out-of-sandbox request; restating the default adds bulk, not security.
+
+`~/.codex/rules/twsrt.rules` thus contains only `deny` → `forbidden` prefix
+rules (hard deny instead of prompt for sandbox-escape requests). These rules
+govern **only requests to execute outside the sandbox** — a command running
+inside the sandbox never consults them. Codex output is identical in yolo and
+full mode.
 
 The user-level targets require no root access:
 
@@ -355,31 +404,40 @@ The user-level targets require no root access:
   `approval_policy`, `approvals_reviewer`, `allow_login_shell`, and
   `[permissions.twsrt]` are owned by twsrt.
 - `~/.codex/rules/twsrt.rules` — fully generated from `bash-rules.json`.
+  **Optional**: generated only while `codex_rules` is set in config.toml;
+  omit the key to skip escalation rules entirely and rely on Codex's default
+  prompt-on-every-escalation (security delta: escalations prompt instead of
+  hard-deny, and TUI-saved allowlist entries take effect).
 
 Restart Codex after generation. Active sessions do not reload permission
 profiles or `.rules` files.
+
+> **WARNING — silent profile deactivation**: if a legacy `sandbox_mode` /
+> `sandbox_workspace_write` setting appears in *any* loaded Codex config layer
+> (managed, team, project, config profile) or `--sandbox` is passed on the CLI,
+> Codex silently ignores `default_permissions` — no error is raised. twsrt
+> fails fast only for the managed `config.toml` it owns and prints this
+> reminder on every generate/diff. Run `codex doctor` after changing other
+> layers. Note: Codex permission profiles are Beta and `.rules` files are
+> Experimental upstream; expect churn.
 
 All other Codex configuration is preserved, including projects, MCP servers,
 headers, WebSearch, apps, and `shell_environment_policy`. Preview and diff
 output contain only managed security data, so foreign credentials are never
 printed.
 
-Codex execution rules have a narrower scope than Claude Bash permissions:
-they control requests to execute outside the sandbox. A command already
-permitted inside the filesystem/network sandbox does not consult those rules.
-twsrt prints this limitation on every Codex generation and deliberately does
-not install an incomplete `PreToolUse` hook.
-
 Some SRT fields cannot be translated without widening access. Codex generation
 therefore skips them with warnings: `allowLocalBinding`, socket directory
 entries, integer proxy ports, Mach lookup, violation-reporting exceptions, and
-weaker-isolation switches. Exact Unix socket paths are supported. A disabled
-canonical SRT sandbox or a malformed `/~/...` path fails generation.
+weaker-isolation switches. A disabled canonical SRT sandbox or a malformed
+`/~/...` path fails generation.
 
 ## Configuration
 
-[SRT](https://github.com/anthropic-experimental/sandbox-runtime) is a dependency and needs to be
-installed separately. The recommended fork with proxy and browser support:
+[SRT](https://github.com/anthropic-experimental/sandbox-runtime) is needed only
+for wrapping a whole agent (e.g. `srt -c "copilot --yolo ..."`) — Claude Code
+and Codex bring native sandboxes. Recommended fork with proxy and browser
+support:
 
 ```bash
 npm install -g @sysid/sandbox-runtime-improved
@@ -426,7 +484,7 @@ bash_rules = "~/.config/twsrt/bash-rules.json"
 [targets]
 claude_settings = "~/.claude/settings.full.json"
 codex_config = "~/.codex/config.toml"
-codex_rules = "~/.codex/rules/twsrt.rules"
+codex_rules = "~/.codex/rules/twsrt.rules"    # optional: omit to skip escalation rules
 ```
 
 Full config with all optional keys:
@@ -439,7 +497,7 @@ bash_rules = "~/.config/twsrt/bash-rules.json"
 [targets]
 claude_settings = "~/.claude/settings.full.json"
 codex_config = "~/.codex/config.toml"
-codex_rules = "~/.codex/rules/twsrt.rules"
+codex_rules = "~/.codex/rules/twsrt.rules"    # optional: omit to skip escalation rules
 copilot_output = "~/.config/twsrt/copilot-flags.txt"    # optional, stdout if omitted
 
 # YOLO target overrides (optional — defaults to inserting .yolo before extension)
@@ -487,15 +545,16 @@ Comprehensive example:
 | denyRead file | Tool(path) in deny | (SRT enforces) | filesystem `deny` |
 | denyWrite exact path | Edit(path) in deny | (SRT enforces) | filesystem `read` |
 | denyWrite glob | Edit(pattern) in deny | (SRT enforces) | filesystem `deny` (stricter; warns) |
-| allowWrite path | (no output) | --allow-tool flags | filesystem `write` |
+| allowWrite path | (no output) | --allow-tool flags | not compiled (Codex trust model; warns) |
 | allowedDomains domain | WebFetch(domain:X) + sandbox.network | (SRT enforces) | domain `allow` |
 | deniedDomains domain | WebFetch(domain:X) in deny | --deny-url | domain `deny` |
-| Bash allow cmd | (no output) | (no output) | prefix `allow` |
+| Bash allow cmd | (no output) | (no output) | not compiled (would auto-approve unsandboxed; warns) |
 | Bash deny cmd | Bash(cmd) + Bash(cmd *) in deny | --deny-tool 'shell(cmd)' | prefix `forbidden` |
-| Bash ask cmd | Bash(cmd) + Bash(cmd *) in ask | --deny-tool (lossy, warns) | prefix `prompt` |
+| Bash ask cmd | Bash(cmd) + Bash(cmd *) in ask | --deny-tool (lossy, warns) | not compiled (Codex prompts by default; warns) |
 
 **YOLO mode differences**: Bash ask rules are skipped entirely. Copilot `--allow-*`
 flags are omitted (subsumed by `--yolo`). Claude `permissions.ask` key is removed.
+Codex output is identical in yolo and full mode.
 
 Where Tool = Read, Edit. Claude Code matches file permissions on `Edit(path)`
 only — a single `Edit` rule covers every file-editing tool (Write, Edit,
@@ -537,6 +596,70 @@ By default `twsrt generate` never creates them, and `twsrt generate --write` pre
 them via selective merge. However, `[sandbox_overrides]` in config.toml can explicitly
 set any sandbox key (including Claude-only keys like `autoAllowBashIfSandboxed`) per mode,
 allowing different sandbox postures for yolo vs full mode.
+
+## Security Boundaries & Invariants
+
+What each agent actually enforces, where, and what twsrt deliberately does
+not compile. This is the authoritative summary; details per agent above.
+
+### Per-agent boundary matrix
+
+| Boundary | Claude Code | Copilot CLI | Codex |
+|---|---|---|---|
+| Enforcement point | app permission engine | CLI flags (per-invoke) | sandbox profile + escalation rules |
+| Built-in tools (Read/Edit/WebFetch) | in agent process, **outside** native sandbox — app rules only | in agent process — flags only, no kernel guard | work runs as sandboxed subprocesses — profile applies |
+| File deny | best-effort tool deny | none (SRT only) | profile-enforced (all access) |
+| ask tier | native | ABSENT → deny (lossy) | native default; not restated |
+| allow tier | emitted | --allow-tool | NOT compiled (would unsandbox) |
+| In-sandbox commands | Bash rules apply | rules apply | NOT governed by .rules |
+| Pinned invariants | managed sections merge | (stateless) | default_permissions, approval_policy, approvals_reviewer, allow_login_shell |
+| Known trap | allowWrite hardcoded ([#10377](https://github.com/anthropics/claude-code/issues/10377)) | ask→deny fidelity loss | sandbox_mode in ANY layer disables profile |
+
+### How canonical sources compile per agent
+
+`∅` = deliberately not compiled (with a generation-time warning where noted):
+
+```
+srt denyRead ────► claude deny(Read/Edit) ─► copilot ∅ (SRT) ──► codex fs "deny"
+srt denyWrite ───► claude deny(Edit)      ─► copilot ∅ (SRT) ──► codex "read"/glob "deny" (warn)
+srt allowWrite ──► claude ∅ (hardcoded!)  ─► copilot allow-*  ─► codex ∅ warn (trust model)
+bash allow ──────► claude ∅               ─► copilot ∅        ─► codex ∅ warn (would unsandbox)
+bash ask ────────► claude ask             ─► copilot deny warn ─► codex ∅ warn (default prompts)
+bash deny ───────► claude deny            ─► copilot deny      ─► codex "forbidden" (escalation only)
+```
+
+### Invariants
+
+1. **Canonical sources are the single source of truth.** Agent configs are
+   compiled artifacts; `twsrt diff` detects both unapplied rule changes and
+   out-of-band edits.
+2. **twsrt never weakens an agent's default posture.** Lossy translations
+   always narrow (Copilot ask→deny, Codex denyWrite-glob→deny) or skip with a
+   warning (Codex allow/ask/allowWrite) — never widen.
+3. **Selective merge owns only declared sections.** Everything else in a
+   target file (hooks, MCP servers, projects, credentials) is preserved
+   byte-for-byte where the format allows.
+4. **Fail-safe on ambiguity.** Disabled canonical sandbox, malformed paths,
+   and legacy Codex `sandbox_mode` in the managed file abort generation
+   instead of guessing.
+
+### Scope & Roadmap
+
+All three agents now ship native OS sandboxes (Claude Code: built-in
+Seatbelt/bwrap, opt-in; Copilot CLI: local sandbox in public preview; Codex:
+kernel sandbox always-on) — the [Durable Core](#solution-one-canonical-policy-compiled-per-agent)
+compiles into each of them. The bash-rules app layer is the per-agent
+best-effort supplement:
+
+- **Bash-rules translation is Claude-primary and frozen for new agents.**
+  Claude gets full deny/ask fidelity (tool-level gate); Copilot keeps
+  deny-only flags (deny takes precedence over `--yolo` — the only app-layer
+  control in yolo mode); Codex gets forbidden-only escalation rules. New
+  agents get restrictions-only compilation by default.
+- **Copilot native sandbox** (`sandbox` key in Copilot settings.json) is the
+  intended future replacement for the flag-snippet generator — deferred while
+  the feature is in public preview (backend undocumented, subject to change).
+  See `thoughts/tickets/2026-07-18-copilot-native-sandbox-target.md`.
 
 ## Development
 

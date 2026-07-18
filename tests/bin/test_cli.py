@@ -151,6 +151,7 @@ class TestGenerate:
         assert 'default_permissions = "twsrt"' in result.output
         assert "twsrt.rules" in result.output
         assert 'decision = "forbidden"' in result.output
+        assert "sandbox_mode" in result.output
 
     def test_generate_codex_write_uses_configured_user_targets(
         self, config_toml_file: Path, tmp_path: Path
@@ -168,28 +169,51 @@ class TestGenerate:
         assert "Wrote:" in result.output
         assert "Restart Codex" in result.output
 
-    def test_generate_codex_yolo_write_is_rejected_without_modifying_rules(
+    def test_generate_codex_yolo_write_produces_same_artifacts(
         self, config_toml_file: Path, tmp_path: Path
     ) -> None:
+        codex_config = tmp_path / ".codex" / "config.toml"
         codex_rules = tmp_path / ".codex" / "rules" / "twsrt.rules"
-        codex_rules.parent.mkdir(parents=True)
-        codex_rules.write_text("existing prompt rules\n")
 
-        result = runner.invoke(
+        full = runner.invoke(
+            app, ["-c", str(config_toml_file), "generate", "codex", "--write"]
+        )
+        assert full.exit_code == 0, full.output
+        full_config = codex_config.read_text()
+        full_rules = codex_rules.read_text()
+
+        yolo = runner.invoke(
             app,
-            [
-                "-c",
-                str(config_toml_file),
-                "generate",
-                "codex",
-                "--yolo",
-                "--write",
-            ],
+            ["-c", str(config_toml_file), "generate", "codex", "--yolo", "--write"],
         )
 
-        assert result.exit_code == 1
-        assert "preview-only" in result.output
-        assert codex_rules.read_text() == "existing prompt rules\n"
+        assert yolo.exit_code == 0, yolo.output
+        assert codex_config.read_text() == full_config
+        assert codex_rules.read_text() == full_rules
+
+    def test_generate_codex_without_rules_target_writes_config_only(
+        self, tmp_path: Path
+    ) -> None:
+        config = _make_config(tmp_path, {"enabled": True}, {"deny": ["rm"]})
+        codex_config = tmp_path / ".codex" / "config.toml"
+        config.write_text(
+            config.read_text()
+            + "\n[targets]\n"
+            + f'codex_config = "{codex_config}"\n'
+        )
+
+        result = runner.invoke(
+            app, ["-c", str(config), "generate", "codex", "--write"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert codex_config.exists()
+        assert not (tmp_path / ".codex" / "rules").exists()
+        assert "twsrt.rules" not in result.output
+
+        diff_result = runner.invoke(app, ["-c", str(config), "diff", "codex"])
+        assert diff_result.exit_code == 0, diff_result.output
+        assert "codex: no drift" in diff_result.output
 
     def test_generate_codex_dry_run_does_not_write(
         self, config_toml_file: Path, tmp_path: Path
@@ -863,7 +887,7 @@ class TestYoloGenerateAll:
         assert anchor.is_symlink()
         assert not copilot_path.exists()
 
-    def test_yolo_generate_all_with_codex_preflights_before_writing_any_target(
+    def test_yolo_generate_all_writes_codex_and_yolo_targets(
         self, tmp_path: Path
     ) -> None:
         config = _make_config(tmp_path, {}, {"deny": ["rm"], "ask": ["git push"]})
@@ -882,11 +906,13 @@ class TestYoloGenerateAll:
             app, ["-c", str(config), "generate", "--yolo", "--write"]
         )
 
-        assert result.exit_code == 1
-        assert "preview-only" in result.output
-        assert not claude_target.exists()
-        assert not codex_config.exists()
-        assert not codex_rules.exists()
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / ".claude" / "settings.yolo.json").exists()
+        assert codex_config.exists()
+        assert codex_rules.exists()
+        rules_text = codex_rules.read_text()
+        assert '"prompt"' not in rules_text
+        assert 'decision = "forbidden"' in rules_text
 
 
 class TestYoloGenerateCopilot:
@@ -1207,6 +1233,27 @@ class TestDiffCommand:
         assert write_result.exit_code == 0, write_result.output
 
         result = runner.invoke(app, ["-c", str(config), "diff", "codex"])
+
+        assert result.exit_code == 0, result.output
+        assert "codex: no drift" in result.output
+        assert "sandbox_mode" in result.output
+
+    def test_diff_codex_yolo_matches_written_config(self, tmp_path: Path) -> None:
+        config = _make_config(tmp_path, {"enabled": True})
+        codex_config = tmp_path / ".codex" / "config.toml"
+        codex_rules = tmp_path / ".codex" / "rules" / "twsrt.rules"
+        config.write_text(
+            config.read_text()
+            + "\n[targets]\n"
+            + f'codex_config = "{codex_config}"\n'
+            + f'codex_rules = "{codex_rules}"\n'
+        )
+        write_result = runner.invoke(
+            app, ["-c", str(config), "generate", "codex", "--write"]
+        )
+        assert write_result.exit_code == 0, write_result.output
+
+        result = runner.invoke(app, ["-c", str(config), "diff", "codex", "--yolo"])
 
         assert result.exit_code == 0, result.output
         assert "codex: no drift" in result.output

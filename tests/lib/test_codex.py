@@ -26,6 +26,7 @@ class TestCodexProfileGeneration:
             _rule(Scope.WRITE, Action.ALLOW, "."),
             _rule(Scope.WRITE, Action.ALLOW, "~/.gradle"),
             _rule(Scope.WRITE, Action.DENY, "**/.env"),
+            _rule(Scope.WRITE, Action.DENY, "~/notes.txt"),
             _rule(Scope.READ, Action.DENY, "~/.ssh"),
         ]
 
@@ -36,26 +37,34 @@ class TestCodexProfileGeneration:
         assert generated["approvals_reviewer"] == "user"
         assert generated["allow_login_shell"] is False
         profile = generated["permissions"]["twsrt"]
-        assert profile["extends"] == ":read-only"
-        assert profile["filesystem"][":workspace_roots"]["."] == "write"
+        assert profile["extends"] == ":workspace"
         assert profile["filesystem"][":workspace_roots"]["**/.env"] == "deny"
-        assert profile["filesystem"]["~/.gradle"] == "write"
+        assert "." not in profile["filesystem"][":workspace_roots"]
+        assert "~/.gradle" not in profile["filesystem"]
+        assert profile["filesystem"]["~/notes.txt"] == "read"
         assert profile["filesystem"]["~/.ssh"] == "deny"
 
     def test_equal_path_uses_most_restrictive_access(self) -> None:
         rules = [
-            _rule(Scope.WRITE, Action.ALLOW, "**/.env"),
-            _rule(Scope.WRITE, Action.DENY, "**/.env"),
-            _rule(Scope.READ, Action.DENY, "**/.env"),
+            _rule(Scope.WRITE, Action.DENY, "~/notes.txt"),
+            _rule(Scope.READ, Action.DENY, "~/notes.txt"),
         ]
 
         generated = tomllib.loads(CodexGenerator().generate_config(rules, AppConfig()))
 
-        assert (
-            generated["permissions"]["twsrt"]["filesystem"][":workspace_roots"][
-                "**/.env"
-            ]
-            == "deny"
+        assert generated["permissions"]["twsrt"]["filesystem"]["~/notes.txt"] == "deny"
+
+    def test_warns_about_skipped_allow_write_paths(self) -> None:
+        rules = [
+            _rule(Scope.WRITE, Action.ALLOW, "."),
+            _rule(Scope.WRITE, Action.ALLOW, "~/dev"),
+        ]
+
+        warnings = CodexGenerator().compatibility_warnings(AppConfig(), rules)
+
+        assert any(
+            "trust" in warning and "2 SRT allowWrite paths: ., ~/dev" in warning
+            for warning in warnings
         )
 
     def test_maps_allowed_and_denied_network_domains(self) -> None:
@@ -68,11 +77,18 @@ class TestCodexProfileGeneration:
         network = generated["permissions"]["twsrt"]["network"]
 
         assert network["enabled"] is True
-        assert network["mode"] == "limited"
+        assert "mode" not in network
         assert network["domains"] == {
             "github.com": "allow",
             "evil.example": "deny",
         }
+
+    def test_empty_domains_table_always_emitted(self) -> None:
+        generated = tomllib.loads(CodexGenerator().generate_config([], AppConfig()))
+        network = generated["permissions"]["twsrt"]["network"]
+
+        assert network["enabled"] is True
+        assert network["domains"] == {}
 
     def test_maps_only_exact_unix_socket_paths(self, tmp_path: Path) -> None:
         socket = tmp_path / "docker.sock"
@@ -97,7 +113,7 @@ class TestCodexProfileGeneration:
         assert any("httpProxyPort" in warning for warning in warnings)
 
     def test_rejects_literal_root_tilde_path(self) -> None:
-        rules = [_rule(Scope.WRITE, Action.ALLOW, "/~/dev/private")]
+        rules = [_rule(Scope.WRITE, Action.DENY, "/~/dev/private")]
 
         with pytest.raises(ValueError, match=r"/~/"):
             CodexGenerator().generate_config(rules, AppConfig())
@@ -131,7 +147,7 @@ class TestCodexProfileGeneration:
 
 
 class TestCodexExecutionRules:
-    def test_generates_starlark_prefix_rules(self) -> None:
+    def test_generates_forbidden_rules_only(self) -> None:
         rules = [
             _rule(Scope.EXECUTE, Action.DENY, "git reset --hard"),
             _rule(Scope.EXECUTE, Action.ASK, "git push"),
@@ -142,28 +158,95 @@ class TestCodexExecutionRules:
 
         assert 'pattern = ["git", "reset", "--hard"]' in generated
         assert 'decision = "forbidden"' in generated
-        assert 'pattern = ["git", "push"]' in generated
-        assert 'decision = "prompt"' in generated
-        assert 'pattern = ["gh", "pr", "view"]' in generated
-        assert 'decision = "allow"' in generated
         assert (
             'justification = "Generated from twsrt Bash intent.",\n'
-            '    match = ["gh pr view"],'
+            '    match = ["git reset --hard"],'
         ) in generated
+        assert 'decision = "prompt"' not in generated
+        assert 'decision = "allow"' not in generated
+        assert '"push"' not in generated
+        assert '"gh"' not in generated
 
-    def test_yolo_omits_prompt_rules(self) -> None:
-        rules = [_rule(Scope.EXECUTE, Action.ASK, "git push")]
+    def test_rules_identical_regardless_of_yolo(self) -> None:
+        rules = [
+            _rule(Scope.EXECUTE, Action.DENY, "rm"),
+            _rule(Scope.EXECUTE, Action.ASK, "git push"),
+        ]
 
-        generated = CodexGenerator().generate_rules(rules, AppConfig(yolo=True))
+        full = CodexGenerator().generate_rules(rules, AppConfig())
+        yolo = CodexGenerator().generate_rules(rules, AppConfig(yolo=True))
 
-        assert "git" not in generated
-        assert "prompt" not in generated
+        assert full == yolo
+
+    def test_warns_about_skipped_allow_and_ask_rules(self) -> None:
+        rules = [
+            _rule(Scope.EXECUTE, Action.ALLOW, "gh pr view"),
+            _rule(Scope.EXECUTE, Action.ASK, "git push"),
+            _rule(Scope.EXECUTE, Action.DENY, "rm"),
+        ]
+
+        warnings = CodexGenerator().compatibility_warnings(AppConfig(), rules)
+
+        assert any(
+            "unsandboxed" in warning and "gh pr view" in warning
+            for warning in warnings
+        )
+        assert any(
+            "prompts" in warning and "1 ask rule" in warning for warning in warnings
+        )
+
+    def test_always_warns_about_silent_profile_deactivation(self) -> None:
+        warnings = CodexGenerator().compatibility_warnings(AppConfig())
+
+        assert any(
+            "sandbox_mode" in warning and "config.toml" in warning
+            for warning in warnings
+        )
 
     def test_rejects_invalid_shell_syntax(self) -> None:
         rules = [_rule(Scope.EXECUTE, Action.DENY, "bash 'unterminated")]
 
         with pytest.raises(ValueError, match="Invalid Bash rule"):
             CodexGenerator().generate_rules(rules, AppConfig())
+
+
+class TestCodexOptionalRules:
+    def test_generate_without_rules_path_omits_rules_section(self) -> None:
+        config = AppConfig(codex_rules_path=None)
+        rules = [_rule(Scope.EXECUTE, Action.DENY, "rm")]
+
+        preview = CodexGenerator().generate(rules, config)
+
+        assert 'default_permissions = "twsrt"' in preview
+        assert "prefix_rule" not in preview
+        assert "--- rules:" not in preview
+
+    def test_write_without_rules_path_writes_config_only(
+        self, tmp_path: Path
+    ) -> None:
+        config = AppConfig(
+            codex_config_path=tmp_path / "config.toml",
+            codex_rules_path=None,
+        )
+        rules = [_rule(Scope.EXECUTE, Action.DENY, "rm")]
+
+        CodexGenerator().write(rules, config)
+
+        assert config.codex_config_path.exists()
+        assert not (tmp_path / "rules").exists()
+
+    def test_diff_without_rules_path_ignores_rules(self, tmp_path: Path) -> None:
+        config = AppConfig(
+            codex_config_path=tmp_path / "config.toml",
+            codex_rules_path=None,
+        )
+        rules = [_rule(Scope.EXECUTE, Action.DENY, "rm")]
+        generator = CodexGenerator()
+        generator.write(rules, config)
+
+        result = generator.diff(rules, config.codex_config_path, config)
+
+        assert result.matched is True
 
 
 class TestCodexMergeAndDrift:
@@ -221,9 +304,10 @@ class TestCodexMergeAndDrift:
             CodexGenerator().write([], config)
 
     def test_diff_compares_only_owned_config_and_rules(self, tmp_path: Path) -> None:
+        rules_path = tmp_path / "rules" / "twsrt.rules"
         config = AppConfig(
             codex_config_path=tmp_path / "config.toml",
-            codex_rules_path=tmp_path / "rules" / "twsrt.rules",
+            codex_rules_path=rules_path,
         )
         rules = [_rule(Scope.EXECUTE, Action.DENY, "rm")]
         generator = CodexGenerator()
@@ -233,7 +317,7 @@ class TestCodexMergeAndDrift:
             stream.write('\n[foreign]\nmodel = "foreign"\n')
         assert generator.diff(rules, config.codex_config_path, config).matched is True
 
-        config.codex_rules_path.write_text("")
+        rules_path.write_text("")
         drift = generator.diff(rules, config.codex_config_path, config)
         assert drift.matched is False
         assert any("twsrt.rules" in entry for entry in drift.missing)
