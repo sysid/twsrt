@@ -197,14 +197,10 @@ class TestGenerate:
         config = _make_config(tmp_path, {"enabled": True}, {"deny": ["rm"]})
         codex_config = tmp_path / ".codex" / "config.toml"
         config.write_text(
-            config.read_text()
-            + "\n[targets]\n"
-            + f'codex_config = "{codex_config}"\n'
+            config.read_text() + "\n[targets]\n" + f'codex_config = "{codex_config}"\n'
         )
 
-        result = runner.invoke(
-            app, ["-c", str(config), "generate", "codex", "--write"]
-        )
+        result = runner.invoke(app, ["-c", str(config), "generate", "codex", "--write"])
 
         assert result.exit_code == 0, result.output
         assert codex_config.exists()

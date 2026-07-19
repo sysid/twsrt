@@ -368,11 +368,17 @@ Deny rules still apply — Claude's `--dangerously-skip-permissions` does not ov
 
 ## Codex Configuration (`generate codex -w`)
 
-Codex ships its own always-on kernel sandbox. twsrt therefore compiles only
-**restrictions** into a native permission profile named `twsrt`, selected via
-`default_permissions`. The profile extends the built-in `:workspace` base
-(workspace + tmp writable, `.git`/`.codex`/`.agents` protected) and adds:
+Codex ships its own always-on kernel sandbox. twsrt compiles the canonical
+filesystem and network policy into a native permission profile named `twsrt`,
+selected via `default_permissions`. The profile extends the built-in
+`:workspace` base (workspace + tmp writable, `.git`/`.codex`/`.agents`
+protected) and adds:
 
+- Absolute and home-relative `allowWrite` paths → reusable workspace roots;
+  a terminal `/**` or trailing slash is normalized to the concrete
+  directory. Relative paths such as `.` are already covered by the runtime
+  workspace. Unsupported shapes (`~`, `/`, other wildcards) and roots also
+  matched by a deny rule are skipped with a warning — the deny wins.
 - `denyRead` paths → filesystem `deny` (blocks Codex's default read-everything)
 - `denyWrite` exact paths → `read`; `denyWrite` globs → `deny` (stricter,
   fail-safe — Codex cannot express read-only for globs; warned)
@@ -381,11 +387,12 @@ Codex ships its own always-on kernel sandbox. twsrt therefore compiles only
   domain traffic, matching SRT allowlist semantics.
 - Exact Unix socket paths → `unix_sockets` allow entries
 
+Added workspace roots inherit the `:workspace` write policy and every rule in
+`filesystem.:workspace_roots`, so canonical deny globs constrain them without
+repeating `"." = "write"`.
+
 **Deliberately NOT compiled** (each skip is warned at generation time):
 
-- **SRT `allowWrite` paths.** Codex's per-project trust model governs writes;
-  compiling `~/dev`-style paths would make them writable in *every* session
-  regardless of cwd, bypassing per-project trust and `.git` protection.
 - **bash-rules `allow` commands.** In Codex, an `allow` execution rule means
   "run **outside the sandbox** without prompting" — auto-approved unsandboxed
   execution, strictly weaker than the default (prompt on every escalation).
@@ -545,7 +552,8 @@ Comprehensive example:
 | denyRead file | Tool(path) in deny | (SRT enforces) | filesystem `deny` |
 | denyWrite exact path | Edit(path) in deny | (SRT enforces) | filesystem `read` |
 | denyWrite glob | Edit(pattern) in deny | (SRT enforces) | filesystem `deny` (stricter; warns) |
-| allowWrite path | (no output) | --allow-tool flags | not compiled (Codex trust model; warns) |
+| allowWrite absolute/home path | (no output) | --allow-tool flags | profile workspace root |
+| allowWrite relative path | (no output) | --allow-tool flags | runtime workspace already covers it |
 | allowedDomains domain | WebFetch(domain:X) + sandbox.network | (SRT enforces) | domain `allow` |
 | deniedDomains domain | WebFetch(domain:X) in deny | --deny-url | domain `deny` |
 | Bash allow cmd | (no output) | (no output) | not compiled (would auto-approve unsandboxed; warns) |
@@ -610,7 +618,7 @@ not compile. This is the authoritative summary; details per agent above.
 | Built-in tools (Read/Edit/WebFetch) | in agent process, **outside** native sandbox — app rules only | in agent process — flags only, no kernel guard | work runs as sandboxed subprocesses — profile applies |
 | File deny | best-effort tool deny | none (SRT only) | profile-enforced (all access) |
 | ask tier | native | ABSENT → deny (lossy) | native default; not restated |
-| allow tier | emitted | --allow-tool | NOT compiled (would unsandbox) |
+| allow tier | emitted | --allow-tool | filesystem roots compiled; Bash allow not compiled |
 | In-sandbox commands | Bash rules apply | rules apply | NOT governed by .rules |
 | Pinned invariants | managed sections merge | (stateless) | default_permissions, approval_policy, approvals_reviewer, allow_login_shell |
 | Known trap | allowWrite hardcoded ([#10377](https://github.com/anthropics/claude-code/issues/10377)) | ask→deny fidelity loss | sandbox_mode in ANY layer disables profile |
@@ -622,7 +630,7 @@ not compile. This is the authoritative summary; details per agent above.
 ```
 srt denyRead ────► claude deny(Read/Edit) ─► copilot ∅ (SRT) ──► codex fs "deny"
 srt denyWrite ───► claude deny(Edit)      ─► copilot ∅ (SRT) ──► codex "read"/glob "deny" (warn)
-srt allowWrite ──► claude ∅ (hardcoded!)  ─► copilot allow-*  ─► codex ∅ warn (trust model)
+srt allowWrite ──► claude ∅ (hardcoded!)  ─► copilot allow-*  ─► codex workspace roots
 bash allow ──────► claude ∅               ─► copilot ∅        ─► codex ∅ warn (would unsandbox)
 bash ask ────────► claude ask             ─► copilot deny warn ─► codex ∅ warn (default prompts)
 bash deny ───────► claude deny            ─► copilot deny      ─► codex "forbidden" (escalation only)
@@ -633,9 +641,10 @@ bash deny ───────► claude deny            ─► copilot deny   
 1. **Canonical sources are the single source of truth.** Agent configs are
    compiled artifacts; `twsrt diff` detects both unapplied rule changes and
    out-of-band edits.
-2. **twsrt never weakens an agent's default posture.** Lossy translations
-   always narrow (Copilot ask→deny, Codex denyWrite-glob→deny) or skip with a
-   warning (Codex allow/ask/allowWrite) — never widen.
+2. **Canonical allows widen only the named sandbox boundary.** SRT
+   `allowWrite` directories become Codex workspace roots, retaining inherited
+   protected paths and deny globs. Lossy translations narrow or skip with a
+   warning; Bash allows never become unsandboxed execution.
 3. **Selective merge owns only declared sections.** Everything else in a
    target file (hooks, MCP servers, projects, credentials) is preserved
    byte-for-byte where the format allows.

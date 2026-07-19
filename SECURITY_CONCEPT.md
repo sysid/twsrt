@@ -479,8 +479,8 @@ ensures administrators are aware of the fidelity loss.
 
 ### 6.3 Codex
 
-Codex ships an always-on kernel sandbox of its own. twsrt therefore compiles
-only **restrictions** into a user-level named permission profile in
+Codex ships an always-on kernel sandbox of its own. twsrt compiles canonical
+filesystem and network policy into a user-level named permission profile in
 `~/.codex/config.toml` (extending the built-in `:workspace` base) plus
 `deny`-only execution-prefix rules in `~/.codex/rules/twsrt.rules`. The
 profile is the enforcement boundary for local subprocesses; the prefix rules
@@ -494,25 +494,26 @@ permission profiles are Beta, `.rules` files are Experimental.
 | denyRead path/glob | filesystem `deny` | Blocks Codex's default read-everything posture |
 | denyWrite exact path | filesystem `read` | Read-only |
 | denyWrite glob | filesystem `deny` + warning | **Lossy narrowing**: Codex cannot express read-only for globs; deny blocks reads too (fail-safe) |
-| allowWrite path | Not compiled + warning | See 6.3.2 |
+| allowWrite absolute/home path | Profile workspace root | Terminal `/**` and trailing slashes normalize to the concrete directory; unsupported shapes (`~`, `/`, other globs) and deny-conflicted roots are skipped with a warning; inherited workspace rules provide writes and deny overrides |
+| allowWrite relative path | No additional output | Already covered by the runtime workspace |
 | allowedDomains / deniedDomains | network `domains` allow/deny | `domains` table always emitted; empty map blocks all domain traffic (allowlist semantics) |
 | Exact Unix socket path | network `unix_sockets` allow | Directory entries skipped with warning |
 | Bash deny command | `prefix_rule(..., decision = "forbidden")` | Hard deny instead of default prompt for sandbox-escape requests; rules file only generated while `codex_rules` is set in config.toml (optional) |
 | Bash ask command | Not compiled + warning | See 6.3.2 |
 | Bash allow command | Not compiled + warning | See 6.3.2 |
 
+Accepted trade-off: an added workspace root is writable in every Codex
+session regardless of the working directory — exactly the grant canonical
+`allowWrite` expresses, but broader than Codex's per-project trust default.
+The inherited `.git`/`.codex`/`.agents` protection and the deny rules in
+`filesystem.:workspace_roots` bound the blast radius, and a root that
+collides with a deny rule is dropped in favor of the deny.
+
 #### 6.3.2 Deliberately Not Compiled
 
-Three canonical rule classes are skipped for Codex, each with a
-generation-time warning. All three skips follow the same principle: **never
-weaken Codex's default posture**.
+Two canonical rule classes are skipped for Codex, each with a generation-time
+warning. Both skips avoid weakening Codex's escalation boundary.
 
-- **SRT `allowWrite` paths.** Codex governs writes through its per-project
-  trust model (workspace + tmp writable, `.git`/`.codex`/`.agents`
-  protected). Compiling a path like `~/dev` as a direct `write` entry would
-  make it writable in *every* session regardless of working directory —
-  bypassing per-project trust and the `.git` protection that only applies to
-  workspace roots. A widening, not a translation.
 - **bash-rules `allow` commands.** In Codex's rules language,
   `decision = "allow"` means "run this command **outside the sandbox**
   without prompting" — auto-approved unsandboxed execution. That is strictly

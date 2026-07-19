@@ -25,6 +25,9 @@ class TestCodexProfileGeneration:
         rules = [
             _rule(Scope.WRITE, Action.ALLOW, "."),
             _rule(Scope.WRITE, Action.ALLOW, "~/.gradle"),
+            _rule(Scope.WRITE, Action.ALLOW, "/private/tmp"),
+            _rule(Scope.WRITE, Action.ALLOW, "~/dev/private/**"),
+            _rule(Scope.WRITE, Action.ALLOW, "~/dev/private"),
             _rule(Scope.WRITE, Action.DENY, "**/.env"),
             _rule(Scope.WRITE, Action.DENY, "~/notes.txt"),
             _rule(Scope.READ, Action.DENY, "~/.ssh"),
@@ -38,9 +41,13 @@ class TestCodexProfileGeneration:
         assert generated["allow_login_shell"] is False
         profile = generated["permissions"]["twsrt"]
         assert profile["extends"] == ":workspace"
+        assert profile["workspace_roots"] == {
+            "~/.gradle": True,
+            "/private/tmp": True,
+            "~/dev/private": True,
+        }
         assert profile["filesystem"][":workspace_roots"]["**/.env"] == "deny"
         assert "." not in profile["filesystem"][":workspace_roots"]
-        assert "~/.gradle" not in profile["filesystem"]
         assert profile["filesystem"]["~/notes.txt"] == "read"
         assert profile["filesystem"]["~/.ssh"] == "deny"
 
@@ -54,7 +61,7 @@ class TestCodexProfileGeneration:
 
         assert generated["permissions"]["twsrt"]["filesystem"]["~/notes.txt"] == "deny"
 
-    def test_warns_about_skipped_allow_write_paths(self) -> None:
+    def test_supported_allow_write_paths_do_not_warn(self) -> None:
         rules = [
             _rule(Scope.WRITE, Action.ALLOW, "."),
             _rule(Scope.WRITE, Action.ALLOW, "~/dev"),
@@ -62,9 +69,51 @@ class TestCodexProfileGeneration:
 
         warnings = CodexGenerator().compatibility_warnings(AppConfig(), rules)
 
+        assert not any("allowWrite" in warning for warning in warnings)
+
+    @pytest.mark.parametrize(
+        "pattern", ["~/dev/*/cache", "~", "~/", "~/**", "/", "/**"]
+    )
+    def test_skips_unsupported_allow_write_shapes_with_warning(
+        self, pattern: str
+    ) -> None:
+        rules = [_rule(Scope.WRITE, Action.ALLOW, pattern)]
+        generator = CodexGenerator()
+
+        generated = tomllib.loads(generator.generate_config(rules, AppConfig()))
+        warnings = generator.compatibility_warnings(AppConfig(), rules)
+
+        assert "workspace_roots" not in generated["permissions"]["twsrt"]
         assert any(
-            "trust" in warning and "2 SRT allowWrite paths: ., ~/dev" in warning
+            "concrete directories" in warning and pattern in warning
             for warning in warnings
+        )
+
+    def test_normalizes_trailing_slash_and_glob_suffix_to_one_root(self) -> None:
+        rules = [
+            _rule(Scope.WRITE, Action.ALLOW, "~/dev/"),
+            _rule(Scope.WRITE, Action.ALLOW, "~/dev/**"),
+        ]
+
+        generated = tomllib.loads(CodexGenerator().generate_config(rules, AppConfig()))
+
+        assert generated["permissions"]["twsrt"]["workspace_roots"] == {"~/dev": True}
+
+    def test_deny_rule_wins_over_allow_write_workspace_root(self) -> None:
+        rules = [
+            _rule(Scope.WRITE, Action.ALLOW, "~/dev"),
+            _rule(Scope.READ, Action.DENY, "~/dev"),
+        ]
+        generator = CodexGenerator()
+
+        generated = tomllib.loads(generator.generate_config(rules, AppConfig()))
+        warnings = generator.compatibility_warnings(AppConfig(), rules)
+
+        profile = generated["permissions"]["twsrt"]
+        assert "workspace_roots" not in profile
+        assert profile["filesystem"]["~/dev"] == "deny"
+        assert any(
+            "kept the deny" in warning and "~/dev" in warning for warning in warnings
         )
 
     def test_maps_allowed_and_denied_network_domains(self) -> None:
@@ -188,8 +237,7 @@ class TestCodexExecutionRules:
         warnings = CodexGenerator().compatibility_warnings(AppConfig(), rules)
 
         assert any(
-            "unsandboxed" in warning and "gh pr view" in warning
-            for warning in warnings
+            "unsandboxed" in warning and "gh pr view" in warning for warning in warnings
         )
         assert any(
             "prompts" in warning and "1 ask rule" in warning for warning in warnings
@@ -221,9 +269,7 @@ class TestCodexOptionalRules:
         assert "prefix_rule" not in preview
         assert "--- rules:" not in preview
 
-    def test_write_without_rules_path_writes_config_only(
-        self, tmp_path: Path
-    ) -> None:
+    def test_write_without_rules_path_writes_config_only(self, tmp_path: Path) -> None:
         config = AppConfig(
             codex_config_path=tmp_path / "config.toml",
             codex_rules_path=None,

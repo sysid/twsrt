@@ -66,9 +66,7 @@ class TestLoadConfig:
     ) -> None:
         config_path = tmp_twsrt_dir / "config.toml"
         codex_config = tmp_path / ".codex" / "config.toml"
-        config_path.write_text(
-            "[targets]\n" + f'codex_config = "{codex_config}"\n'
-        )
+        config_path.write_text("[targets]\n" + f'codex_config = "{codex_config}"\n')
 
         config = load_config(config_path)
 
