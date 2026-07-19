@@ -340,12 +340,10 @@ bash deny `rm`/`sudo`, bash ask `git push`, denyRead `~/.aws`):
 }
 ```
 
-**YOLO mode** (`generate --yolo claude -w`): Same selective merge, but the `permissions.ask`
+**YOLO mode** (`generate --yolo claude -w`): Same selective merge, only the `permissions.ask`
 section is removed.
 
 Target defaults to `settings.yolo.json`.
-
-Deny rules still apply — Claude's `--dangerously-skip-permissions` does not override deny entries.
 
 **What changed** (twsrt-managed) vs **what didn't** (user-managed):
 
@@ -443,12 +441,7 @@ weaker-isolation switches. A disabled canonical SRT sandbox or a malformed
 
 [SRT](https://github.com/anthropic-experimental/sandbox-runtime) is needed only
 for wrapping a whole agent (e.g. `srt -c "copilot --yolo ..."`) — Claude Code
-and Codex bring native sandboxes. Recommended fork with proxy and browser
-support:
-
-```bash
-npm install -g @sysid/sandbox-runtime-improved
-```
+and Codex bring native sandboxes. 
 
 > GOTCHA: [sandbox write allowlist is hardcoded and currently cannot be managed in claude-code](https://github.com/anthropics/claude-code/issues/10377#issuecomment-3468689124)
 
