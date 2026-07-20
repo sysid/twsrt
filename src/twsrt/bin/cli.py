@@ -6,12 +6,12 @@ import json
 import logging
 import os
 import subprocess
+import tempfile
 from pathlib import Path
-from typing import Optional
 
 import typer
 
-from twsrt.lib.models import AppConfig, yolo_path
+from twsrt.lib.models import AppConfig, CompilationResult, yolo_path
 
 __version__ = "0.8.0"
 
@@ -20,7 +20,6 @@ app = typer.Typer(
     help="Agent security configuration generator.",
     no_args_is_help=True,
 )
-
 log = logging.getLogger("twsrt")
 
 
@@ -55,63 +54,221 @@ def main(
     ctx.obj["config_path"] = config.expanduser()
 
 
-# Default config.toml content
 DEFAULT_CONFIG_TOML = """\
-[sources]
-srt = "~/.srt-settings.json"
-bash_rules = "~/.config/twsrt/bash-rules.json"
+# twsrt canonical-source registry and generation targets.
+#
+# Human-maintained policy lives in the registered *.jsonc fragments. twsrt
+# resolves one profile, composes its fragments, and writes strict canonical JSON
+# plus agent-specific configuration. Relative paths below resolve from this file.
+
+# Required configuration schema. Unsupported versions fail instead of guessing.
+schema_version = 1
+
+# Profile used by generate/diff when --profile is omitted.
+default_profile = "default"
+
+
+# -----------------------------------------------------------------------------
+# Canonical source kinds
+# -----------------------------------------------------------------------------
+# Both registered kinds, srt and bash, are required. Each kind has one generated
+# strict-JSON output and one or more named JSONC fragments. Output paths must be
+# distinct and must not be the same path as any input fragment.
+
+[sources.srt]
+# Compiled Sandbox Runtime configuration. This is generated; do not hand-edit it.
+output = "~/.srt-settings.json"
+
+[sources.srt.fragments.base]
+# Fragment names are arbitrary profile-facing identifiers.
+path = "srt/base.jsonc"
+
+# Additional SRT fragment example:
+# [sources.srt.fragments.work]
+# path = "srt/work.jsonc"
+
+[sources.bash]
+# Compiled command-policy JSON consumed by the agent generators.
+output = "bash-rules.json"
+
+[sources.bash.fragments.base]
+path = "bash/base.jsonc"
+
+# Additional Bash fragment example:
+# [sources.bash.fragments.work]
+# path = "bash/work.jsonc"
+
+
+# -----------------------------------------------------------------------------
+# Profiles
+# -----------------------------------------------------------------------------
+# A resolved profile must select at least one fragment for every source kind.
+# Parents resolve before children; repeated fragment names are deduplicated.
+# Inheritance adds compatible fragments—it does not override conflicting values.
+
+[profiles.default]
+srt = ["base"]
+bash = ["base"]
+
+# Profile inheritance and additional selection example:
+# [profiles.work]
+# extends = ["default"]
+# srt = ["work"]
+# bash = ["work"]
+
+# Multiple-parent example; parent order is significant and stable:
+# [profiles.combined]
+# extends = ["default", "work"]
+# srt = []
+# bash = []
+
+
+# -----------------------------------------------------------------------------
+# Generated agent targets
+# -----------------------------------------------------------------------------
+# Every supported target key is shown here. Home-relative and absolute paths are
+# supported. Relative paths resolve from the directory containing config.toml.
 
 [targets]
+# Full-mode settings file. It must not be named settings.json because that path
+# is reserved for twsrt's symlink anchor.
 claude_settings = "~/.claude/settings.full.json"
+
+# Optional. When omitted, generate prints flags to stdout instead of writing them.
+# copilot_output = "copilot-flags.txt"
+
+# Optional for generate-all writes. Setting it enables the Codex target there.
 codex_config = "~/.codex/config.toml"
-codex_rules = "~/.codex/rules/twsrt.rules"    # optional: omit to skip escalation rules
-# copilot_output = "~/.config/twsrt/copilot-flags.txt"    # optional, stdout if omitted
 
-# YOLO target overrides (optional — defaults to inserting .yolo before extension)
+# Optional. Omit to disable generation of sandbox-escape escalation rules.
+codex_rules = "~/.codex/rules/twsrt.rules"
+
+# Optional explicit YOLO targets. When omitted, twsrt inserts ".yolo" before the
+# final suffix of the corresponding full-mode target.
 # claude_settings_yolo = "~/.claude/settings.yolo.json"
-# copilot_output_yolo = "~/.config/twsrt/copilot-flags.yolo.txt"  # optional, stdout if omitted
+# copilot_output_yolo = "copilot-flags.yolo.txt"
 
-# Mode-specific sandbox overrides (applied after SRT values, take precedence)
+
+# -----------------------------------------------------------------------------
+# Mode-specific sandbox overrides
+# -----------------------------------------------------------------------------
+# These optional tables are shallow top-level overrides applied after compiled
+# SRT values: [sandbox_overrides.yolo] for --yolo, otherwise
+# [sandbox_overrides.full]. Prefer canonical SRT JSONC for shared policy.
+#
+# Known top-level sandbox keys accepted here:
+#   enabled = true | false
+#   enableWeakerNetworkIsolation = true | false
+#   enableWeakerNestedSandbox = true | false
+#   autoAllowBashIfSandboxed = true | false
+#   allowUnsandboxedCommands = true | false
+#   excludedCommands = ["command", ...]
+#   ignoreViolations = { "executable" = ["path", ...] }
+#
+# Known nested network keys:
+#   allowedDomains, deniedDomains, allowUnixSockets, allowAllUnixSockets,
+#   allowLocalBinding, httpProxyPort, socksProxyPort
+#
+# Known nested filesystem keys:
+#   allowWrite, denyWrite, denyRead
+#
+# WARNING: a nested [sandbox_overrides.<mode>.network] or .filesystem table
+# replaces that entire compiled section because overrides are shallow. Configure
+# those keys in SRT JSONC fragments unless complete replacement is intentional.
+
 [sandbox_overrides.yolo]
+# YOLO skips command confirmation, so keep the kernel sandbox enabled and forbid
+# falling back to unsandboxed execution.
 enabled = true
 autoAllowBashIfSandboxed = true
 allowUnsandboxedCommands = false
 
+# Optional top-level examples:
+# enableWeakerNetworkIsolation = false
+# enableWeakerNestedSandbox = false
+# excludedCommands = ["docker"]
+# ignoreViolations = { "*" = ["/usr/bin"] }
+
+# Complete nested replacement examples—normally keep these in SRT JSONC:
+# [sandbox_overrides.yolo.network]
+# allowedDomains = ["github.com"]
+# deniedDomains = ["example.invalid"]
+# allowUnixSockets = ["/tmp/example.sock"]
+# allowAllUnixSockets = false
+# allowLocalBinding = true
+# httpProxyPort = 8080
+# socksProxyPort = 1080
+#
+# [sandbox_overrides.yolo.filesystem]
+# allowWrite = ["."]
+# denyWrite = ["**/.env"]
+# denyRead = ["~/.ssh"]
+
 [sandbox_overrides.full]
+# Full mode retains interactive approval, so this profile intentionally disables
+# the agent's native sandbox. Remove this override to inherit SRT's enabled value.
 enabled = false
+
+# The same seven top-level and ten nested keys documented above are valid here.
+"""
+DEFAULT_SRT_JSONC = """\
+{
+  // Canonical Sandbox Runtime policy. Add more fragments in config.toml.
+  "enabled": true,
+  "filesystem": {
+    "allowWrite": [],
+    "denyWrite": [],
+    "denyRead": []
+  },
+  "network": {
+    "allowedDomains": [],
+    "deniedDomains": []
+  }
+}
+"""
+DEFAULT_BASH_JSONC = """\
+{
+  // Agent command policy.
+  "allow": [],
+  "ask": [],
+  "deny": []
+}
 """
 
-# Default bash-rules.json content
-DEFAULT_BASH_RULES = json.dumps({"allow": [], "deny": [], "ask": []}, indent=2)
 
-
-@app.command()
-def init(
-    force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing files"),
-    dir: Optional[Path] = typer.Option(
-        None,
-        "--dir",
-        help="Target directory (default: ~/.config/twsrt)",
+@app.command(name="config")
+def config_command(
+    ctx: typer.Context,
+    init: bool = typer.Option(
+        False,
+        "--init",
+        help="Create a commented starter configuration before opening it.",
     ),
 ) -> None:
-    """Initialize ~/.config/twsrt/ config directory with default files."""
-    twsrt_dir = (dir or Path("~/.config/twsrt")).expanduser()
-    twsrt_dir.mkdir(parents=True, exist_ok=True)
+    """Open the canonical configuration in $EDITOR."""
+    target: Path = ctx.obj["config_path"]
+    if not target.exists():
+        if not init:
+            typer.echo(f"Config not found: {target}. Use --init to create.", err=True)
+            raise typer.Exit(2)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(DEFAULT_CONFIG_TOML)
+        starters = {
+            target.parent / "srt/base.jsonc": DEFAULT_SRT_JSONC,
+            target.parent / "bash/base.jsonc": DEFAULT_BASH_JSONC,
+        }
+        for path, content in starters.items():
+            if not path.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content)
 
-    config_file = twsrt_dir / "config.toml"
-    bash_rules_file = twsrt_dir / "bash-rules.json"
-
-    for filepath, content in [
-        (config_file, DEFAULT_CONFIG_TOML),
-        (bash_rules_file, DEFAULT_BASH_RULES),
-    ]:
-        if filepath.exists() and not force:
-            typer.echo(f"  Exists, skipping: {filepath}")
-        else:
-            filepath.write_text(content)
-            typer.echo(f"  Created: {filepath}")
-
-    typer.echo("Init complete.")
+    editor = _resolve_editor()
+    try:
+        result = subprocess.run([editor, str(target)])
+    except FileNotFoundError:
+        typer.echo(f"Editor not found: {editor}", err=True)
+        raise typer.Exit(1)
+    raise typer.Exit(result.returncode)
 
 
 @app.command()
@@ -120,148 +277,240 @@ def generate(
     agent: str = typer.Argument(
         "all", help="Target agent: claude, copilot, codex, or all"
     ),
-    write: bool = typer.Option(False, "--write", "-w", help="Write to target files"),
-    dry_run: bool = typer.Option(
-        False, "--dry-run", "-n", help="Show what would be written"
-    ),
-    yolo: bool = typer.Option(
-        False, "--yolo", help="YOLO mode: deny-only config, no ask rules"
+    write: bool = typer.Option(False, "--write", "-w", help="Write target files"),
+    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show writes"),
+    yolo: bool = typer.Option(False, "--yolo", help="Deny-only agent mode"),
+    profile: str | None = typer.Option(
+        None, "--profile", "-p", help="Canonical-source profile"
     ),
 ) -> None:
-    """Generate agent-specific security config from canonical sources."""
-    from twsrt.lib.agent import GENERATORS
-    from twsrt.lib.claude import selective_merge
-    from twsrt.lib.config import load_config
-    from twsrt.lib.sources import read_bash_rules, read_srt
-
-    config_path = ctx.obj["config_path"]
-    config = load_config(config_path)
-
+    """Compile canonical sources and generate agent-specific configuration."""
     try:
-        srt_result = read_srt(config.srt_path)
-        bash_rules = read_bash_rules(config.bash_rules_path)
-    except (FileNotFoundError, ValueError) as e:
-        typer.echo(f"Error: {e}", err=True)
+        config, compiled = _compile(ctx.obj["config_path"], profile, yolo)
+        generators = _select_generators(agent, config, for_write=write)
+        rendered = {
+            generator.name: generator.generate(compiled.rules, config)
+            for generator in generators
+        }
+        staged = (
+            _stage_agent_files(generators, rendered, compiled, config) if write else {}
+        )
+    except (FileExistsError, FileNotFoundError, ValueError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
 
-    all_rules = srt_result.rules + bash_rules
-    config.network_config = srt_result.network_config
-    config.filesystem_config = srt_result.filesystem_config
-    config.sandbox_config = srt_result.sandbox_config
-    config.srt_sandbox_enabled = srt_result.sandbox_config.get("enabled")
+    _print_codex_warnings(generators, compiled, config)
+    if write and dry_run:
+        for document in compiled.documents.values():
+            typer.echo(f"Would write canonical: {document.output_path}")
+        for path in staged:
+            typer.echo(f"Would write agent target: {path}")
+        for name, output in rendered.items():
+            typer.echo(f"--- Dry run: {name} ---")
+            typer.echo(output)
+        return
+
+    if write:
+        for document in compiled.documents.values():
+            _atomic_write(document.output_path, _serialize(document.document))
+            typer.echo(f"Wrote canonical: {document.output_path}")
+        _write_agent_files(staged, config)
+        for path in staged:
+            typer.echo(f"Wrote: {path}")
+        if "codex" in rendered:
+            typer.echo(
+                "Restart Codex to load the updated permission profile and rules."
+            )
+        for generator in generators:
+            if generator.name == "copilot" and _resolve_copilot_target(config) is None:
+                typer.echo(rendered[generator.name])
+        return
+
+    for name, output in rendered.items():
+        if len(rendered) > 1:
+            typer.echo(f"--- {name} ---")
+        typer.echo(output)
+
+
+@app.command()
+def diff(
+    ctx: typer.Context,
+    agent: str = typer.Argument(
+        "all", help="Target agent: claude, copilot, codex, or all"
+    ),
+    yolo: bool = typer.Option(False, "--yolo", help="Diff yolo agent targets"),
+    profile: str | None = typer.Option(
+        None, "--profile", "-p", help="Canonical-source profile"
+    ),
+) -> None:
+    """Compare compiled canonical and agent configuration with disk."""
+    try:
+        config, compiled = _compile(ctx.obj["config_path"], profile, yolo)
+        generators = _select_generators(agent, config, for_write=True)
+    except (FileNotFoundError, ValueError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+
+    has_drift = False
+    for kind, document in compiled.documents.items():
+        actual = _read_json_object(document.output_path)
+        if actual == document.document:
+            typer.echo(f"{kind} canonical: no drift")
+        else:
+            has_drift = True
+            typer.echo(f"{kind} canonical: drift")
+
+    for generator in generators:
+        target = _resolve_diff_target(generator.name, config)
+        if target is None or not target.exists():
+            typer.echo(
+                f"Error: Target file not found for {generator.name}: {target}", err=True
+            )
+            raise typer.Exit(2)
+        if (
+            generator.name == "codex"
+            and config.codex_rules_path is not None
+            and not config.codex_rules_path.exists()
+        ):
+            typer.echo(
+                f"Error: Target file not found for codex: {config.codex_rules_path}",
+                err=True,
+            )
+            raise typer.Exit(2)
+        try:
+            result = generator.diff(compiled.rules, target, config)
+        except ValueError as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(1)
+        if result.matched:
+            typer.echo(f"{generator.name}: no drift")
+        else:
+            has_drift = True
+            typer.echo(
+                f"{generator.name}: {len(result.missing)} missing, "
+                f"{len(result.extra)} extra"
+            )
+            for entry in result.missing:
+                typer.echo(f"  + {entry} (missing from existing)")
+            for entry in result.extra:
+                typer.echo(f"  - {entry} (in existing, not in sources)")
+        if generator.name == "codex":
+            from twsrt.lib.codex import SILENT_DEACTIVATION_WARNING
+
+            typer.echo(f"Warning: {SILENT_DEACTIVATION_WARNING}", err=True)
+
+    if has_drift:
+        raise typer.Exit(1)
+
+
+def _compile(
+    config_path: Path, profile_name: str | None, yolo: bool
+) -> tuple[AppConfig, CompilationResult]:
+    from twsrt.lib.config import load_config
+    from twsrt.lib.profiles import resolve_profile
+    from twsrt.lib.sources import compile_sources
+
+    config = load_config(config_path)
+    compiled = compile_sources(config, resolve_profile(config, profile_name))
+    srt = compiled.srt_result
+    config.network_config = srt.network_config
+    config.filesystem_config = srt.filesystem_config
+    config.sandbox_config = srt.sandbox_config
+    config.srt_sandbox_enabled = srt.sandbox_config.get("enabled")
     config.yolo = yolo
     config.apply_sandbox_overrides()
+    return config, compiled
+
+
+def _select_generators(agent: str, config: AppConfig, for_write: bool) -> list:
+    from twsrt.lib.agent import GENERATORS
 
     if agent == "all":
         generators = list(GENERATORS.values())
-        if write and not config.codex_targets_configured:
-            generators = [gen for gen in generators if gen.name != "codex"]
-    elif agent in GENERATORS:
-        generators = [GENERATORS[agent]]
-    else:
-        typer.echo(
-            f"Error: Unknown agent '{agent}'. Available: {', '.join(GENERATORS)}",
-            err=True,
-        )
-        raise typer.Exit(1)
+        if for_write and not config.codex_targets_configured:
+            generators = [
+                generator for generator in generators if generator.name != "codex"
+            ]
+        return generators
+    if agent not in GENERATORS:
+        raise ValueError(f"Unknown agent {agent!r}. Available: {', '.join(GENERATORS)}")
+    return [GENERATORS[agent]]
 
-    for gen in generators:
-        try:
-            output = gen.generate(all_rules, config)
-        except ValueError as e:
-            typer.echo(f"Error: {e}", err=True)
-            raise typer.Exit(1)
 
-        if gen.name == "codex":
-            from twsrt.lib.codex import CodexGenerator
+def _stage_agent_files(
+    generators: list,
+    rendered: dict[str, str],
+    compiled: CompilationResult,
+    config: AppConfig,
+) -> dict[Path, str]:
+    from twsrt.lib.claude import selective_merge
+    from twsrt.lib.codex import CodexGenerator
 
-            for warning in CodexGenerator().compatibility_warnings(config, all_rules):
-                typer.echo(f"Warning: {warning}", err=True)
-            typer.echo(
-                "Warning: Codex execution rules apply only to requests to run "
-                "outside the sandbox.",
-                err=True,
+    staged: dict[Path, str] = {}
+    for generator in generators:
+        if generator.name == "claude":
+            target = _resolve_claude_target(config)
+            existing = target
+            anchor = config.symlink_anchor
+            if anchor.exists() and not anchor.is_symlink() and target.exists():
+                raise FileExistsError(
+                    f"both {anchor} (regular file) and {target} exist. "
+                    "Remove one before running generate -w."
+                )
+            if not existing.exists() and anchor.exists() and not anchor.is_symlink():
+                existing = anchor
+            generated = json.loads(rendered[generator.name])
+            document = (
+                selective_merge(existing, generated) if existing.exists() else generated
             )
+            staged[target] = json.dumps(document, indent=2) + "\n"
+        elif generator.name == "copilot":
+            target = _resolve_copilot_target(config)
+            if target is not None:
+                staged[target] = rendered[generator.name] + "\n"
+        elif generator.name == "codex":
+            assert isinstance(generator, CodexGenerator)
+            staged.update(generator.render_write_files(compiled.rules, config))
+    return staged
 
-        if write and not dry_run:
-            if gen.name == "claude":
-                target = _resolve_claude_target(config)
-                anchor = config.symlink_anchor
 
-                from twsrt.lib.symlink import (
-                    ensure_symlink,
-                    prepare_claude_target,
-                )
+def _write_agent_files(staged: dict[Path, str], config: AppConfig) -> None:
+    from twsrt.lib.symlink import ensure_symlink, prepare_claude_target
 
-                try:
-                    migration_msg = prepare_claude_target(anchor, target)
-                    if migration_msg:
-                        typer.echo(migration_msg)
-                except FileExistsError as e:
-                    typer.echo(str(e), err=True)
-                    raise typer.Exit(1)
+    claude_target = _resolve_claude_target(config)
+    if claude_target in staged:
+        migration_message = prepare_claude_target(config.symlink_anchor, claude_target)
+        if migration_message:
+            typer.echo(migration_message)
+    for path, content in staged.items():
+        _atomic_write(path, content)
+    if claude_target in staged:
+        ensure_symlink(claude_target, config.symlink_anchor)
 
-                if target.exists():
-                    generated = json.loads(output)
-                    merged = selective_merge(target, generated)
-                    target.write_text(json.dumps(merged, indent=2) + "\n")
-                else:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_text(output + "\n")
 
-                ensure_symlink(target, anchor)
+def _print_codex_warnings(
+    generators: list, compiled: CompilationResult, config: AppConfig
+) -> None:
+    from twsrt.lib.codex import CodexGenerator
 
-                typer.echo(f"Wrote: {target}")
-            elif gen.name == "copilot":
-                target = _resolve_copilot_target(config)
-                if target:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_text(output + "\n")
-                    typer.echo(f"Wrote: {target}")
-                else:
-                    typer.echo(output)
-            elif gen.name == "codex":
-                from twsrt.lib.codex import CodexGenerator
-
-                try:
-                    CodexGenerator().write(all_rules, config)
-                except ValueError as e:
-                    typer.echo(f"Error: {e}", err=True)
-                    raise typer.Exit(1)
-                typer.echo(f"Wrote: {config.codex_config_path}")
-                if config.codex_rules_path is not None:
-                    typer.echo(f"Wrote: {config.codex_rules_path}")
-                typer.echo(
-                    "Restart Codex to load the updated permission profile and rules."
-                )
-        elif dry_run and write:
-            typer.echo(f"--- Dry run: {gen.name} ---")
-            if gen.name == "claude":
-                typer.echo(f"Would write to: {_resolve_claude_target(config)}")
-            elif gen.name == "copilot":
-                target = _resolve_copilot_target(config)
-                if target:
-                    typer.echo(f"Would write to: {target}")
-            elif gen.name == "codex":
-                typer.echo(f"Would write to: {config.codex_config_path}")
-                if config.codex_rules_path is not None:
-                    typer.echo(f"Would write to: {config.codex_rules_path}")
-            typer.echo(output)
-        else:
-            if len(generators) > 1:
-                typer.echo(f"--- {gen.name} ---")
-            typer.echo(output)
+    if not any(generator.name == "codex" for generator in generators):
+        return
+    for warning in CodexGenerator().compatibility_warnings(config, compiled.rules):
+        typer.echo(f"Warning: {warning}", err=True)
+    typer.echo(
+        "Warning: Codex execution rules apply only to requests to run outside "
+        "the sandbox.",
+        err=True,
+    )
 
 
 def _resolve_claude_target(config: AppConfig) -> Path:
-    """Resolve Claude target path: yolo path in yolo mode, standard otherwise."""
     if config.yolo:
         return config.claude_yolo_path or yolo_path(config.claude_settings_path)
     return config.claude_settings_path
 
 
 def _resolve_copilot_target(config: AppConfig) -> Path | None:
-    """Resolve Copilot target path: yolo path in yolo mode, standard otherwise."""
     if config.yolo:
         if config.copilot_yolo_path:
             return config.copilot_yolo_path
@@ -271,154 +520,50 @@ def _resolve_copilot_target(config: AppConfig) -> Path | None:
     return config.copilot_output_path
 
 
-def _resolve_diff_target(gen_name: str, config: AppConfig) -> Path | None:
-    """Resolve target path for diff: yolo path in yolo mode, standard otherwise."""
-    if gen_name == "claude":
+def _resolve_diff_target(name: str, config: AppConfig) -> Path | None:
+    if name == "claude":
         return _resolve_claude_target(config)
-    elif gen_name == "copilot":
+    if name == "copilot":
         return _resolve_copilot_target(config)
-    elif gen_name == "codex":
+    if name == "codex":
         return config.codex_config_path
     return None
 
 
-@app.command()
-def diff(
-    ctx: typer.Context,
-    agent: str = typer.Argument(
-        "all", help="Target agent: claude, copilot, codex, or all"
-    ),
-    yolo: bool = typer.Option(
-        False, "--yolo", help="YOLO mode: diff against yolo-specific config files"
-    ),
-) -> None:
-    """Compare generated config against existing agent config files."""
-    from twsrt.lib.agent import GENERATORS
-    from twsrt.lib.config import load_config
-    from twsrt.lib.sources import read_bash_rules, read_srt
-
-    config_path = ctx.obj["config_path"]
-    config = load_config(config_path)
-
-    try:
-        srt_result = read_srt(config.srt_path)
-        bash_rules = read_bash_rules(config.bash_rules_path)
-    except (FileNotFoundError, ValueError) as e:
-        typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(1)
-
-    all_rules = srt_result.rules + bash_rules
-    config.network_config = srt_result.network_config
-    config.filesystem_config = srt_result.filesystem_config
-    config.sandbox_config = srt_result.sandbox_config
-    config.srt_sandbox_enabled = srt_result.sandbox_config.get("enabled")
-    config.yolo = yolo
-    config.apply_sandbox_overrides()
-
-    if agent == "all":
-        generators = list(GENERATORS.values())
-        if not config.codex_targets_configured:
-            generators = [gen for gen in generators if gen.name != "codex"]
-    elif agent in GENERATORS:
-        generators = [GENERATORS[agent]]
-    else:
-        typer.echo(
-            f"Error: Unknown agent '{agent}'. Available: {', '.join(GENERATORS)}",
-            err=True,
-        )
-        raise typer.Exit(1)
-
-    has_drift = False
-    for gen in generators:
-        target = _resolve_diff_target(gen.name, config)
-        if target is None or not target.exists():
-            typer.echo(
-                f"Error: Target file not found for {gen.name}: {target}", err=True
-            )
-            raise typer.Exit(2)
-
-        if (
-            gen.name == "codex"
-            and config.codex_rules_path is not None
-            and not config.codex_rules_path.exists()
-        ):
-            typer.echo(
-                f"Error: Target file not found for codex: {config.codex_rules_path}",
-                err=True,
-            )
-            raise typer.Exit(2)
-
-        try:
-            result = gen.diff(all_rules, target, config)
-        except ValueError as e:
-            typer.echo(f"Error: {e}", err=True)
-            raise typer.Exit(1)
-
-        if gen.name == "codex":
-            from twsrt.lib.codex import SILENT_DEACTIVATION_WARNING
-
-            typer.echo(f"Warning: {SILENT_DEACTIVATION_WARNING}", err=True)
-
-        if result.matched:
-            typer.echo(f"{gen.name}: no drift")
-        else:
-            has_drift = True
-            typer.echo(
-                f"{gen.name}: {len(result.missing)} missing, {len(result.extra)} extra"
-            )
-            for entry in result.missing:
-                typer.echo(f"  + {entry} (missing from existing)")
-            for entry in result.extra:
-                typer.echo(f"  - {entry} (in existing, not in sources)")
-
-    if has_drift:
-        raise typer.Exit(1)
-
-
 def _resolve_editor() -> str:
-    """Resolve editor: $EDITOR → $VISUAL → vi."""
-    return os.environ.get("EDITOR") or os.environ.get("VISUAL") or "vi"
+    """Resolve the editor exactly like twagent: $EDITOR, then vi."""
+    return os.environ.get("EDITOR") or "vi"
 
 
-# Canonical source short names mapped to AppConfig field names
-_SOURCE_NAMES = ("srt", "bash")
+def _serialize(document: dict) -> str:
+    from twsrt.lib.sources import serialize_document
+
+    return serialize_document(document)
 
 
-@app.command()
-def edit(
-    ctx: typer.Context,
-    source: Optional[str] = typer.Argument(None, help="Source to edit: srt, bash"),
-) -> None:
-    """Open a canonical source file in your editor."""
-    from twsrt.lib.config import load_config
-
-    config = load_config(ctx.obj["config_path"])
-    sources = {
-        "srt": config.srt_path,
-        "bash": config.bash_rules_path,
-    }
-
-    if source is None:
-        typer.echo(f"Available sources: {', '.join(sources)}")
-        raise typer.Exit(0)
-
-    if source not in sources:
-        typer.echo(
-            f"Error: Unknown source '{source}'. Available: {', '.join(sources)}",
-            err=True,
-        )
-        raise typer.Exit(1)
-
-    path = sources[source]
+def _read_json_object(path: Path) -> dict | None:
     if not path.exists():
-        typer.echo(f"Error: File not found: {path}", err=True)
-        raise typer.Exit(1)
+        return None
+    try:
+        value = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, dict) else None
 
-    editor = _resolve_editor()
-    result = subprocess.run([editor, str(path)])
-    if result.returncode != 0:
-        typer.echo(f"Warning: Editor exited with code {result.returncode}", err=True)
-        raise typer.Exit(result.returncode)
+
+def _atomic_write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(descriptor, "w") as file:
+            file.write(content)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 @app.command(hidden=True)

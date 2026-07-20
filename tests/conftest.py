@@ -60,9 +60,22 @@ SAMPLE_BASH_RULES = {
 
 
 SAMPLE_CONFIG_TOML = """\
-[sources]
-srt = "{srt_path}"
-bash_rules = "{bash_rules_path}"
+schema_version = 1
+default_profile = "default"
+
+[sources.srt]
+output = "{srt_output_path}"
+[sources.srt.fragments.base]
+path = "{srt_path}"
+
+[sources.bash]
+output = "{bash_output_path}"
+[sources.bash.fragments.base]
+path = "{bash_rules_path}"
+
+[profiles.default]
+srt = ["base"]
+bash = ["base"]
 
 [targets]
 claude_settings = "{claude_settings_path}"
@@ -138,16 +151,16 @@ def tmp_twsrt_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def srt_file(tmp_path: Path) -> Path:
-    """Write sample SRT JSON to a temp file."""
-    p = tmp_path / ".srt-settings.json"
+    """Write sample SRT JSONC to a temp file."""
+    p = tmp_path / "srt-base.jsonc"
     p.write_text(json.dumps(SAMPLE_SRT, indent=2))
     return p
 
 
 @pytest.fixture
 def bash_rules_file(tmp_twsrt_dir: Path) -> Path:
-    """Write sample bash-rules.json to a temp file."""
-    p = tmp_twsrt_dir / "bash-rules.json"
+    """Write sample Bash-rules JSONC to a temp file."""
+    p = tmp_twsrt_dir / "bash-base.jsonc"
     p.write_text(json.dumps(SAMPLE_BASH_RULES, indent=2))
     return p
 
@@ -170,7 +183,9 @@ def config_toml_file(
     p.write_text(
         SAMPLE_CONFIG_TOML.format(
             srt_path=str(srt_file),
+            srt_output_path=str(tmp_path / ".srt-settings.json"),
             bash_rules_path=str(bash_rules_file),
+            bash_output_path=str(tmp_twsrt_dir / "bash-rules.json"),
             claude_settings_path=str(claude_settings),
             codex_config_path=str(codex_config),
             codex_rules_path=str(codex_rules),

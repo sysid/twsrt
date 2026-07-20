@@ -58,6 +58,59 @@ class SrtResult:
     sandbox_config: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class SourceFragment:
+    """One named canonical-source fragment."""
+
+    name: str
+    path: Path
+
+
+@dataclass(frozen=True)
+class CanonicalSource:
+    """A source kind, its compiled output, and its reusable fragments."""
+
+    name: str
+    output_path: Path
+    fragments: dict[str, SourceFragment]
+
+
+@dataclass(frozen=True)
+class Profile:
+    """Named fragment selections, keyed by canonical source kind."""
+
+    name: str
+    extends: list[str] = field(default_factory=list)
+    selections: dict[str, list[str]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ResolvedProfile:
+    """A profile after inheritance and fragment lookup."""
+
+    name: str
+    fragments: dict[str, list[SourceFragment]]
+
+
+@dataclass(frozen=True)
+class CompiledDocument:
+    """One fully composed canonical source document."""
+
+    source_kind: str
+    output_path: Path
+    document: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class CompilationResult:
+    """Canonical documents and the security rules derived from them."""
+
+    profile_name: str
+    documents: dict[str, CompiledDocument]
+    rules: list[SecurityRule]
+    srt_result: SrtResult
+
+
 def yolo_path(original: Path) -> Path:
     """Derive a yolo variant path: replace all suffixes except the last with '.yolo'.
 
@@ -74,6 +127,9 @@ def yolo_path(original: Path) -> Path:
 
 @dataclass
 class AppConfig:
+    sources: dict[str, CanonicalSource] = field(default_factory=dict)
+    profiles: dict[str, Profile] = field(default_factory=dict)
+    default_profile: str | None = None
     srt_path: Path = field(
         default_factory=lambda: Path("~/.srt-settings.json").expanduser()
     )

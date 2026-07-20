@@ -247,6 +247,13 @@ class CodexGenerator:
 
     def write(self, rules: list[SecurityRule], config: AppConfig) -> None:
         """Atomically merge owned config and replace the owned rules file."""
+        for path, content in self.render_write_files(rules, config).items():
+            _atomic_write(path, content)
+
+    def render_write_files(
+        self, rules: list[SecurityRule], config: AppConfig
+    ) -> dict[Path, str]:
+        """Render every owned file without mutating the filesystem."""
         generated = tomlkit.parse(self.generate_config(rules, config))
         generated_permissions = generated["permissions"]
         assert isinstance(generated_permissions, Table)
@@ -268,9 +275,10 @@ class CodexGenerator:
             generated_permissions[_PROFILE_NAME].unwrap()
         )
 
-        _atomic_write(target, tomlkit.dumps(existing))
+        files = {target: tomlkit.dumps(existing)}
         if config.codex_rules_path is not None:
-            _atomic_write(config.codex_rules_path, self.generate_rules(rules, config))
+            files[config.codex_rules_path] = self.generate_rules(rules, config)
+        return files
 
     def diff(
         self, rules: list[SecurityRule], target: Path, config: AppConfig

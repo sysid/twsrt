@@ -2,7 +2,8 @@
   <img src="doc/twsrt-logo.png" width="300" />
 </p>
 
-Agent security configuration generator — translates canonical security rules into agent-specific configs.
+Profile-driven security policy compiler — composes canonical JSONC fragments,
+emits strict runtime configuration, and derives agent-specific controls.
 
 ## The Problem
 
@@ -18,17 +19,19 @@ run *inside the agent's own process* and are **not** covered by a command-scoped
 sandbox. The exceptions: wrapping the entire agent process (`srt -c "copilot ..."`),
 or an agent like Codex that executes its work through sandboxed subprocesses.
 
-## Solution: One Canonical Policy, Compiled per Agent
+## Solution: Composable Canonical Sources, Compiled per Profile and Agent
 
-**The guiding idea — the Durable Core.** One canonical statement of
-restrictions — *paths no agent may read or write, plus domains agents may
-reach* — compiled into each agent's **native kernel sandbox** config. This
-translation is high-fidelity for every agent (they all natively express
-deny-paths and domains) and survives the churn of per-agent permission
-models. Everything else twsrt emits — bash deny/ask rules, copilot flags —
-is a per-agent best-effort **supplement**: valuable where it is the only
-control (built-in tools running inside the agent process), but never the
-foundation.
+**The guiding idea — the Durable Core.** Security policy is maintained as
+small, named JSONC fragments. A profile selects and inherits fragments for
+every registered source kind. twsrt resolves that profile, composes each
+source independently, rejects ambiguity, and emits strict canonical JSON
+before deriving agent-specific configuration.
+
+The durable security statement — *paths no agent may read or write, plus
+domains agents may reach* — is therefore a compiled result, not a monolithic
+file people edit. Its translation into native sandbox configuration remains
+the foundation. Bash deny/ask rules and command flags are a per-agent
+best-effort **supplement** where application-level controls are needed.
 
 ```
      DURABLE CORE  (kernel-enforced, high-fidelity everywhere)
@@ -38,24 +41,25 @@ foundation.
        bash deny/ask rules  ──► Claude permissions / Copilot flags / Codex .rules
 ```
 
-How it flows from canonical sources to agents:
+The compiler pipeline is the architectural center:
 
 ```
-                CANONICAL SOURCES (human-maintained)
-                ====================================
-                ~/.srt-settings.json        — OS-level sandbox rules (SRT)
-                ~/.config/twsrt/bash-rules.json — APP-level deny/ask rules
-                          |
-                          v
-                +-----------------+
-                |      twsrt      |  deterministic translation
-                |   (generator)   |  + drift detection
-                +--------+--------+
-                         |
-            +------------+------------+
-            v            v            v
-     Claude Code    Copilot CLI       Codex
-     settings.json  --flag args       config.toml + .rules
+ config.toml
+   source registries + profile inheritance
+                    │
+                    ▼
+        resolve ordered fragment sets
+                    │
+                    ▼
+      parse JSONC → compose → validate
+                    │
+          ┌─────────┴─────────┐
+          ▼                   ▼
+ compiled canonical JSON   normalized SecurityRule list
+ ~/.srt-settings.json                 │
+ bash-rules.json                      ▼
+                           agent-specific generators
+                          settings / flags / profiles
 
 
                 ENFORCEMENT LAYERS
@@ -67,7 +71,8 @@ How it flows from canonical sources to agents:
 ```
 
 Commands get two layers of protection (kernel + app); built-in tools get one
-(app rules only) — all generated from a **single source of truth** (see
+(app rules only) — all generated from the **resolved profile** as the single
+source of truth (see
 [Security Boundaries & Invariants](#security-boundaries--invariants)).
 
 How the two layers collaborate:
@@ -89,10 +94,12 @@ For the pi-mono integration see [pi-extensions/sandbox](https://github.com/sysid
 
 ## Overview
 
-`twsrt` reads canonical rule configuration sources:
+`twsrt` compiles two registered canonical source kinds:
 
-1. **SRT settings** (`~/.srt-settings.json`) — OS-level enforced sandbox rules
-2. **Bash rules** (`~/.config/twsrt/bash-rules.json`) — APP-level enforced deny/ask rules for Bash tool execution
+1. **SRT JSONC fragments** — composed into the strict JSON file
+   `~/.srt-settings.json` used by Sandbox Runtime.
+2. **Bash JSONC fragments** — composed into `bash-rules.json` and translated
+   into APP-level command rules.
 
 It generates security configurations for:
 
@@ -102,36 +109,59 @@ It generates security configurations for:
 - **Codex** (`~/.codex/config.toml` + `~/.codex/rules/twsrt.rules`) — a native
   user-level permission profile plus optional escalation rules
 
-**Key invariant**: Only the canonical sources are edited by the user. Generated
-agent configs are compiled artifacts — never edit their managed sections by
-hand; `twsrt diff` detects drift in both directions.
+**Key invariant**: Only registered `.jsonc` fragments and `config.toml` are
+edited by the user. Compiled canonical JSON and agent configs are generated
+artifacts; `twsrt diff` detects drift in both layers.
+
+### Compiler model
+
+| Concept | Responsibility |
+|---|---|
+| Source kind | Defines one canonical document type, its fragment registry, compiled output, validation, and rule translation. `srt` and `bash` are currently registered. |
+| Fragment | A named `.jsonc` object containing one reusable policy slice. Fragments never reference or include each other. |
+| Profile | Selects ordered fragment names per source kind and may extend other profiles. |
+| Resolved profile | Parent-first, stable-deduplicated fragment order used for one invocation. |
+| Compiled document | Strict JSON produced by recursively composing one source kind's selected fragments. |
+| Agent target | Configuration derived from the normalized rules after canonical compilation succeeds. |
+
+Compilation is fail-fast. Objects merge recursively; arrays form a stable
+deduplicated union; equal scalar values agree. Unequal scalars, incompatible
+types, cycles, missing source selections, unknown fragments, and opposing
+security actions fail with profile, path, and fragment context. Compilation
+and target rendering complete before `generate --write` starts writing files,
+so configuration conflicts cannot leave partial generated output.
 
 
 ### Usage
 
 ```bash
 pip install twsrt
+```
 
-#### Initialize config directory
-twsrt init                    # Creates ~/.config/twsrt/ with config.toml + bash-rules.json
-twsrt init --force            # Overwrite existing files
+#### Open or initialize configuration
+
+```bash
+twsrt config --init           # Create starter TOML + JSONC fragments, then edit
+twsrt config                  # Open the active config.toml in $EDITOR
+```
 
 #### Generate agent configs
+
+```bash
 twsrt generate claude         # Print Claude Code permissions to stdout
 twsrt generate copilot        # Print Copilot CLI flags to stdout
 twsrt generate codex          # Preview Codex profile + escalation rules
 twsrt generate                # Generate for all agents
+twsrt generate -p work        # Use a profile instead of default_profile
 
 twsrt generate claude --write # Write to settings.full.json, symlink settings.json → it
 twsrt generate claude -n -w   # Dry run: show what would be written
 twsrt generate codex --write  # Merge profile and write twsrt.rules
-
-#### Edit canonical sources
-twsrt edit srt                # Open ~/.srt-settings.json in $EDITOR
-twsrt edit bash               # Open ~/.config/twsrt/bash-rules.json in $EDITOR
-twsrt edit                    # Show available sources
+```
 
 #### Detect configuration drift
+
+```bash
 twsrt diff claude             # Compare generated vs existing target file
 twsrt diff codex              # Compare owned profile + twsrt.rules
 twsrt diff                    # Check all agents
@@ -140,28 +170,27 @@ twsrt diff --yolo             # Compare against yolo-specific config files
 
 Exit codes: `0` = no drift, `1` = drift detected, `2` = missing file.
 
-`diff` compares a **freshly generated config** (from your current SRT + bash rule sources)
-against the **existing agent config file on disk**:
+`diff` compiles the selected profile in memory and compares both the compiled
+canonical JSON and generated agent configuration against the files on disk:
 
 ```
-  Canonical sources                          Agent config on disk
-  (SRT rules + bash rules)                   (e.g. settings.full.json)
-          |                                           |
-          v                                           v
-    [ generate in memory ]  ──── compare ────  [ read from disk ]
-          |                                           |
-          +--- missing: in generated but not on disk (rules not yet applied)
-          +--- extra:   on disk but not in generated  (out-of-band edits)
+  JSONC fragments ──► [ compile profile in memory ]
+                                  │
+                       ┌──────────┴──────────┐
+                       ▼                     ▼
+              compiled canonical JSON   agent configuration
+                       │                     │
+                       └──── compare with files on disk
 ```
 
-This detects two kinds of drift: unapplied rule changes (you edited SRT/bash rules
-but forgot to `generate --write`) and out-of-band modifications (someone edited the
-agent config directly).
+This detects two kinds of drift: unapplied fragment changes and out-of-band
+modifications to either generated layer.
 
 #### Typical workflow
 
 ```bash
-twsrt edit srt                # Add a domain to allowedDomains
+twsrt config                  # Edit profiles and registered fragment paths
+# Edit one or more JSONC fragments selected by the profile
 twsrt generate claude         # Preview the change
 twsrt generate claude --write # Apply (selective merge preserves hooks, MCP, etc.)
 twsrt diff claude             # Verify: exit 0 = no drift
@@ -445,14 +474,17 @@ and Codex bring native sandboxes.
 
 > GOTCHA: [sandbox write allowlist is hardcoded and currently cannot be managed in claude-code](https://github.com/anthropics/claude-code/issues/10377#issuecomment-3468689124)
 
-### `~/.srt-settings.json` (SRT — prerequisite)
+### SRT JSONC fragments and `~/.srt-settings.json`
 
-[SRT configuration](https://github.com/anthropic-experimental/sandbox-runtime?tab=readme-ov-file#configuration) is the canonical source that defines OS-level enforcement boundaries. 
+[SRT configuration](https://github.com/anthropic-experimental/sandbox-runtime?tab=readme-ov-file#configuration)
+defines OS-level enforcement boundaries. Human-maintained policy lives in one
+or more JSONC fragments; `twsrt generate --write` composes the selected
+profile and writes strict JSON to `~/.srt-settings.json` for SRT and the agent
+generators.
 
-**twsrt** reads it to generate equivalent agent-level rules:
-
-```json
+```jsonc
 {
+  // Comments are allowed in canonical fragments.
   "filesystem": {
     "denyRead":  ["~/.aws", "~/.ssh", "~/.gnupg", "~/.netrc"],
     "denyWrite": ["**/.env", "**/*.pem", "**/*.key", "**/secrets/**"],
@@ -468,18 +500,46 @@ and Codex bring native sandboxes.
 }
 ```
 
-Comprehensive example: 
-[.srt-settings.json](example/.srt-settings.json)
+JSONC supports `//` and `/* ... */` comments. It otherwise remains strict JSON:
+trailing commas, duplicate object keys, and non-finite numbers are rejected.
+See the comprehensive [SRT JSONC example](example/srt-settings.jsonc).
 
 
 ### `~/.config/twsrt/config.toml`
 
-Minimal config (generated by `twsrt init`):
+`config.toml` is the registry and selection layer; it does not contain policy
+rules itself. Schema version 1 has four responsibilities:
+
+1. register each canonical source kind and its strict JSON output;
+2. name the JSONC fragments available to that source kind;
+3. define profiles as fragment selections plus optional parent profiles;
+4. configure downstream agent targets and mode-specific overrides.
+
+Relative fragment and output paths resolve from the directory containing
+`config.toml`; home-relative and absolute paths are also supported. The legacy
+flat `[sources]` path schema is intentionally rejected rather than guessed.
+
+Minimal config (generated by `twsrt config --init`):
 
 ```toml
-[sources]
-srt = "~/.srt-settings.json"
-bash_rules = "~/.config/twsrt/bash-rules.json"
+schema_version = 1
+default_profile = "default"
+
+[sources.srt]
+output = "~/.srt-settings.json"
+
+[sources.srt.fragments.base]
+path = "srt/base.jsonc"
+
+[sources.bash]
+output = "bash-rules.json"
+
+[sources.bash.fragments.base]
+path = "bash/base.jsonc"
+
+[profiles.default]
+srt = ["base"]
+bash = ["base"]
 
 [targets]
 claude_settings = "~/.claude/settings.full.json"
@@ -487,12 +547,33 @@ codex_config = "~/.codex/config.toml"
 codex_rules = "~/.codex/rules/twsrt.rules"    # optional: omit to skip escalation rules
 ```
 
-Full config with all optional keys:
+Profiles may extend other profiles. Parent fragments are composed before child
+fragments, and repeated fragment names and array values are deduplicated while
+preserving their first occurrence:
 
 ```toml
-[sources]
-srt = "~/.srt-settings.json"
-bash_rules = "~/.config/twsrt/bash-rules.json"
+schema_version = 1
+default_profile = "default"
+
+[sources.srt]
+output = "~/.srt-settings.json"
+[sources.srt.fragments.base]
+path = "srt/base.jsonc"
+[sources.srt.fragments.work]
+path = "srt/work.jsonc"
+
+[sources.bash]
+output = "bash-rules.json"
+[sources.bash.fragments.base]
+path = "bash/base.jsonc"
+
+[profiles.default]
+srt = ["base"]
+bash = ["base"]
+
+[profiles.work]
+extends = ["default"]
+srt = ["work"]
 
 [targets]
 claude_settings = "~/.claude/settings.full.json"
@@ -514,6 +595,17 @@ allowUnsandboxedCommands = false
 enabled = false
 ```
 
+Every resolved profile must select at least one fragment for every configured
+source kind. Select one with `twsrt generate --profile work <agent>`.
+Composition recursively merges objects and unions arrays. Conflicting scalar
+values, incompatible value types, SRT allow/deny overlaps, and Bash
+allow/ask/deny overlaps fail with the conflicting path and source fragments.
+
+`default_profile` is used when `--profile` is omitted. Profile inheritance is
+selection reuse, not override precedence: a child can add fragments, but it
+cannot silently replace a conflicting parent value. Model intentional variants
+as separate profiles that share a non-conflicting base.
+
 Sandbox overrides let you enforce different sandbox postures per mode.
 When `--yolo` is used, overrides from `[sandbox_overrides.yolo]` are applied;
 otherwise `[sandbox_overrides.full]` is used. These override SRT-sourced values
@@ -523,17 +615,20 @@ Typical use: `claude-yolo` enforces sandbox (safety net when skipping
 permission prompts), while `claude-full` disables it (user approves each action
 interactively).
 
-### `~/.config/twsrt/bash-rules.json`
+### Bash JSONC fragments
 
-```json
+```jsonc
 {
+  // Commands are composed by the selected profile.
   "allow": ["gh pr view"],
   "deny": ["rm", "sudo", "git push --force"],
   "ask": ["git push", "git commit", "pip install"]
 }
 ```
-Comprehensive example:
-[bash-rules.json](example/bash-rules.json)
+
+The compiled strict JSON is written to the `sources.bash.output` path and then
+used for agent-specific generation.
+See the comprehensive [Bash JSONC example](example/bash-rules.jsonc).
 
 
 ## Rule and Security Mappings
@@ -631,9 +726,9 @@ bash deny ───────► claude deny            ─► copilot deny   
 
 ### Invariants
 
-1. **Canonical sources are the single source of truth.** Agent configs are
-   compiled artifacts; `twsrt diff` detects both unapplied rule changes and
-   out-of-band edits.
+1. **The resolved profile is the single source of truth for an invocation.**
+   Registered JSONC fragments are human-maintained inputs. Compiled canonical
+   JSON and agent configs are artifacts; `twsrt diff` detects drift in both.
 2. **Canonical allows widen only the named sandbox boundary.** SRT
    `allowWrite` directories become Codex workspace roots, retaining inherited
    protected paths and deny globs. Lossy translations narrow or skip with a
@@ -642,14 +737,20 @@ bash deny ───────► claude deny            ─► copilot deny   
    target file (hooks, MCP servers, projects, credentials) is preserved
    byte-for-byte where the format allows.
 4. **Fail-safe on ambiguity.** Disabled canonical sandbox, malformed paths,
-   and legacy Codex `sandbox_mode` in the managed file abort generation
-   instead of guessing.
+   conflicting fragments, incomplete profiles, and legacy Codex
+   `sandbox_mode` in the managed file abort generation instead of guessing.
 
 ### Scope & Roadmap
 
+Canonical-source composition is deliberately separate from agent generation.
+Adding a source kind means registering its name, validating its compiled
+document, and translating it into normalized rules; profile resolution and
+structural composition are reused unchanged. Adding an agent consumes the
+existing normalized rules and does not alter canonical fragments or profiles.
+
 All three agents now ship native OS sandboxes (Claude Code: built-in
 Seatbelt/bwrap, opt-in; Copilot CLI: local sandbox in public preview; Codex:
-kernel sandbox always-on) — the [Durable Core](#solution-one-canonical-policy-compiled-per-agent)
+kernel sandbox always-on) — the [Durable Core](#solution-composable-canonical-sources-compiled-per-profile-and-agent)
 compiles into each of them. The bash-rules app layer is the per-agent
 best-effort supplement:
 

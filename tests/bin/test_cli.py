@@ -29,58 +29,60 @@ class TestBareInvocation:
         result = runner.invoke(app, [])
         # typer exits 2 for no_args_is_help, but help text is shown
         assert "Usage" in result.output
-        assert "init" in result.output
+        assert "config" in result.output
 
 
 class TestInit:
     def test_init_creates_dir_and_files(self, tmp_path: Path) -> None:
         twsrt_dir = tmp_path / "config" / "twsrt"
-        result = runner.invoke(app, ["init", "--dir", str(twsrt_dir)])
+        config = twsrt_dir / "config.toml"
+        with patch("twsrt.bin.cli.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0)
+            result = runner.invoke(app, ["-c", str(config), "config", "--init"])
         assert result.exit_code == 0
         assert twsrt_dir.exists()
-        assert (twsrt_dir / "config.toml").exists()
-        assert (twsrt_dir / "bash-rules.json").exists()
+        assert config.exists()
+        assert (twsrt_dir / "srt/base.jsonc").exists()
+        assert (twsrt_dir / "bash/base.jsonc").exists()
 
     def test_init_existing_files_skips_with_warning(self, tmp_path: Path) -> None:
         twsrt_dir = tmp_path / "config" / "twsrt"
         twsrt_dir.mkdir(parents=True)
         (twsrt_dir / "config.toml").write_text("existing")
-        (twsrt_dir / "bash-rules.json").write_text("existing")
-
-        result = runner.invoke(app, ["init", "--dir", str(twsrt_dir)])
+        config = twsrt_dir / "config.toml"
+        with patch("twsrt.bin.cli.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0)
+            result = runner.invoke(app, ["-c", str(config), "config", "--init"])
         assert result.exit_code == 0
-        assert "skip" in result.output.lower() or "exists" in result.output.lower()
-        # Should NOT overwrite
-        assert (twsrt_dir / "config.toml").read_text() == "existing"
+        assert config.read_text() == "existing"
 
     def test_init_creates_comprehensive_config_toml(self, tmp_path: Path) -> None:
         """US3: init creates config with settings.full.json default and commented yolo targets."""
         twsrt_dir = tmp_path / "config" / "twsrt"
-        result = runner.invoke(app, ["init", "--dir", str(twsrt_dir)])
+        config = twsrt_dir / "config.toml"
+        with patch("twsrt.bin.cli.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0)
+            result = runner.invoke(app, ["-c", str(config), "config", "--init"])
         assert result.exit_code == 0
-        content = (twsrt_dir / "config.toml").read_text()
+        content = config.read_text()
         # Default claude_settings should be settings.full.json
         assert 'claude_settings = "~/.claude/settings.full.json"' in content
-        # Yolo targets should be commented out
-        assert "# claude_settings_yolo" in content
         # Copilot should be commented out
         assert "# copilot_output" in content
-        # Copilot yolo should be commented out
-        assert "# copilot_output_yolo" in content
-        # Sources section present
-        assert "[sources]" in content
+        assert "[sources.srt.fragments.base]" in content
+        assert "[profiles.default]" in content
         assert "[targets]" in content
 
     def test_init_force_overwrites(self, tmp_path: Path) -> None:
         twsrt_dir = tmp_path / "config" / "twsrt"
         twsrt_dir.mkdir(parents=True)
         (twsrt_dir / "config.toml").write_text("old")
-        (twsrt_dir / "bash-rules.json").write_text("old")
-
-        result = runner.invoke(app, ["init", "--force", "--dir", str(twsrt_dir)])
+        config = twsrt_dir / "config.toml"
+        with patch("twsrt.bin.cli.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0)
+            result = runner.invoke(app, ["-c", str(config), "config", "--init"])
         assert result.exit_code == 0
-        # Should overwrite with defaults
-        assert (twsrt_dir / "config.toml").read_text() != "old"
+        assert config.read_text() == "old"
 
 
 class TestGenerate:
@@ -227,7 +229,8 @@ class TestGenerate:
         )
 
         assert result.exit_code == 0, result.output
-        assert "Would write to:" in result.output
+        assert "Would write canonical:" in result.output
+        assert "Would write agent target:" in result.output
         assert not (tmp_path / ".codex" / "config.toml").exists()
 
 
@@ -236,16 +239,30 @@ class TestGenerate:
 
 def _make_config(tmp_path: Path, srt: dict, bash_rules: dict | None = None) -> Path:
     """Helper: write SRT + bash_rules + config.toml, return config path."""
-    srt_file = tmp_path / "srt.json"
+    srt_file = tmp_path / "srt.jsonc"
     srt_file.write_text(json.dumps(srt))
 
     twsrt_dir = tmp_path / "config" / "twsrt"
     twsrt_dir.mkdir(parents=True)
-    br_file = twsrt_dir / "bash-rules.json"
+    br_file = twsrt_dir / "bash-rules.jsonc"
     br_file.write_text(json.dumps(bash_rules or {"deny": [], "ask": []}))
 
     config = twsrt_dir / "config.toml"
-    config.write_text(f'[sources]\nsrt = "{srt_file}"\nbash_rules = "{br_file}"\n')
+    config.write_text(
+        "schema_version = 1\n"
+        'default_profile = "default"\n'
+        "[sources.srt]\n"
+        f'output = "{tmp_path / ".srt-settings.json"}"\n'
+        "[sources.srt.fragments.base]\n"
+        f'path = "{srt_file}"\n'
+        "[sources.bash]\n"
+        f'output = "{twsrt_dir / "bash-rules.json"}"\n'
+        "[sources.bash.fragments.base]\n"
+        f'path = "{br_file}"\n'
+        "[profiles.default]\n"
+        'srt = ["base"]\n'
+        'bash = ["base"]\n'
+    )
     return config
 
 
@@ -1010,13 +1027,17 @@ def _make_config_with_targets(
     bash_rules: dict | None = None,
 ) -> tuple[Path, Path, Path]:
     """Helper: write SRT + bash_rules + config + targets, return (config, claude_target, copilot_target)."""
-    srt_file = tmp_path / "srt.json"
+    srt_file = tmp_path / "srt.jsonc"
     srt_file.write_text(json.dumps(srt))
 
     twsrt_dir = tmp_path / "config" / "twsrt"
     twsrt_dir.mkdir(parents=True)
-    br_file = twsrt_dir / "bash-rules.json"
+    br_file = twsrt_dir / "bash-rules.jsonc"
     br_file.write_text(json.dumps(bash_rules or {"deny": [], "ask": []}))
+    (tmp_path / ".srt-settings.json").write_text(json.dumps(srt))
+    (twsrt_dir / "bash-rules.json").write_text(
+        json.dumps(bash_rules or {"deny": [], "ask": []})
+    )
 
     claude_target = tmp_path / ".claude" / "settings.full.json"
     claude_target.parent.mkdir(parents=True)
@@ -1025,7 +1046,19 @@ def _make_config_with_targets(
 
     config_file = twsrt_dir / "config.toml"
     config_file.write_text(
-        f'[sources]\nsrt = "{srt_file}"\nbash_rules = "{br_file}"\n'
+        "schema_version = 1\n"
+        'default_profile = "default"\n'
+        "[sources.srt]\n"
+        f'output = "{tmp_path / ".srt-settings.json"}"\n'
+        "[sources.srt.fragments.base]\n"
+        f'path = "{srt_file}"\n'
+        "[sources.bash]\n"
+        f'output = "{twsrt_dir / "bash-rules.json"}"\n'
+        "[sources.bash.fragments.base]\n"
+        f'path = "{br_file}"\n'
+        "[profiles.default]\n"
+        'srt = ["base"]\n'
+        'bash = ["base"]\n'
         f'[targets]\nclaude_settings = "{claude_target}"\n'
         f'copilot_output = "{copilot_target}"\n'
     )
@@ -1395,7 +1428,7 @@ class TestUS3AcceptanceScenarios:
 
 
 class TestResolveEditor:
-    """T001: _resolve_editor() returns $EDITOR, falls back to $VISUAL, then vi."""
+    """T001: _resolve_editor() matches twagent's $EDITOR → vi behavior."""
 
     def test_returns_editor_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("EDITOR", "nvim")
@@ -1404,7 +1437,7 @@ class TestResolveEditor:
     def test_falls_back_to_visual(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("EDITOR", raising=False)
         monkeypatch.setenv("VISUAL", "code")
-        assert _resolve_editor() == "code"
+        assert _resolve_editor() == "vi"
 
     def test_falls_back_to_vi(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("EDITOR", raising=False)
@@ -1412,104 +1445,85 @@ class TestResolveEditor:
         assert _resolve_editor() == "vi"
 
 
-def _make_edit_config(tmp_path: Path) -> tuple[Path, Path, Path]:
-    """Helper: create SRT + bash-rules files and config, return (config, srt_file, bash_file)."""
-    srt_file = tmp_path / "srt.json"
-    srt_file.write_text("{}")
-
-    bash_file = tmp_path / "bash-rules.json"
-    bash_file.write_text('{"deny": [], "ask": []}')
-
-    config = tmp_path / "config.toml"
-    config.write_text(f'[sources]\nsrt = "{srt_file}"\nbash_rules = "{bash_file}"\n')
-    return config, srt_file, bash_file
-
-
 class TestEditSrt:
-    """T002-T004: twsrt edit srt — happy path, missing file, editor failure."""
+    """T002-T004: the config command opens the active TOML."""
 
     def test_edit_srt_calls_editor_with_srt_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """T002: edit srt opens file in $EDITOR."""
-        config, srt_file, _ = _make_edit_config(tmp_path)
+        config = tmp_path / "config.toml"
+        config.write_text("configured")
         monkeypatch.setenv("EDITOR", "test-editor")
 
         with patch("twsrt.bin.cli.subprocess") as mock_sub:
             mock_sub.run.return_value = MagicMock(returncode=0)
-            result = runner.invoke(app, ["-c", str(config), "edit", "srt"])
+            result = runner.invoke(app, ["-c", str(config), "config"])
 
         assert result.exit_code == 0
-        mock_sub.run.assert_called_once_with(["test-editor", str(srt_file)])
+        mock_sub.run.assert_called_once_with(["test-editor", str(config)])
 
     def test_edit_srt_missing_file_exits_1(self, tmp_path: Path) -> None:
         """T003: edit srt with nonexistent file reports error with path."""
         config = tmp_path / "config.toml"
-        nonexistent = tmp_path / "nonexistent.json"
-        config.write_text(f'[sources]\nsrt = "{nonexistent}"\nbash_rules = "/dummy"\n')
-
-        result = runner.invoke(app, ["-c", str(config), "edit", "srt"])
-        assert result.exit_code == 1
-        assert str(nonexistent) in result.output
+        result = runner.invoke(app, ["-c", str(config), "config"])
+        assert result.exit_code == 2
+        assert "Use --init" in result.output
 
     def test_edit_srt_editor_nonzero_exit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """T004: editor exits non-zero — warning and matching exit code."""
-        config, srt_file, _ = _make_edit_config(tmp_path)
+        config = tmp_path / "config.toml"
+        config.write_text("configured")
         monkeypatch.setenv("EDITOR", "failing-editor")
 
         with patch("twsrt.bin.cli.subprocess") as mock_sub:
             mock_sub.run.return_value = MagicMock(returncode=2)
-            result = runner.invoke(app, ["-c", str(config), "edit", "srt"])
+            result = runner.invoke(app, ["-c", str(config), "config"])
 
         assert result.exit_code == 2
 
 
 class TestEditBash:
-    """T008-T009: twsrt edit bash — happy path and missing file."""
+    """T008-T009: config --init manages starter fragments safely."""
 
     def test_edit_bash_calls_editor_with_bash_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """T008: edit bash opens file in editor."""
-        config, _, bash_file = _make_edit_config(tmp_path)
+        config = tmp_path / "config.toml"
         monkeypatch.setenv("EDITOR", "test-editor")
 
         with patch("twsrt.bin.cli.subprocess") as mock_sub:
             mock_sub.run.return_value = MagicMock(returncode=0)
-            result = runner.invoke(app, ["-c", str(config), "edit", "bash"])
+            result = runner.invoke(app, ["-c", str(config), "config", "--init"])
 
         assert result.exit_code == 0
-        mock_sub.run.assert_called_once_with(["test-editor", str(bash_file)])
+        assert (tmp_path / "bash/base.jsonc").exists()
+        mock_sub.run.assert_called_once_with(["test-editor", str(config)])
 
     def test_edit_bash_missing_file_exits_1(self, tmp_path: Path) -> None:
         """T009: edit bash with nonexistent file reports error."""
         config = tmp_path / "config.toml"
-        nonexistent = tmp_path / "nonexistent.json"
-        config.write_text(f'[sources]\nsrt = "/dummy"\nbash_rules = "{nonexistent}"\n')
-
-        result = runner.invoke(app, ["-c", str(config), "edit", "bash"])
-        assert result.exit_code == 1
-        assert str(nonexistent) in result.output
+        config.write_text("existing")
+        with patch("twsrt.bin.cli.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0)
+            result = runner.invoke(app, ["-c", str(config), "config", "--init"])
+        assert result.exit_code == 0
+        assert config.read_text() == "existing"
 
 
 class TestEditNoArgument:
-    """T012-T013: twsrt edit with no/invalid argument."""
+    """T012-T013: obsolete bootstrap/edit commands are removed."""
 
     def test_edit_no_argument_shows_sources(self, tmp_path: Path) -> None:
         """T012: edit with no argument lists available sources."""
-        config, _, _ = _make_edit_config(tmp_path)
+        config = tmp_path / "config.toml"
         result = runner.invoke(app, ["-c", str(config), "edit"])
-        assert result.exit_code == 0
-        assert "srt" in result.output
-        assert "bash" in result.output
+        assert result.exit_code == 2
 
     def test_edit_invalid_source_exits_1(self, tmp_path: Path) -> None:
         """T013: edit with invalid source shows error and valid sources."""
-        config, _, _ = _make_edit_config(tmp_path)
-        result = runner.invoke(app, ["-c", str(config), "edit", "foo"])
-        assert result.exit_code == 1
-        assert "foo" in result.output
-        assert "srt" in result.output
-        assert "bash" in result.output
+        result = runner.invoke(app, ["init"])
+        assert result.exit_code == 2

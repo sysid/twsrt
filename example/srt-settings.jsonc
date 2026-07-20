@@ -1,4 +1,5 @@
 {
+  // Canonical SRT fragment; comments are removed during compilation.
   "enabled": true,
   "allowPty": true,
   "network": {
