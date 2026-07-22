@@ -159,6 +159,24 @@ twsrt generate claude -n -w   # Dry run: show what would be written
 twsrt generate codex --write  # Merge profile and write twsrt.rules
 ```
 
+#### Diagnostic output
+
+Generated JSON, TOML, rules, and Copilot flags stay unstyled on stdout so they
+remain safe to pipe into other commands. Human diagnostics use consistent
+severity and streams: errors are red on stderr, warnings yellow on stderr,
+informational notices cyan, successful writes and clean diffs green, and drift
+yellow (unexpected extra entries are red). Colors are enabled only for an
+interactive terminal; setting `NO_COLOR` (including to an empty value) disables
+ANSI output explicitly.
+
+Pass `--verbose` before the subcommand to add dim-cyan debug diagnostics on
+stderr. Debug output reports lifecycle facts such as the selected profile,
+mode, agent names, counts, target paths, and caught exception tracebacks. It
+does not enumerate generated policy contents, rule patterns, domains,
+environment values, or credentials. A traceback retains the same exception
+message as the concise error, so malformed input may be named when that context
+is necessary to fix the configuration.
+
 #### Detect configuration drift
 
 ```bash
@@ -403,9 +421,11 @@ protected) and adds:
 
 - Absolute and home-relative `allowWrite` paths → reusable workspace roots;
   a terminal `/**` or trailing slash is normalized to the concrete
-  directory. Relative paths such as `.` are already covered by the runtime
-  workspace. Unsupported shapes (`~`, `/`, other wildcards) and roots also
-  matched by a deny rule are skipped with a warning — the deny wins.
+  directory. Named relative paths → workspace filesystem `write` rules, which
+  can intentionally reopen a Codex-protected path such as `.git`; `.` alone is
+  omitted because the runtime workspace already covers it. Unsupported
+  absolute shapes (`~`, `/`, other wildcards) and roots also matched by a deny
+  rule are skipped with a warning — the deny wins.
 - `denyRead` paths → filesystem `deny` (blocks Codex's default read-everything)
 - `denyWrite` exact paths → `read`; `denyWrite` globs → `deny` (stricter,
   fail-safe — Codex cannot express read-only for globs; warned)
@@ -417,6 +437,16 @@ protected) and adds:
 Added workspace roots inherit the `:workspace` write policy and every rule in
 `filesystem.:workspace_roots`, so canonical deny globs constrain them without
 repeating `"." = "write"`.
+
+For example, permit fetch/pull metadata updates while keeping repository-local
+configuration and hooks read-only:
+
+```toml
+[permissions.twsrt.filesystem.":workspace_roots"]
+".git" = "write"
+".git/config" = "read"
+".git/hooks" = "read"
+```
 
 **Deliberately NOT compiled** (each skip is warned at generation time):
 
@@ -641,7 +671,7 @@ See the comprehensive [Bash JSONC example](example/bash-rules.jsonc).
 | denyWrite exact path | Edit(path) in deny | (SRT enforces) | filesystem `read` |
 | denyWrite glob | Edit(pattern) in deny | (SRT enforces) | filesystem `deny` (stricter; warns) |
 | allowWrite absolute/home path | (no output) | --allow-tool flags | profile workspace root |
-| allowWrite relative path | (no output) | --allow-tool flags | runtime workspace already covers it |
+| allowWrite relative path | (no output) | --allow-tool flags | named path → filesystem `write`; `.` omitted |
 | allowedDomains domain | WebFetch(domain:X) + sandbox.network | (SRT enforces) | domain `allow` |
 | deniedDomains domain | WebFetch(domain:X) in deny | --deny-url | domain `deny` |
 | Bash allow cmd | (no output) | (no output) | not compiled (would auto-approve unsandboxed; warns) |

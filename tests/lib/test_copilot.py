@@ -174,9 +174,11 @@ class TestCopilotLossyMapping:
         ]
         gen.generate(rules, config)
         captured = capsys.readouterr()
-        assert (
-            "no ask equivalent" in captured.err.lower() or "ask" in captured.err.lower()
-        )
+        warnings = gen.compatibility_warnings(rules, config)
+
+        assert captured.out == ""
+        assert captured.err == ""
+        assert any("no ask equivalent" in warning.lower() for warning in warnings)
 
 
 class TestCopilotYoloGeneration:
@@ -232,9 +234,11 @@ class TestCopilotYoloGeneration:
         config.yolo = True
         rules = [
             SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
+            SecurityRule(Scope.EXECUTE, Action.ASK, "git push", Source.BASH_RULES),
         ]
         output = gen.generate(rules, config)
         captured = capsys.readouterr()
+        warnings = gen.compatibility_warnings(rules, config)
 
         # Should have --yolo flag and deny entries
         assert "--yolo" in output
@@ -242,3 +246,4 @@ class TestCopilotYoloGeneration:
 
         # No lossy mapping warning
         assert captured.err == ""
+        assert warnings == []

@@ -32,6 +32,124 @@ class TestBareInvocation:
         assert "config" in result.output
 
 
+class TestDiagnosticOutput:
+    def test_warning_is_yellow_on_stderr_without_coloring_generated_stdout(
+        self, tmp_path: Path
+    ) -> None:
+        config = _make_config(tmp_path, {}, {"deny": [], "ask": ["git push"]})
+
+        result = runner.invoke(
+            app,
+            ["-c", str(config), "generate", "copilot"],
+            env={"NO_COLOR": None},
+            color=True,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "--deny-tool 'shell(git push)'" in result.stdout
+        assert "\x1b[" not in result.stdout
+        assert "Warning:" in result.stderr
+        assert "\x1b[33m" in result.stderr
+
+    def test_no_color_disables_ansi_even_for_color_capable_terminal(
+        self, tmp_path: Path
+    ) -> None:
+        config = _make_config(tmp_path, {}, {"deny": [], "ask": ["git push"]})
+
+        result = runner.invoke(
+            app,
+            ["-c", str(config), "generate", "copilot"],
+            env={"NO_COLOR": ""},
+            color=True,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Warning:" in result.stderr
+        assert "\x1b[" not in result.stderr
+
+    def test_error_is_red_on_stderr(self, tmp_path: Path) -> None:
+        config = tmp_path / "missing.toml"
+
+        result = runner.invoke(
+            app,
+            ["-c", str(config), "config"],
+            env={"NO_COLOR": None},
+            color=True,
+        )
+
+        assert result.exit_code == 2
+        assert "Error:" in result.stderr
+        assert "\x1b[31m" in result.stderr
+
+    def test_verbose_reports_secret_safe_lifecycle_debug_to_stderr(
+        self, tmp_path: Path
+    ) -> None:
+        config = _make_config(tmp_path, {}, {"deny": [], "ask": ["git push"]})
+
+        result = runner.invoke(
+            app,
+            ["--verbose", "-c", str(config), "generate", "claude"],
+            env={"NO_COLOR": None},
+            color=True,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Debug:" in result.stderr
+        assert "profile 'default'" in result.stderr
+        assert "rules=" in result.stderr
+        assert "git push" not in result.stderr
+        assert "\x1b[36m" in result.stderr
+        assert "Debug:" not in result.stdout
+
+    def test_normal_execution_has_no_debug_output(self, tmp_path: Path) -> None:
+        config = _make_config(tmp_path, {})
+
+        result = runner.invoke(app, ["-c", str(config), "generate", "claude"])
+
+        assert result.exit_code == 0, result.output
+        assert "Debug:" not in result.stderr
+
+    def test_verbose_error_includes_traceback_and_concise_error(
+        self, tmp_path: Path
+    ) -> None:
+        config = _make_config(tmp_path, {})
+        (tmp_path / "srt.jsonc").write_text("{invalid")
+
+        result = runner.invoke(
+            app,
+            ["--verbose", "-c", str(config), "generate", "claude"],
+        )
+
+        assert result.exit_code == 1
+        assert "Debug: Generation failed" in result.stderr
+        assert "Traceback (most recent call last)" in result.stderr
+        assert "Error:" in result.stderr
+
+    def test_diff_styles_clean_and_drift_results(self, tmp_path: Path) -> None:
+        config, claude_target, _ = _make_config_with_targets(
+            tmp_path, {}, {"deny": ["rm"], "ask": []}
+        )
+        generated = runner.invoke(
+            app,
+            ["-c", str(config), "generate", "claude", "--write"],
+        )
+        assert generated.exit_code == 0, generated.output
+        claude_target.write_text("{}")
+
+        result = runner.invoke(
+            app,
+            ["-c", str(config), "diff", "claude"],
+            env={"NO_COLOR": None},
+            color=True,
+        )
+
+        assert result.exit_code == 1
+        assert "canonical: no drift" in result.stdout
+        assert "\x1b[32m" in result.stdout
+        assert "claude:" in result.stdout
+        assert "\x1b[33m" in result.stdout
+
+
 class TestInit:
     def test_init_creates_dir_and_files(self, tmp_path: Path) -> None:
         twsrt_dir = tmp_path / "config" / "twsrt"

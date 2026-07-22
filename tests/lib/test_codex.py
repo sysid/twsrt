@@ -51,6 +51,48 @@ class TestCodexProfileGeneration:
         assert profile["filesystem"]["~/notes.txt"] == "read"
         assert profile["filesystem"]["~/.ssh"] == "deny"
 
+    def test_named_relative_allow_write_emits_workspace_filesystem_rule(self) -> None:
+        rules = [
+            _rule(Scope.WRITE, Action.ALLOW, ".git"),
+            _rule(Scope.WRITE, Action.ALLOW, "generated"),
+            _rule(Scope.WRITE, Action.DENY, ".git/config"),
+            _rule(Scope.WRITE, Action.DENY, ".git/hooks"),
+        ]
+
+        generated = tomllib.loads(CodexGenerator().generate_config(rules, AppConfig()))
+
+        workspace = generated["permissions"]["twsrt"]["filesystem"][":workspace_roots"]
+        assert workspace[".git"] == "write"
+        assert workspace["generated"] == "write"
+        assert workspace[".git/config"] == "read"
+        assert workspace[".git/hooks"] == "read"
+
+    @pytest.mark.parametrize("allow_first", [True, False])
+    def test_equal_relative_path_uses_most_restrictive_access_regardless_of_order(
+        self, allow_first: bool
+    ) -> None:
+        allow = _rule(Scope.WRITE, Action.ALLOW, ".git/config")
+        deny_write = _rule(Scope.WRITE, Action.DENY, ".git/config")
+        rules = [allow, deny_write] if allow_first else [deny_write, allow]
+
+        generated = tomllib.loads(CodexGenerator().generate_config(rules, AppConfig()))
+
+        workspace = generated["permissions"]["twsrt"]["filesystem"][":workspace_roots"]
+        assert workspace[".git/config"] == "read"
+
+    @pytest.mark.parametrize("deny_first", [True, False])
+    def test_relative_deny_read_wins_regardless_of_order(
+        self, deny_first: bool
+    ) -> None:
+        deny_read = _rule(Scope.READ, Action.DENY, ".git/config")
+        deny_write = _rule(Scope.WRITE, Action.DENY, ".git/config")
+        rules = [deny_read, deny_write] if deny_first else [deny_write, deny_read]
+
+        generated = tomllib.loads(CodexGenerator().generate_config(rules, AppConfig()))
+
+        workspace = generated["permissions"]["twsrt"]["filesystem"][":workspace_roots"]
+        assert workspace[".git/config"] == "deny"
+
     def test_equal_path_uses_most_restrictive_access(self) -> None:
         rules = [
             _rule(Scope.WRITE, Action.DENY, "~/notes.txt"),
@@ -67,7 +109,7 @@ class TestCodexProfileGeneration:
             _rule(Scope.WRITE, Action.ALLOW, "~/dev"),
         ]
 
-        warnings = CodexGenerator().compatibility_warnings(AppConfig(), rules)
+        warnings = CodexGenerator().compatibility_warnings(rules, AppConfig())
 
         assert not any("allowWrite" in warning for warning in warnings)
 
@@ -81,7 +123,7 @@ class TestCodexProfileGeneration:
         generator = CodexGenerator()
 
         generated = tomllib.loads(generator.generate_config(rules, AppConfig()))
-        warnings = generator.compatibility_warnings(AppConfig(), rules)
+        warnings = generator.compatibility_warnings(rules, AppConfig())
 
         assert "workspace_roots" not in generated["permissions"]["twsrt"]
         assert any(
@@ -107,7 +149,7 @@ class TestCodexProfileGeneration:
         generator = CodexGenerator()
 
         generated = tomllib.loads(generator.generate_config(rules, AppConfig()))
-        warnings = generator.compatibility_warnings(AppConfig(), rules)
+        warnings = generator.compatibility_warnings(rules, AppConfig())
 
         profile = generated["permissions"]["twsrt"]
         assert "workspace_roots" not in profile
@@ -156,7 +198,7 @@ class TestCodexProfileGeneration:
         assert network["unix_sockets"] == {str(socket): "allow"}
         assert "allow_local_binding" not in network
         assert "proxy_url" not in network
-        warnings = CodexGenerator().compatibility_warnings(config)
+        warnings = CodexGenerator().compatibility_warnings([], config)
         assert any(str(tmp_path) in warning for warning in warnings)
         assert any("allowLocalBinding" in warning for warning in warnings)
         assert any("httpProxyPort" in warning for warning in warnings)
@@ -173,7 +215,7 @@ class TestCodexProfileGeneration:
             _rule(Scope.WRITE, Action.DENY, "**/*.key"),
         ]
 
-        warnings = CodexGenerator().compatibility_warnings(AppConfig(), rules)
+        warnings = CodexGenerator().compatibility_warnings(rules, AppConfig())
 
         assert any(
             "2 denyWrite globs" in warning and "deny read and write" in warning
@@ -234,7 +276,7 @@ class TestCodexExecutionRules:
             _rule(Scope.EXECUTE, Action.DENY, "rm"),
         ]
 
-        warnings = CodexGenerator().compatibility_warnings(AppConfig(), rules)
+        warnings = CodexGenerator().compatibility_warnings(rules, AppConfig())
 
         assert any(
             "unsandboxed" in warning and "gh pr view" in warning for warning in warnings
@@ -244,7 +286,7 @@ class TestCodexExecutionRules:
         )
 
     def test_always_warns_about_silent_profile_deactivation(self) -> None:
-        warnings = CodexGenerator().compatibility_warnings(AppConfig())
+        warnings = CodexGenerator().compatibility_warnings([], AppConfig())
 
         assert any(
             "sandbox_mode" in warning and "config.toml" in warning

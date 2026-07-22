@@ -23,6 +23,49 @@ app = typer.Typer(
 log = logging.getLogger("twsrt")
 
 
+def _error(message: str) -> None:
+    typer.secho(f"Error: {message}", fg=typer.colors.RED, bold=True, err=True)
+
+
+def _warning(message: str) -> None:
+    typer.secho(f"Warning: {message}", fg=typer.colors.YELLOW, err=True)
+
+
+def _info(message: str) -> None:
+    typer.secho(message, fg=typer.colors.CYAN)
+
+
+def _success(message: str) -> None:
+    typer.secho(message, fg=typer.colors.GREEN)
+
+
+def _drift(message: str) -> None:
+    typer.secho(message, fg=typer.colors.YELLOW)
+
+
+def _extra(message: str) -> None:
+    typer.secho(message, fg=typer.colors.RED)
+
+
+def _debug(message: str) -> None:
+    typer.secho(f"Debug: {message}", fg=typer.colors.CYAN, dim=True, err=True)
+
+
+class _CliLogHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        _debug(self.format(record))
+
+
+def _configure_logging(verbose: bool) -> None:
+    log.handlers.clear()
+    log.propagate = False
+    if verbose:
+        log.setLevel(logging.DEBUG)
+        log.addHandler(_CliLogHandler())
+    else:
+        log.setLevel(logging.WARNING)
+
+
 def _version_callback(value: bool) -> None:
     if value:
         typer.echo(f"twsrt version: {__version__}")
@@ -48,8 +91,9 @@ def main(
         help="Config file path",
     ),
 ) -> None:
-    if verbose:
-        logging.basicConfig(level=logging.DEBUG)
+    if "NO_COLOR" in os.environ:
+        ctx.color = False
+    _configure_logging(verbose)
     ctx.ensure_object(dict)
     ctx.obj["config_path"] = config.expanduser()
 
@@ -249,7 +293,7 @@ def config_command(
     target: Path = ctx.obj["config_path"]
     if not target.exists():
         if not init:
-            typer.echo(f"Config not found: {target}. Use --init to create.", err=True)
+            _error(f"Config not found: {target}. Use --init to create.")
             raise typer.Exit(2)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(DEFAULT_CONFIG_TOML)
@@ -266,7 +310,8 @@ def config_command(
     try:
         result = subprocess.run([editor, str(target)])
     except FileNotFoundError:
-        typer.echo(f"Editor not found: {editor}", err=True)
+        log.debug("Opening config in editor failed", exc_info=True)
+        _error(f"Editor not found: {editor}")
         raise typer.Exit(1)
     raise typer.Exit(result.returncode)
 
@@ -288,6 +333,12 @@ def generate(
     try:
         config, compiled = _compile(ctx.obj["config_path"], profile, yolo)
         generators = _select_generators(agent, config, for_write=write)
+        log.debug(
+            "Generating agents=%s write=%s dry_run=%s",
+            ",".join(generator.name for generator in generators),
+            write,
+            dry_run,
+        )
         rendered = {
             generator.name: generator.generate(compiled.rules, config)
             for generator in generators
@@ -296,31 +347,31 @@ def generate(
             _stage_agent_files(generators, rendered, compiled, config) if write else {}
         )
     except (FileExistsError, FileNotFoundError, ValueError) as exc:
-        typer.echo(f"Error: {exc}", err=True)
+        log.debug("Generation failed", exc_info=True)
+        _error(str(exc))
         raise typer.Exit(1)
 
-    _print_codex_warnings(generators, compiled, config)
+    log.debug("Prepared generated artifacts: staged_targets=%d", len(staged))
+    _print_generator_warnings(generators, compiled, config)
     if write and dry_run:
         for document in compiled.documents.values():
-            typer.echo(f"Would write canonical: {document.output_path}")
+            _info(f"Would write canonical: {document.output_path}")
         for path in staged:
-            typer.echo(f"Would write agent target: {path}")
+            _info(f"Would write agent target: {path}")
         for name, output in rendered.items():
-            typer.echo(f"--- Dry run: {name} ---")
+            _info(f"--- Dry run: {name} ---")
             typer.echo(output)
         return
 
     if write:
         for document in compiled.documents.values():
             _atomic_write(document.output_path, _serialize(document.document))
-            typer.echo(f"Wrote canonical: {document.output_path}")
+            _success(f"Wrote canonical: {document.output_path}")
         _write_agent_files(staged, config)
         for path in staged:
-            typer.echo(f"Wrote: {path}")
+            _success(f"Wrote: {path}")
         if "codex" in rendered:
-            typer.echo(
-                "Restart Codex to load the updated permission profile and rules."
-            )
+            _info("Restart Codex to load the updated permission profile and rules.")
         for generator in generators:
             if generator.name == "copilot" and _resolve_copilot_target(config) is None:
                 typer.echo(rendered[generator.name])
@@ -328,7 +379,7 @@ def generate(
 
     for name, output in rendered.items():
         if len(rendered) > 1:
-            typer.echo(f"--- {name} ---")
+            _info(f"--- {name} ---")
         typer.echo(output)
 
 
@@ -348,56 +399,61 @@ def diff(
         config, compiled = _compile(ctx.obj["config_path"], profile, yolo)
         generators = _select_generators(agent, config, for_write=True)
     except (FileNotFoundError, ValueError) as exc:
-        typer.echo(f"Error: {exc}", err=True)
+        log.debug("Diff setup failed", exc_info=True)
+        _error(str(exc))
         raise typer.Exit(1)
 
+    log.debug(
+        "Diffing agents=%s",
+        ",".join(generator.name for generator in generators),
+    )
     has_drift = False
     for kind, document in compiled.documents.items():
         actual = _read_json_object(document.output_path)
         if actual == document.document:
-            typer.echo(f"{kind} canonical: no drift")
+            _success(f"{kind} canonical: no drift")
         else:
             has_drift = True
-            typer.echo(f"{kind} canonical: drift")
+            _drift(f"{kind} canonical: drift")
 
     for generator in generators:
         target = _resolve_diff_target(generator.name, config)
         if target is None or not target.exists():
-            typer.echo(
-                f"Error: Target file not found for {generator.name}: {target}", err=True
-            )
+            _error(f"Target file not found for {generator.name}: {target}")
             raise typer.Exit(2)
         if (
             generator.name == "codex"
             and config.codex_rules_path is not None
             and not config.codex_rules_path.exists()
         ):
-            typer.echo(
-                f"Error: Target file not found for codex: {config.codex_rules_path}",
-                err=True,
-            )
+            _error(f"Target file not found for codex: {config.codex_rules_path}")
             raise typer.Exit(2)
         try:
             result = generator.diff(compiled.rules, target, config)
         except ValueError as exc:
-            typer.echo(f"Error: {exc}", err=True)
+            log.debug("Diff for agent %s failed", generator.name, exc_info=True)
+            _error(str(exc))
             raise typer.Exit(1)
+        log.debug(
+            "Diff result agent=%s missing=%d extra=%d",
+            generator.name,
+            len(result.missing),
+            len(result.extra),
+        )
         if result.matched:
-            typer.echo(f"{generator.name}: no drift")
+            _success(f"{generator.name}: no drift")
         else:
             has_drift = True
-            typer.echo(
+            _drift(
                 f"{generator.name}: {len(result.missing)} missing, "
                 f"{len(result.extra)} extra"
             )
             for entry in result.missing:
-                typer.echo(f"  + {entry} (missing from existing)")
+                _drift(f"  + {entry} (missing from existing)")
             for entry in result.extra:
-                typer.echo(f"  - {entry} (in existing, not in sources)")
-        if generator.name == "codex":
-            from twsrt.lib.codex import SILENT_DEACTIVATION_WARNING
+                _extra(f"  - {entry} (in existing, not in sources)")
 
-            typer.echo(f"Warning: {SILENT_DEACTIVATION_WARNING}", err=True)
+    _print_generator_warnings(generators, compiled, config)
 
     if has_drift:
         raise typer.Exit(1)
@@ -411,7 +467,16 @@ def _compile(
     from twsrt.lib.sources import compile_sources
 
     config = load_config(config_path)
-    compiled = compile_sources(config, resolve_profile(config, profile_name))
+    resolved = resolve_profile(config, profile_name)
+    compiled = compile_sources(config, resolved)
+    log.debug(
+        "Compiled profile %r: fragments=%d documents=%d rules=%d mode=%s",
+        resolved.name,
+        sum(len(fragments) for fragments in resolved.fragments.values()),
+        len(compiled.documents),
+        len(compiled.rules),
+        "yolo" if yolo else "full",
+    )
     srt = compiled.srt_result
     config.network_config = srt.network_config
     config.filesystem_config = srt.filesystem_config
@@ -481,27 +546,25 @@ def _write_agent_files(staged: dict[Path, str], config: AppConfig) -> None:
     if claude_target in staged:
         migration_message = prepare_claude_target(config.symlink_anchor, claude_target)
         if migration_message:
-            typer.echo(migration_message)
+            _info(migration_message)
     for path, content in staged.items():
         _atomic_write(path, content)
     if claude_target in staged:
-        ensure_symlink(claude_target, config.symlink_anchor)
+        warning = ensure_symlink(claude_target, config.symlink_anchor)
+        if warning:
+            _warning(warning)
 
 
-def _print_codex_warnings(
+def _print_generator_warnings(
     generators: list, compiled: CompilationResult, config: AppConfig
 ) -> None:
-    from twsrt.lib.codex import CodexGenerator
-
-    if not any(generator.name == "codex" for generator in generators):
-        return
-    for warning in CodexGenerator().compatibility_warnings(config, compiled.rules):
-        typer.echo(f"Warning: {warning}", err=True)
-    typer.echo(
-        "Warning: Codex execution rules apply only to requests to run outside "
-        "the sandbox.",
-        err=True,
-    )
+    for generator in generators:
+        warnings = generator.compatibility_warnings(compiled.rules, config)
+        log.debug(
+            "Compatibility warnings agent=%s count=%d", generator.name, len(warnings)
+        )
+        for warning in warnings:
+            _warning(warning)
 
 
 def _resolve_claude_target(config: AppConfig) -> Path:
@@ -547,11 +610,13 @@ def _read_json_object(path: Path) -> dict | None:
     try:
         value = json.loads(path.read_text())
     except json.JSONDecodeError:
+        log.debug("Canonical target is not valid JSON: %s", path)
         return None
     return value if isinstance(value, dict) else None
 
 
 def _atomic_write(path: Path, content: str) -> None:
+    log.debug("Writing target path=%s", path)
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     try:

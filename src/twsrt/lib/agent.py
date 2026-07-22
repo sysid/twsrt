@@ -14,6 +14,12 @@ class AgentGenerator(Protocol):
         """Generate agent-specific config from security rules."""
         ...
 
+    def compatibility_warnings(
+        self, rules: list[SecurityRule], config: AppConfig
+    ) -> list[str]:
+        """Describe lossy or safety-relevant agent translations."""
+        ...
+
     def diff(
         self, rules: list[SecurityRule], target: Path, config: AppConfig
     ) -> DiffResult:

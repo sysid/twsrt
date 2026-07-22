@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from twsrt.lib.models import (
     AppConfig,
@@ -133,14 +133,15 @@ def _build_profiles(
     for name, blob in raw.items():
         if not isinstance(blob, dict):
             raise ValueError(f"profiles.{name} must be a table")
-        unknown = set(blob) - {"extends", *sources}
+        profile_blob = cast(dict[str, Any], blob)
+        unknown = set(profile_blob) - {"extends", *sources}
         if unknown:
             raise ValueError(
                 f"profiles.{name}: unknown field(s): {', '.join(sorted(unknown))}"
             )
         selections: dict[str, list[str]] = {}
         for kind in sources:
-            values = blob.get(kind, [])
+            values = profile_blob.get(kind, [])
             if not isinstance(values, list):
                 raise ValueError(f"profiles.{name}.{kind} must be a list of names")
             selections[kind] = []
@@ -148,7 +149,7 @@ def _build_profiles(
                 if not isinstance(value, str):
                     raise ValueError(f"profiles.{name}.{kind} must be a list of names")
                 selections[kind].append(value)
-        extends = blob.get("extends", [])
+        extends = profile_blob.get("extends", [])
         if not isinstance(extends, list):
             raise ValueError(f"profiles.{name}.extends must be a list of names")
         typed_extends: list[str] = []

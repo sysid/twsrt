@@ -84,6 +84,12 @@ class ClaudeGenerator:
         }
         return json.dumps(output, indent=2)
 
+    def compatibility_warnings(
+        self, rules: list[SecurityRule], config: AppConfig
+    ) -> list[str]:
+        """Claude generation has no additional lossy mappings to report."""
+        return []
+
     def diff(
         self, rules: list[SecurityRule], target: Path, config: AppConfig
     ) -> DiffResult:

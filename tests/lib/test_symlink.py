@@ -75,6 +75,24 @@ class TestEnsureSymlink:
         assert anchor.is_symlink()
         assert anchor.resolve() == target.resolve()
 
+    def test_returns_warning_when_symlink_falls_back_to_copy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        target = tmp_path / "settings.full.json"
+        anchor = tmp_path / "settings.json"
+        target.write_text("generated")
+
+        def fail_symlink(source: str, destination: str) -> None:
+            raise OSError("symlinks unavailable")
+
+        monkeypatch.setattr(os, "symlink", fail_symlink)
+
+        warning = ensure_symlink(target, anchor)
+
+        assert warning is not None
+        assert "symlinks unavailable" in warning
+        assert anchor.read_text() == "generated"
+
 
 class TestPrepareclaudeTarget:
     """T003: Tests for prepare_claude_target()."""

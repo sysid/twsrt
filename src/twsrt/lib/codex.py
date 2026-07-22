@@ -67,6 +67,11 @@ class CodexGenerator:
         for rule in rules:
             if rule.scope in (Scope.READ, Scope.WRITE):
                 if rule.scope == Scope.WRITE and rule.action == Action.ALLOW:
+                    pattern, relative = _classify_path(rule.pattern)
+                    if relative:
+                        if pattern != ".":
+                            _merge_filesystem_access(workspace_rules, pattern, "write")
+                        continue
                     workspace_root = _allow_write_workspace_root(rule.pattern)
                     if workspace_root is not None:
                         additional_workspace_roots[workspace_root] = True
@@ -74,8 +79,7 @@ class CodexGenerator:
                 pattern, relative = _classify_path(rule.pattern)
                 access = _filesystem_access(rule, pattern)
                 target = workspace_rules if relative else direct_rules
-                if target.get(pattern) != "deny":
-                    target[pattern] = access
+                _merge_filesystem_access(target, pattern, access)
             elif rule.scope == Scope.NETWORK:
                 access = "deny" if rule.action == Action.DENY else "allow"
                 if domains.get(rule.pattern) != "deny":
@@ -161,8 +165,8 @@ class CodexGenerator:
 
     def compatibility_warnings(
         self,
+        rules: list[SecurityRule],
         config: AppConfig,
-        rules: list[SecurityRule] | None = None,
     ) -> list[str]:
         """Describe canonical SRT fields that cannot be mapped without widening."""
         warnings: list[str] = []
@@ -190,7 +194,7 @@ class CodexGenerator:
             )
         deny_write_glob_count = sum(
             1
-            for rule in rules or []
+            for rule in rules
             if rule.scope == Scope.WRITE
             and rule.action == Action.DENY
             and _has_glob(rule.pattern)
@@ -202,7 +206,7 @@ class CodexGenerator:
             )
         unsupported_allow_write = sorted(
             rule.pattern
-            for rule in rules or []
+            for rule in rules
             if rule.scope == Scope.WRITE
             and rule.action == Action.ALLOW
             and not _classify_path(rule.pattern)[1]
@@ -214,7 +218,7 @@ class CodexGenerator:
                 f"{len(unsupported_allow_write)} allowWrite pattern(s): "
                 + ", ".join(unsupported_allow_write)
             )
-        conflicting_roots = _conflicting_workspace_roots(rules or [])
+        conflicting_roots = _conflicting_workspace_roots(rules)
         if conflicting_roots:
             warnings.append(
                 f"SRT deny rules already cover {len(conflicting_roots)} "
@@ -223,7 +227,7 @@ class CodexGenerator:
             )
         allow_commands = sorted(
             rule.pattern
-            for rule in rules or []
+            for rule in rules
             if rule.scope == Scope.EXECUTE and rule.action == Action.ALLOW
         )
         if allow_commands:
@@ -234,13 +238,18 @@ class CodexGenerator:
             )
         ask_count = sum(
             1
-            for rule in rules or []
+            for rule in rules
             if rule.scope == Scope.EXECUTE and rule.action == Action.ASK
         )
         if ask_count:
             warnings.append(
                 "Codex prompts for out-of-sandbox execution by default; "
                 f"skipped {ask_count} ask rule(s) (no output needed)"
+            )
+        if config.codex_rules_path is not None:
+            warnings.append(
+                "Codex execution rules apply only to requests to run outside "
+                "the sandbox."
             )
         warnings.append(SILENT_DEACTIVATION_WARNING)
         return warnings
@@ -338,6 +347,14 @@ def _filesystem_access(rule: SecurityRule, pattern: str) -> str:
     raise ValueError(f"Unsupported filesystem rule: {rule}")
 
 
+def _merge_filesystem_access(rules: dict[str, str], pattern: str, access: str) -> None:
+    """Keep the most restrictive access when rules share an exact path."""
+    priority = {"write": 0, "read": 1, "deny": 2}
+    current = rules.get(pattern)
+    if current is None or priority[access] > priority[current]:
+        rules[pattern] = access
+
+
 def _has_glob(pattern: str) -> bool:
     return any(character in pattern for character in "*?[")
 
@@ -362,9 +379,9 @@ def _classify_path(pattern: str) -> tuple[str, bool]:
 def _allow_write_workspace_root(pattern: str) -> str | None:
     """Return the profile workspace root for an allowWrite pattern.
 
-    None means no root is emitted: relative paths are already writable via
-    the runtime workspace; unsupported shapes (globs, ~, /) are skipped and
-    reported by compatibility_warnings.
+    None means no additional root is emitted: relative paths are represented
+    by workspace filesystem rules; unsupported shapes (globs, ~, /) are
+    skipped and reported by compatibility_warnings.
     """
     normalized, relative = _classify_path(pattern)
     if relative:

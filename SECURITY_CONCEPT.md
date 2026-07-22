@@ -213,6 +213,10 @@ correctness. The layers are complementary but not fully overlapping.
   profile, source kind, structural path or rule bucket, and both fragments.
 - **Explicit warnings**: Lossy mappings (e.g., ask → deny for Copilot) emit
   warnings to stderr so administrators know where fidelity is reduced.
+- **Central presentation**: Generators return warnings as data and never write
+  to the terminal directly. The CLI owns severity, stream selection, automatic
+  TTY coloring, `NO_COLOR`, and secret-safe `--verbose` lifecycle diagnostics.
+  Raw generated artifacts remain unstyled on stdout.
 
 ### 3.7 Why SRT + twsrt Together: A Strategic Assessment
 
@@ -640,7 +644,8 @@ permission profiles are Beta, `.rules` files are Experimental.
 | denyWrite exact path | filesystem `read` | Read-only |
 | denyWrite glob | filesystem `deny` + warning | **Lossy narrowing**: Codex cannot express read-only for globs; deny blocks reads too (fail-safe) |
 | allowWrite absolute/home path | Profile workspace root | Terminal `/**` and trailing slashes normalize to the concrete directory; unsupported shapes (`~`, `/`, other globs) and deny-conflicted roots are skipped with a warning; inherited workspace rules provide writes and deny overrides |
-| allowWrite relative path | No additional output | Already covered by the runtime workspace |
+| allowWrite named relative path | workspace filesystem `write` | Can intentionally reopen a protected descendant such as `.git`; exact-path `read`/`deny` remains more restrictive |
+| allowWrite `.` | No additional output | Already covered by the runtime workspace |
 | allowedDomains / deniedDomains | network `domains` allow/deny | `domains` table always emitted; empty map blocks all domain traffic (allowlist semantics) |
 | Exact Unix socket path | network `unix_sockets` allow | Directory entries skipped with warning |
 | Bash deny command | `prefix_rule(..., decision = "forbidden")` | Hard deny instead of default prompt for sandbox-escape requests; rules file only generated while `codex_rules` is set in config.toml (optional) |
@@ -650,9 +655,11 @@ permission profiles are Beta, `.rules` files are Experimental.
 Accepted trade-off: an added workspace root is writable in every Codex
 session regardless of the working directory — exactly the grant canonical
 `allowWrite` expresses, but broader than Codex's per-project trust default.
-The inherited `.git`/`.codex`/`.agents` protection and the deny rules in
-`filesystem.:workspace_roots` bound the blast radius, and a root that
-collides with a deny rule is dropped in favor of the deny.
+The inherited `.git`/`.codex`/`.agents` protection remains in force unless a
+canonical named relative `allowWrite` explicitly reopens one of those paths.
+More-specific `read`/`deny` rules and workspace deny globs still bound the
+blast radius, and an absolute root that collides with a deny rule is dropped
+in favor of the deny.
 
 #### 6.3.2 Deliberately Not Compiled
 
@@ -700,13 +707,14 @@ non-bypassability would require managed configuration outside the user profile.
 ### 6.4 pi-mono (Planned)
 
 pi-mono support is architecturally planned but not yet implemented. The
-`AgentGenerator` protocol allows adding new agents by implementing three
-methods:
+`AgentGenerator` protocol allows adding new agents by implementing four
+members:
 
 ```
 AgentGenerator Protocol:
   name      → str                          (agent identifier)
   generate  → (rules, config) → str        (produce agent-native config)
+  compatibility_warnings → (rules, config) → list[str]
   diff      → (rules, target) → DiffResult (detect drift)
 ```
 
@@ -893,6 +901,10 @@ class PiMonoGenerator:
 
     def generate(self, rules, config) -> str:
         # Translate SecurityRules to pi-mono format
+        ...
+
+    def compatibility_warnings(self, rules, config) -> list[str]:
+        # Return lossy or safety-relevant mappings without printing
         ...
 
     def diff(self, rules, target) -> DiffResult:

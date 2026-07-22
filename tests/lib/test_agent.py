@@ -27,6 +27,13 @@ class TestAgentGeneratorContract:
             result = gen.generate([], config)
             assert isinstance(result, str)
 
+    def test_compatibility_warnings_returns_strings(self) -> None:
+        config = AppConfig()
+        for gen in GENERATORS.values():
+            warnings = gen.compatibility_warnings([], config)
+            assert isinstance(warnings, list)
+            assert all(isinstance(warning, str) for warning in warnings)
+
     def test_diff_returns_diff_result(self, tmp_path: Path) -> None:
         for gen in GENERATORS.values():
             target = tmp_path / f"target-{gen.name}"

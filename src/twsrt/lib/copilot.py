@@ -1,6 +1,5 @@
 """CopilotGenerator — translate SecurityRules to Copilot CLI flags."""
 
-import sys
 from pathlib import Path
 
 from twsrt.lib.models import (
@@ -35,13 +34,8 @@ class CopilotGenerator:
                     # Yolo mode: skip ASK rules entirely (--yolo subsumes them)
                     pass
                 else:
-                    # FR-012: lossy mapping — ask → deny-tool with warning
+                    # FR-012: lossy mapping — ask → deny-tool
                     flags.append(f"--deny-tool 'shell({rule.pattern})'")
-                    print(
-                        f"INFO: Bash ask rule '{rule.pattern}' mapped to "
-                        f"--deny-tool for copilot (no ask equivalent)",
-                        file=sys.stderr,
-                    )
 
             elif rule.scope == Scope.WRITE and rule.action == Action.ALLOW:
                 if not config.yolo:
@@ -63,6 +57,19 @@ class CopilotGenerator:
             # READ/DENY, WRITE/DENY: SRT handles at OS level
 
         return "\n".join(f"{flag} \\" for flag in flags)
+
+    def compatibility_warnings(
+        self, rules: list[SecurityRule], config: AppConfig
+    ) -> list[str]:
+        """Describe Copilot mappings that lose canonical intent."""
+        if config.yolo:
+            return []
+        return [
+            f"Bash ask rule {rule.pattern!r} mapped to --deny-tool for copilot "
+            "(no ask equivalent)"
+            for rule in rules
+            if rule.scope == Scope.EXECUTE and rule.action == Action.ASK
+        ]
 
     def diff(
         self, rules: list[SecurityRule], target: Path, config: AppConfig

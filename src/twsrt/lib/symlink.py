@@ -2,12 +2,11 @@
 
 import os
 import shutil
-import sys
 import tempfile
 from pathlib import Path
 
 
-def ensure_symlink(target: Path, anchor: Path) -> None:
+def ensure_symlink(target: Path, anchor: Path) -> str | None:
     """Create or update symlink from anchor → target (atomic).
 
     Uses relative path when target is in the same directory as anchor,
@@ -26,15 +25,21 @@ def ensure_symlink(target: Path, anchor: Path) -> None:
         os.remove(tmp)  # mkstemp creates a file; we need a symlink
         os.symlink(link_value, tmp)
         os.replace(tmp, str(anchor))
-    except OSError:
+        return None
+    except OSError as error:
         # Windows without Developer Mode or admin privileges
-        print(
-            f"Warning: cannot create symlink (unsupported OS). "
-            f"Writing directly to {anchor} instead.",
-            file=sys.stderr,
+        try:
+            if anchor.resolve() != target.resolve():
+                shutil.copy2(str(target), str(anchor))
+        except OSError as copy_error:
+            raise OSError(
+                f"cannot create symlink {anchor} ({error}) and fallback copy "
+                f"failed ({copy_error})"
+            ) from error
+        return (
+            f"Cannot create symlink {anchor} ({error}); copied {target} "
+            "to the anchor instead."
         )
-        if anchor.resolve() != target.resolve():
-            shutil.copy2(str(target), str(anchor))
 
 
 def prepare_claude_target(anchor: Path, target: Path) -> str | None:
@@ -54,7 +59,7 @@ def prepare_claude_target(anchor: Path, target: Path) -> str | None:
     # anchor is a regular file
     if target.exists():
         raise FileExistsError(
-            f"Error: both {anchor} (regular file) and {target} exist. "
+            f"both {anchor} (regular file) and {target} exist. "
             f"Remove one before running generate -w."
         )
 
