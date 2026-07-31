@@ -82,6 +82,56 @@ def test_compile_sources_unions_documents_and_derives_rules(tmp_path: Path) -> N
     )
 
 
+def test_claude_output_covers_every_denied_path_via_rules(tmp_path: Path) -> None:
+    """Coverage invariant behind the empty sandbox deny lists.
+
+    Every canonical denyRead/denyWrite path must surface as Read/Edit deny
+    rules in Claude output (they reach the OS sandbox via Claude's documented
+    permission-rule merge), while sandbox.filesystem carries only allowWrite
+    plus managed-empty deny lists.
+    """
+    from twsrt.lib.claude import ClaudeGenerator
+    from twsrt.lib.models import AppConfig
+
+    config = load_config(
+        configured_profile(
+            tmp_path,
+            json.dumps(
+                {
+                    "filesystem": {
+                        "denyRead": ["~/.aws"],
+                        "denyWrite": ["**/.env", "/etc/ssl/certs"],
+                        "allowWrite": ["."],
+                    }
+                }
+            ),
+            '{"allow": [], "ask": []}',
+        )
+    )
+    compiled = compile_sources(config, resolve_profile(config))
+    srt = compiled.srt_result
+    app = AppConfig(
+        network_config=srt.network_config,
+        filesystem_config=srt.filesystem_config,
+        sandbox_config=srt.sandbox_config,
+    )
+    output = json.loads(ClaudeGenerator().generate(compiled.rules, app))
+
+    deny = output["permissions"]["deny"]
+    # Read denies: bare + recursive, Read and Edit ("~/.ssh" from base, "~/.aws" added)
+    for path in ("~/.ssh", "~/.aws"):
+        assert f"Read({path})" in deny
+        assert f"Edit({path})" in deny
+    # Write denies, including the //-anchored absolute path
+    assert "Edit(**/.env)" in deny
+    assert "Edit(//etc/ssl/certs)" in deny
+
+    fs = output["sandbox"]["filesystem"]
+    assert fs["allowWrite"] == ["."]
+    assert fs["denyRead"] == []
+    assert fs["denyWrite"] == []
+
+
 def test_compile_sources_rejects_srt_allow_deny_conflict_with_origins(
     tmp_path: Path,
 ) -> None:

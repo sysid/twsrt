@@ -31,14 +31,15 @@ class ClaudeGenerator:
                 # permission checks match — it covers every file-editing tool.
                 # Write(path)/MultiEdit(path) are never consulted.
                 # Bare pattern always included; /** only for directories
+                pattern = _rule_pattern(rule.pattern)
                 for tool in ("Read", "Edit"):
-                    deny.append(f"{tool}({rule.pattern})")
+                    deny.append(f"{tool}({pattern})")
                     if _is_directory_pattern(rule.pattern):
-                        deny.append(f"{tool}({rule.pattern}/**)")
+                        deny.append(f"{tool}({pattern.rstrip('/')}/**)")
 
             elif rule.scope == Scope.WRITE and rule.action == Action.DENY:
                 # FR-007: denyWrite → deny file-editing only (no Read)
-                deny.append(f"Edit({rule.pattern})")
+                deny.append(f"Edit({_rule_pattern(rule.pattern)})")
 
             elif rule.scope == Scope.WRITE and rule.action == Action.ALLOW:
                 # FR-008: allowWrite → no Claude output (SRT enforces)
@@ -69,10 +70,22 @@ class ClaudeGenerator:
 
         sandbox: dict = {"network": network}
 
-        if config.filesystem_config:
-            sandbox["filesystem"] = dict(config.filesystem_config)
+        # denyRead/denyWrite are managed-empty: every canonical deny path is
+        # already emitted as a Read/Edit deny rule above, and Claude Code
+        # merges those into the OS sandbox profile with identical anchoring
+        # (documented, and probe-verified for literals, absolutes, relative
+        # globs, and move-protection). Emitting the paths here too duplicated
+        # the Seatbelt profile's clause expansion past ARG_MAX (E2BIG).
+        filesystem = {
+            key: value
+            for key, value in config.filesystem_config.items()
+            if key not in ("denyRead", "denyWrite")
+        }
+        sandbox["filesystem"] = filesystem
 
         sandbox.update(config.sandbox_config)
+        sandbox["filesystem"]["denyRead"] = []
+        sandbox["filesystem"]["denyWrite"] = []
 
         permissions: dict = {"deny": deny, "allow": allow}
         if not config.yolo:
@@ -184,6 +197,18 @@ class ClaudeGenerator:
             extra=sorted(extra),
             matched=len(missing) == 0 and len(extra) == 0,
         )
+
+
+def _rule_pattern(pattern: str) -> str:
+    """Anchor absolute paths at the filesystem root for Claude rule syntax.
+
+    In Claude Code permission rules a single leading '/' anchors at the
+    settings source, not the filesystem root — 'Edit(/etc/hosts)' silently
+    matches nothing absolute. '//' is the documented absolute-path anchor.
+    """
+    if pattern.startswith("/") and not pattern.startswith("//"):
+        return "/" + pattern
+    return pattern
 
 
 def _is_directory_pattern(pattern: str) -> bool:
