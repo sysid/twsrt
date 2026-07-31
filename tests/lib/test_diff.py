@@ -279,6 +279,52 @@ class TestClaudeFilesystemConfigDrift:
         assert "filesystem.config:denyRead" in result.extra
 
 
+class TestClaudeNoPerpetualDrift:
+    """generate → selective_merge → diff must be a fixed point.
+
+    Guards the E2BIG fix: a target carrying stale populated denyRead/denyWrite
+    must be cleaned by selective_merge and then diff clean.
+    """
+
+    def test_no_perpetual_drift_after_generate_merge_cycle(
+        self, tmp_path: Path
+    ) -> None:
+        from twsrt.lib.claude import selective_merge
+
+        gen = ClaudeGenerator()
+        config = AppConfig(
+            filesystem_config={
+                "allowWrite": ["."],
+                "denyRead": ["~/.ssh"],
+                "denyWrite": ["**/.env"],
+            }
+        )
+        rules = [
+            SecurityRule(Scope.READ, Action.DENY, "~/.ssh", Source.SRT_FILESYSTEM),
+            SecurityRule(Scope.WRITE, Action.DENY, "**/.env", Source.SRT_FILESYSTEM),
+        ]
+        # Target written by an older twsrt: deny lists still populated.
+        stale = {
+            "permissions": {"deny": ["Read(~/.ssh)"], "ask": [], "allow": []},
+            "sandbox": {
+                "network": {"allowedDomains": []},
+                "filesystem": {
+                    "allowWrite": ["."],
+                    "denyRead": ["~/.ssh"],
+                    "denyWrite": ["**/.env"],
+                },
+            },
+        }
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(stale))
+
+        merged = selective_merge(target, json.loads(gen.generate(rules, config)))
+        target.write_text(json.dumps(merged))
+
+        result = gen.diff(rules, target, config)
+        assert result.matched is True, (result.missing, result.extra)
+
+
 class TestClaudeSandboxConfigDrift:
     """US5: Drift detection for top-level sandbox keys."""
 

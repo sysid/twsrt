@@ -33,16 +33,18 @@ class TestClaudeGeneration:
         ]
         output = json.loads(gen.generate(rules, config))
         deny = output["permissions"]["deny"]
-        assert f"Read({aws_dir})" in deny
-        assert f"Read({aws_dir}/**)" in deny
-        assert f"Edit({aws_dir})" in deny
-        assert f"Edit({aws_dir}/**)" in deny
+        # Absolute paths need the '//' filesystem-root anchor — a single '/'
+        # anchors at the settings source in Claude's rule syntax.
+        assert f"Read(/{aws_dir})" in deny
+        assert f"Read(/{aws_dir}/**)" in deny
+        assert f"Edit(/{aws_dir})" in deny
+        assert f"Edit(/{aws_dir}/**)" in deny
         # Only Edit(path) is matched by Claude Code's file permission checks —
         # Write and MultiEdit rules are dead config.
-        assert f"Write({aws_dir})" not in deny
-        assert f"Write({aws_dir}/**)" not in deny
-        assert f"MultiEdit({aws_dir})" not in deny
-        assert f"MultiEdit({aws_dir}/**)" not in deny
+        assert f"Write(/{aws_dir})" not in deny
+        assert f"Write(/{aws_dir}/**)" not in deny
+        assert f"MultiEdit(/{aws_dir})" not in deny
+        assert f"MultiEdit(/{aws_dir}/**)" not in deny
 
     def test_deny_read_file_generates_bare_only(
         self, gen: ClaudeGenerator, config: AppConfig, tmp_path: Path
@@ -55,13 +57,13 @@ class TestClaudeGeneration:
         ]
         output = json.loads(gen.generate(rules, config))
         deny = output["permissions"]["deny"]
-        assert f"Read({netrc})" in deny
-        assert f"Edit({netrc})" in deny
-        assert f"Write({netrc})" not in deny
-        assert f"MultiEdit({netrc})" not in deny
+        assert f"Read(/{netrc})" in deny
+        assert f"Edit(/{netrc})" in deny
+        assert f"Write(/{netrc})" not in deny
+        assert f"MultiEdit(/{netrc})" not in deny
         # No recursive patterns for files
-        assert f"Read({netrc}/**)" not in deny
-        assert f"Edit({netrc}/**)" not in deny
+        assert f"Read(/{netrc}/**)" not in deny
+        assert f"Edit(/{netrc}/**)" not in deny
 
     def test_deny_read_glob_pattern_generates_bare_only(
         self, gen: ClaudeGenerator, config: AppConfig
@@ -91,8 +93,74 @@ class TestClaudeGeneration:
         output = json.loads(gen.generate(rules, config))
         deny = output["permissions"]["deny"]
         # Should generate both bare and recursive (assume directory)
-        assert f"Read({nonexistent})" in deny
-        assert f"Read({nonexistent}/**)" in deny
+        assert f"Read(/{nonexistent})" in deny
+        assert f"Read(/{nonexistent}/**)" in deny
+
+    def test_absolute_deny_write_pattern_emitted_with_double_slash(
+        self, gen: ClaudeGenerator, config: AppConfig
+    ) -> None:
+        """Absolute denyWrite paths get the '//' filesystem-root anchor.
+
+        Claude's rule syntax treats a single leading '/' as relative to the
+        settings source — 'Edit(/System/...)' silently protects nothing.
+        """
+        rules = [
+            SecurityRule(
+                Scope.WRITE,
+                Action.DENY,
+                "/System/Library/Keychains",
+                Source.SRT_FILESYSTEM,
+            ),
+        ]
+        output = json.loads(gen.generate(rules, config))
+        deny = output["permissions"]["deny"]
+        assert "Edit(//System/Library/Keychains)" in deny
+        assert "Edit(/System/Library/Keychains)" not in deny
+
+    def test_double_slash_pattern_not_doubled(
+        self, gen: ClaudeGenerator, config: AppConfig
+    ) -> None:
+        """A pattern already anchored with '//' is emitted verbatim."""
+        rules = [
+            SecurityRule(Scope.WRITE, Action.DENY, "//etc/hosts", Source.SRT_FILESYSTEM),
+        ]
+        output = json.loads(gen.generate(rules, config))
+        deny = output["permissions"]["deny"]
+        assert "Edit(//etc/hosts)" in deny
+        assert "Edit(///etc/hosts)" not in deny
+
+    def test_trailing_slash_absolute_pattern(
+        self, gen: ClaudeGenerator, config: AppConfig, tmp_path: Path
+    ) -> None:
+        """Trailing slash is preserved on the bare rule but stripped before /**."""
+        certs = tmp_path / "certs"
+        certs.mkdir()
+        rules = [
+            SecurityRule(Scope.WRITE, Action.DENY, "/etc/ssl/certs/", Source.SRT_FILESYSTEM),
+            SecurityRule(Scope.READ, Action.DENY, f"{certs}/", Source.SRT_FILESYSTEM),
+        ]
+        output = json.loads(gen.generate(rules, config))
+        deny = output["permissions"]["deny"]
+        assert "Edit(//etc/ssl/certs/)" in deny
+        assert f"Read(/{certs}/)" in deny
+        assert f"Read(/{certs}/**)" in deny
+        assert f"Read(/{certs}//**)" not in deny
+
+    def test_tilde_glob_and_relative_patterns_unchanged(
+        self, gen: ClaudeGenerator, config: AppConfig
+    ) -> None:
+        """Only absolute patterns are re-anchored; ~, globs, and relative stay verbatim."""
+        rules = [
+            SecurityRule(Scope.READ, Action.DENY, "~/.ssh", Source.SRT_FILESYSTEM),
+            SecurityRule(Scope.WRITE, Action.DENY, "**/.env", Source.SRT_FILESYSTEM),
+            SecurityRule(Scope.WRITE, Action.DENY, ".git/config", Source.SRT_FILESYSTEM),
+        ]
+        output = json.loads(gen.generate(rules, config))
+        deny = output["permissions"]["deny"]
+        assert "Read(~/.ssh)" in deny
+        assert "Edit(**/.env)" in deny
+        assert "Edit(.git/config)" in deny
+        assert "Edit(/**/.env)" not in deny
 
     def test_deny_write_generates_write_tools(
         self, gen: ClaudeGenerator, config: AppConfig
@@ -291,38 +359,49 @@ class TestClaudeGeneration:
 
 
 class TestFilesystemConfig:
-    """US1: Filesystem sandbox config in generated output."""
+    """US1: Filesystem sandbox config in generated output.
 
-    def test_all_three_keys_in_sandbox_output(self, gen: ClaudeGenerator) -> None:
-        """All 3 filesystem keys appear under sandbox.filesystem."""
+    denyRead/denyWrite are emitted as managed-empty lists: every canonical
+    deny path is already carried by the Read/Edit permission deny rules,
+    which Claude Code merges into the OS sandbox profile with identical
+    anchoring (documented, and probe-verified on 2.1.220 for tilde literals,
+    //-absolutes, relative globs, and move-protection). Emitting the paths
+    here too duplicated the Seatbelt clause expansion past ARG_MAX (E2BIG).
+    """
+
+    def test_deny_lists_always_empty_allow_write_passthrough(
+        self, gen: ClaudeGenerator
+    ) -> None:
+        """allowWrite passes through; denyRead/denyWrite are emptied."""
         config = AppConfig(
             filesystem_config={
                 "allowWrite": [".", "/tmp"],
-                "denyWrite": ["**/.env", "**/*.pem"],
-                "denyRead": ["~/.ssh", "~/.aws"],
+                "denyWrite": ["**/.env", "**/*.pem", "/etc/ssl/certs", "~/.netrc"],
+                "denyRead": ["~/.ssh", "~/.aws", "~/.rsenv/vaults/*/envs"],
             }
         )
         output = json.loads(gen.generate([], config))
         fs = output["sandbox"]["filesystem"]
         assert fs["allowWrite"] == [".", "/tmp"]
-        assert fs["denyWrite"] == ["**/.env", "**/*.pem"]
-        assert fs["denyRead"] == ["~/.ssh", "~/.aws"]
+        assert fs["denyWrite"] == []
+        assert fs["denyRead"] == []
 
     def test_partial_filesystem_config(self, gen: ClaudeGenerator) -> None:
-        """Only present filesystem keys appear in output."""
+        """denyRead-only config still yields managed empty lists, no allowWrite."""
         config = AppConfig(filesystem_config={"denyRead": ["~/.ssh"]})
         output = json.loads(gen.generate([], config))
         fs = output["sandbox"]["filesystem"]
-        assert fs["denyRead"] == ["~/.ssh"]
+        assert fs["denyRead"] == []
+        assert fs["denyWrite"] == []
         assert "allowWrite" not in fs
-        assert "denyWrite" not in fs
 
-    def test_empty_filesystem_config_no_section(
+    def test_empty_filesystem_config_still_emits_managed_section(
         self, gen: ClaudeGenerator, config: AppConfig
     ) -> None:
-        """Empty filesystem_config → no sandbox.filesystem section."""
+        """Section is always present so stale deny lists in targets get cleared."""
         output = json.loads(gen.generate([], config))
-        assert "filesystem" not in output["sandbox"]
+        fs = output["sandbox"]["filesystem"]
+        assert fs == {"denyRead": [], "denyWrite": []}
 
     def test_filesystem_coexists_with_network(self, gen: ClaudeGenerator) -> None:
         """Filesystem and network sections coexist in sandbox."""
@@ -335,7 +414,16 @@ class TestFilesystemConfig:
         ]
         output = json.loads(gen.generate(rules, config))
         assert output["sandbox"]["network"]["allowLocalBinding"] is True
-        assert output["sandbox"]["filesystem"]["denyRead"] == ["~/.ssh"]
+        assert output["sandbox"]["filesystem"]["denyRead"] == []
+
+    def test_unknown_filesystem_keys_pass_through(self, gen: ClaudeGenerator) -> None:
+        """Future filesystem keys (e.g. allowRead) are preserved verbatim."""
+        config = AppConfig(filesystem_config={"allowRead": ["~/x"]})
+        output = json.loads(gen.generate([], config))
+        fs = output["sandbox"]["filesystem"]
+        assert fs["allowRead"] == ["~/x"]
+        assert fs["denyRead"] == []
+        assert fs["denyWrite"] == []
 
 
 class TestSandboxConfig:
@@ -392,6 +480,41 @@ class TestSandboxConfig:
 
 class TestSelectiveMerge:
     """FR-018: Selective merge for Claude settings.json."""
+
+    def test_stale_deny_lists_cleared_by_merge(self, tmp_path: Path) -> None:
+        """Populated deny lists in an existing target are cleared to [].
+
+        Without this, a target written by an older twsrt would keep its
+        denyRead/denyWrite forever and the E2BIG profile duplication would
+        silently return. Unmanaged filesystem keys must survive.
+        """
+        existing = {
+            "permissions": {"deny": [], "allow": []},
+            "sandbox": {
+                "filesystem": {
+                    "denyRead": ["~/.ssh", "~/.aws"],
+                    "denyWrite": ["**/.env"],
+                    "allowWrite": ["."],
+                    "customKey": ["kept"],
+                }
+            },
+        }
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(existing))
+
+        generated = {
+            "permissions": {"deny": ["Read(~/.ssh)"], "allow": []},
+            "sandbox": {
+                "network": {"allowedDomains": []},
+                "filesystem": {"allowWrite": ["."], "denyRead": [], "denyWrite": []},
+            },
+        }
+        result = selective_merge(target, generated)
+        fs = result["sandbox"]["filesystem"]
+        assert fs["denyRead"] == []
+        assert fs["denyWrite"] == []
+        assert fs["allowWrite"] == ["."]
+        assert fs["customKey"] == ["kept"]
 
     def test_deny_fully_replaced(self, tmp_path: Path) -> None:
         existing = {

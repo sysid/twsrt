@@ -1454,14 +1454,17 @@ class TestDiffCommand:
         srt = {}
         bash_rules = {"deny": ["rm"], "ask": []}
         config, claude_target, _ = _make_config_with_targets(tmp_path, srt, bash_rules)
-        # Write existing that matches
+        # Write existing that matches (incl. the managed-empty deny lists)
         existing = {
             "permissions": {
                 "deny": ["Bash(rm)", "Bash(rm *)"],
                 "ask": [],
                 "allow": [],
             },
-            "sandbox": {"network": {"allowedDomains": []}},
+            "sandbox": {
+                "network": {"allowedDomains": []},
+                "filesystem": {"denyRead": [], "denyWrite": []},
+            },
         }
         claude_target.write_text(json.dumps(existing))
 
@@ -1525,7 +1528,10 @@ class TestUS3AcceptanceScenarios:
                 "ask": [],
                 "allow": [],
             },
-            "sandbox": {"network": {"allowedDomains": []}},
+            "sandbox": {
+                "network": {"allowedDomains": []},
+                "filesystem": {"denyRead": [], "denyWrite": []},
+            },
         }
         claude_target.write_text(json.dumps(existing))
 
