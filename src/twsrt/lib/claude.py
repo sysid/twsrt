@@ -81,11 +81,11 @@ class ClaudeGenerator:
             for key, value in config.filesystem_config.items()
             if key not in ("denyRead", "denyWrite")
         }
-        filesystem["denyRead"] = []
-        filesystem["denyWrite"] = []
         sandbox["filesystem"] = filesystem
 
         sandbox.update(config.sandbox_config)
+        sandbox["filesystem"]["denyRead"] = []
+        sandbox["filesystem"]["denyWrite"] = []
 
         permissions: dict = {"deny": deny, "allow": allow}
         if not config.yolo:

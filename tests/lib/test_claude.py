@@ -122,7 +122,9 @@ class TestClaudeGeneration:
     ) -> None:
         """A pattern already anchored with '//' is emitted verbatim."""
         rules = [
-            SecurityRule(Scope.WRITE, Action.DENY, "//etc/hosts", Source.SRT_FILESYSTEM),
+            SecurityRule(
+                Scope.WRITE, Action.DENY, "//etc/hosts", Source.SRT_FILESYSTEM
+            ),
         ]
         output = json.loads(gen.generate(rules, config))
         deny = output["permissions"]["deny"]
@@ -136,7 +138,9 @@ class TestClaudeGeneration:
         certs = tmp_path / "certs"
         certs.mkdir()
         rules = [
-            SecurityRule(Scope.WRITE, Action.DENY, "/etc/ssl/certs/", Source.SRT_FILESYSTEM),
+            SecurityRule(
+                Scope.WRITE, Action.DENY, "/etc/ssl/certs/", Source.SRT_FILESYSTEM
+            ),
             SecurityRule(Scope.READ, Action.DENY, f"{certs}/", Source.SRT_FILESYSTEM),
         ]
         output = json.loads(gen.generate(rules, config))
@@ -153,7 +157,9 @@ class TestClaudeGeneration:
         rules = [
             SecurityRule(Scope.READ, Action.DENY, "~/.ssh", Source.SRT_FILESYSTEM),
             SecurityRule(Scope.WRITE, Action.DENY, "**/.env", Source.SRT_FILESYSTEM),
-            SecurityRule(Scope.WRITE, Action.DENY, ".git/config", Source.SRT_FILESYSTEM),
+            SecurityRule(
+                Scope.WRITE, Action.DENY, ".git/config", Source.SRT_FILESYSTEM
+            ),
         ]
         output = json.loads(gen.generate(rules, config))
         deny = output["permissions"]["deny"]
@@ -895,6 +901,37 @@ class TestSandboxOverridesInGeneration:
         assert output["sandbox"]["enabled"] is False
         # Non-overridden SRT value preserved
         assert output["sandbox"]["enableWeakerNetworkIsolation"] is True
+
+    def test_filesystem_override_cannot_restore_managed_deny_lists(
+        self, gen: ClaudeGenerator
+    ) -> None:
+        """Nested overrides preserve other keys but cannot repopulate deny lists."""
+        config = AppConfig(
+            filesystem_config={
+                "allowWrite": ["/canonical"],
+                "denyRead": ["~/.aws"],
+                "denyWrite": ["**/.env"],
+            },
+            sandbox_overrides={
+                "full": {
+                    "filesystem": {
+                        "allowWrite": ["/override"],
+                        "denyRead": ["~/.ssh"],
+                        "denyWrite": ["**/*.pem"],
+                        "customKey": ["kept"],
+                    }
+                }
+            },
+        )
+        config.apply_sandbox_overrides()
+
+        output = json.loads(gen.generate([], config))
+        filesystem = output["sandbox"]["filesystem"]
+
+        assert filesystem["allowWrite"] == ["/override"]
+        assert filesystem["customKey"] == ["kept"]
+        assert filesystem["denyRead"] == []
+        assert filesystem["denyWrite"] == []
 
     def test_no_overrides_preserves_srt(self, gen: ClaudeGenerator) -> None:
         """Without overrides, SRT values pass through unchanged."""

@@ -214,11 +214,15 @@ codex_rules = "~/.codex/rules/twsrt.rules"
 #   allowLocalBinding, httpProxyPort, socksProxyPort
 #
 # Known nested filesystem keys:
-#   allowWrite, denyWrite, denyRead
+#   allowWrite
+# denyWrite and denyRead are always managed-empty in Claude output. Configure
+# canonical deny paths in SRT JSONC fragments; permission rules carry them into
+# Claude's native sandbox without duplicating the generated profile.
 #
 # WARNING: a nested [sandbox_overrides.<mode>.network] or .filesystem table
-# replaces that entire compiled section because overrides are shallow. Configure
-# those keys in SRT JSONC fragments unless complete replacement is intentional.
+# shallowly replaces that compiled section. Managed-empty filesystem deny keys
+# are reapplied afterward. Configure other keys in SRT JSONC fragments unless
+# complete replacement is intentional.
 
 [sandbox_overrides.yolo]
 # YOLO skips command confirmation, so keep the kernel sandbox enabled and forbid
@@ -245,8 +249,6 @@ allowUnsandboxedCommands = false
 #
 # [sandbox_overrides.yolo.filesystem]
 # allowWrite = ["."]
-# denyWrite = ["**/.env"]
-# denyRead = ["~/.ssh"]
 
 [sandbox_overrides.full]
 # Full mode retains interactive approval, so this profile intentionally disables
