@@ -293,8 +293,8 @@ and are guarded only by the generated `permissions` rules (best-effort).
 | `permissions.ask` | **Fully replaced** | |
 | `permissions.allow` | **Selective** | Only `WebFetch(domain:...)` entries replaced; existing allows preserved |
 | `sandbox.network` | **Key-by-key merge** | unmanaged keys preserved |
-| `sandbox.filesystem` | **Key-by-key merge** | unmanaged keys preserved |
-| `sandbox.*` (top-level) | **Key-by-key merge** | `enabled`, `enableWeaker*`, `ignoreViolations` overwrite; Claude-only keys preserved |
+| `sandbox.filesystem` | **Key-by-key merge** | unmanaged keys preserved; deny lists reset to `[]` |
+| `sandbox.*` (top-level) | **Key-by-key merge** | generated SRT/override keys overwrite; other Claude-only keys preserved |
 | `hooks` | **Preserved** | Untouched |
 | `additionalDirectories` | **Preserved** | Untouched |
 | All other keys | **Preserved** | Untouched |
@@ -381,14 +381,19 @@ bash deny `rm`/`sudo`, bash ask `git push`, denyRead `~/.aws`):
       "allowedDomains": ["github.com", "*.github.com"],
       "allowLocalBinding": true
     },
+    "filesystem": {
+      "denyRead": [],
+      "denyWrite": []
+    },
     "autoAllowBashIfSandboxed": true,
     "excludedCommands": ["docker"]
   }
 }
 ```
 
-**YOLO mode** (`generate --yolo claude -w`): Same selective merge, only the `permissions.ask`
-section is removed.
+**YOLO mode** (`generate --yolo claude -w`): Without mode-specific overrides, the merge is
+the same except that `permissions.ask` is removed. `[sandbox_overrides.yolo]` can also change
+the generated sandbox posture.
 
 Target defaults to `settings.yolo.json`.
 
@@ -407,8 +412,11 @@ Target defaults to `settings.yolo.json`.
   sandbox.network
     ├─ allowedDomains       ← REPLACED (managed by twsrt)
     └─ allowLocalBinding    ← PRESERVED (was already there, merge keeps it)
-  sandbox.autoAllowBash...  ← PRESERVED (Claude-only key, invisible to twsrt)
-  sandbox.excludedCommands  ← PRESERVED (Claude-only key, invisible to twsrt)
+  sandbox.filesystem
+    ├─ denyRead             ← RESET to [] (enforced through permission rules)
+    └─ denyWrite            ← RESET to [] (enforced through permission rules)
+  sandbox.autoAllowBash...  ← PRESERVED unless a mode override sets it
+  sandbox.excludedCommands  ← PRESERVED unless a mode override sets it
 ```
 
 ## Codex Configuration (`generate codex -w`)
@@ -641,6 +649,17 @@ When `--yolo` is used, overrides from `[sandbox_overrides.yolo]` are applied;
 otherwise `[sandbox_overrides.full]` is used. These override SRT-sourced values
 and flow through selective merge to update existing settings files.
 
+There are two distinct merge stages:
+
+1. **Compile:** top-level override keys replace matching SRT values. A nested
+   `network` or `filesystem` table replaces that entire compiled section.
+2. **Write:** generated sandbox keys are merged key-by-key into the existing
+   Claude settings, preserving unmanaged keys.
+
+After a `filesystem` override, twsrt restores `denyRead` and `denyWrite` as
+empty arrays. Canonical deny paths remain enforced through generated Claude
+permission rules, so those two keys cannot be overridden in `config.toml`.
+
 Typical use: `claude-yolo` enforces sandbox (safety net when skipping
 permission prompts), while `claude-full` disables it (user approves each action
 interactively).
@@ -679,8 +698,9 @@ See the comprehensive [Bash JSONC example](example/bash-rules.jsonc).
 | Bash ask cmd | Bash(cmd) + Bash(cmd *) in ask | --deny-tool (lossy, warns) | not compiled (Codex prompts by default; warns) |
 
 **YOLO mode differences**: Bash ask rules are skipped entirely. Copilot `--allow-*`
-flags are omitted (subsumed by `--yolo`). Claude `permissions.ask` key is removed.
-Codex output is identical in yolo and full mode.
+flags are omitted (subsumed by `--yolo`). Claude `permissions.ask` is removed, and
+`[sandbox_overrides.yolo]` applies instead of `[sandbox_overrides.full]`. Codex output
+is identical in yolo and full mode.
 
 Where Tool = Read, Edit. Claude Code matches file permissions on `Edit(path)`
 only — a single `Edit` rule covers every file-editing tool (Write, Edit,
@@ -691,8 +711,8 @@ unknown paths).
 
 ### Sandbox Key Mapping
 
-Claude Code's `sandbox` section has 17 configurable keys. twsrt manages a subset of them
-(sourced from `.srt-settings.json`) and never touches the rest:
+Claude Code's `sandbox` section has 17 configurable keys. twsrt manages a subset from
+`.srt-settings.json`; mode overrides may also set the listed Claude-only keys:
 
 | Claude Code Key | SRT Source | Status |
 |---|---|---|
@@ -710,7 +730,7 @@ Claude Code's `sandbox` section has 17 configurable keys. twsrt manages a subset
 | `sandbox.enableWeakerNetworkIsolation` | `enableWeakerNetworkIsolation` | **Managed** (pass-through) |
 | `sandbox.enableWeakerNestedSandbox` | `enableWeakerNestedSandbox` | **Managed** (pass-through) |
 | `sandbox.ignoreViolations` | `ignoreViolations` | **Managed** (pass-through) |
-| `sandbox.excludedCommands` | *(no SRT source)* | **Claude-only** — never generated, never removed |
+| `sandbox.excludedCommands` | *(no SRT source)* | **Claude-only** — preserved by default; overridable via `[sandbox_overrides]` |
 | `sandbox.autoAllowBashIfSandboxed` | *(no SRT source)* | **Claude-only** — preserved by default; overridable via `[sandbox_overrides]` |
 | `sandbox.allowUnsandboxedCommands` | *(no SRT source)* | **Claude-only** — preserved by default; overridable via `[sandbox_overrides]` |
 

@@ -104,6 +104,12 @@ def test_config_init_documents_all_supported_configuration_shapes(
         "# Known top-level sandbox keys accepted here:",
         "# Known nested network keys:",
         "# Known nested filesystem keys:",
+        "# Nested network/filesystem overrides replace the entire compiled section.",
+        "# For filesystem overrides, twsrt then restores denyRead and denyWrite as",
+        (
+            "# The same seven top-level and eight nested keys documented above "
+            "are valid here."
+        ),
         "# [sandbox_overrides.yolo.network]",
         "# [sandbox_overrides.yolo.filesystem]",
     )

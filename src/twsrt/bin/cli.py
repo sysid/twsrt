@@ -215,14 +215,11 @@ codex_rules = "~/.codex/rules/twsrt.rules"
 #
 # Known nested filesystem keys:
 #   allowWrite
-# denyWrite and denyRead are always managed-empty in Claude output. Configure
-# canonical deny paths in SRT JSONC fragments; permission rules carry them into
-# Claude's native sandbox without duplicating the generated profile.
 #
-# WARNING: a nested [sandbox_overrides.<mode>.network] or .filesystem table
-# shallowly replaces that compiled section. Managed-empty filesystem deny keys
-# are reapplied afterward. Configure other keys in SRT JSONC fragments unless
-# complete replacement is intentional.
+# Nested network/filesystem overrides replace the entire compiled section.
+# For filesystem overrides, twsrt then restores denyRead and denyWrite as
+# empty arrays; canonical deny paths remain enforced through Claude permission
+# rules. Prefer SRT JSONC unless complete replacement is intentional.
 
 [sandbox_overrides.yolo]
 # YOLO skips command confirmation, so keep the kernel sandbox enabled and forbid
@@ -255,7 +252,7 @@ allowUnsandboxedCommands = false
 # the agent's native sandbox. Remove this override to inherit SRT's enabled value.
 enabled = false
 
-# The same seven top-level and ten nested keys documented above are valid here.
+# The same seven top-level and eight nested keys documented above are valid here.
 """
 DEFAULT_SRT_JSONC = """\
 {
