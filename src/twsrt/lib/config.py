@@ -9,6 +9,7 @@ from typing import Any, cast
 from twsrt.lib.models import (
     AppConfig,
     CanonicalSource,
+    ClaudeSync,
     Profile,
     SourceFragment,
 )
@@ -68,7 +69,33 @@ def load_config(config_path: Path) -> AppConfig:
     config.codex_targets_configured = "codex_config" in targets
     _apply_target_paths(config, targets, base_dir)
     config.sandbox_overrides = dict(data.get("sandbox_overrides", {}))
+    config.claude_sync = _build_claude_sync(data.get("claude_sync"))
     return config
+
+
+def _build_claude_sync(raw: Any) -> ClaudeSync | None:
+    """Parse [claude_sync]. Absent table means sync disabled.
+
+    Strict on purpose: a misspelled field would otherwise silently disable
+    an exclusion and let a mode-specific key leak across modes.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("claude_sync must be a table")
+    unknown = sorted(set(raw) - {"mode_specific"})
+    if unknown:
+        raise ValueError(f"claude_sync: unknown field(s): {', '.join(unknown)}")
+    mode_specific = raw.get("mode_specific", [])
+    if not isinstance(mode_specific, list):
+        raise ValueError("claude_sync.mode_specific must be a list of key paths")
+    for entry in mode_specific:
+        if not isinstance(entry, str) or not entry:
+            raise ValueError(
+                "claude_sync.mode_specific entries must be non-empty strings, "
+                f"got {entry!r}"
+            )
+    return ClaudeSync(mode_specific=list(mode_specific))
 
 
 def _build_sources(raw: dict[str, Any], base_dir: Path) -> dict[str, CanonicalSource]:

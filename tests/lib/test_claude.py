@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from twsrt.lib.claude import ClaudeGenerator, selective_merge
+from twsrt.lib.claude import ClaudeGenerator, selective_merge, sync_invariants
 from twsrt.lib.models import Action, AppConfig, Scope, SecurityRule, Source
 
 
@@ -1074,3 +1074,158 @@ class TestClaudeYoloGeneration:
         # Claude-only keys preserved
         assert sandbox["autoAllowBashIfSandboxed"] is True
         assert sandbox["excludedCommands"] == ["docker"]
+
+
+class TestSyncInvariants:
+    """Invariant keys flow from the donor (file settings.json points to) into
+    the target; managed and declared mode-specific keys stay with the target."""
+
+    def test_donor_key_added_to_target(self) -> None:
+        existing = {"permissions": {"deny": []}}
+        donor = {"permissions": {"deny": []}, "model": "opus", "theme": "dark"}
+        result = sync_invariants(existing, donor, [])
+        assert result["model"] == "opus"
+        assert result["theme"] == "dark"
+
+    def test_key_deleted_in_donor_is_removed_from_target(self) -> None:
+        existing = {"model": "stale", "theme": "light"}
+        donor = {"theme": "light"}
+        result = sync_invariants(existing, donor, [])
+        assert "model" not in result
+
+    def test_mode_specific_top_level_key_keeps_target_value(self) -> None:
+        existing = {"skipDangerousModePermissionPrompt": False}
+        donor = {"skipDangerousModePermissionPrompt": True, "theme": "dark"}
+        result = sync_invariants(existing, donor, ["skipDangerousModePermissionPrompt"])
+        assert result["skipDangerousModePermissionPrompt"] is False
+        assert result["theme"] == "dark"
+
+    def test_mode_specific_key_absent_in_target_stays_absent(self) -> None:
+        existing = {}
+        donor = {"skipAutoPermissionPrompt": True}
+        result = sync_invariants(existing, donor, ["skipAutoPermissionPrompt"])
+        assert "skipAutoPermissionPrompt" not in result
+
+    def test_mode_specific_nested_path_keeps_target_while_sibling_syncs(
+        self,
+    ) -> None:
+        existing = {
+            "hooks": {
+                "UserPromptSubmit": [{"hooks": [{"command": "old-prompt-hook"}]}],
+                "PostToolUse": [{"hooks": [{"command": "full-only-hook"}]}],
+            }
+        }
+        donor = {
+            "hooks": {
+                "UserPromptSubmit": [{"hooks": [{"command": "new-prompt-hook"}]}],
+                "PostToolUse": [{"hooks": [{"command": "yolo-only-hook"}]}],
+            }
+        }
+        result = sync_invariants(existing, donor, ["hooks.PostToolUse"])
+        assert result["hooks"]["UserPromptSubmit"] == donor["hooks"]["UserPromptSubmit"]
+        assert result["hooks"]["PostToolUse"] == existing["hooks"]["PostToolUse"]
+
+    def test_managed_sections_are_not_taken_from_donor(self) -> None:
+        existing = {
+            "permissions": {"deny": ["Bash(full-deny)"], "ask": ["Bash(full-ask)"]},
+            "sandbox": {"enabled": False, "excludedCommands": ["docker"]},
+        }
+        donor = {
+            "permissions": {"deny": ["Bash(yolo-deny)"]},
+            "sandbox": {"enabled": True},
+        }
+        result = sync_invariants(existing, donor, [])
+        assert result["permissions"]["deny"] == ["Bash(full-deny)"]
+        assert result["permissions"]["ask"] == ["Bash(full-ask)"]
+        assert result["sandbox"] == {"enabled": False, "excludedCommands": ["docker"]}
+
+    def test_managed_section_absent_in_target_is_not_inherited(self) -> None:
+        existing = {"permissions": {"deny": []}}
+        donor = {"permissions": {"deny": [], "ask": ["Bash(yolo-ask)"]}}
+        result = sync_invariants(existing, donor, [])
+        assert "ask" not in result["permissions"]
+
+    def test_donor_is_not_mutated(self) -> None:
+        donor = {"hooks": {"PostToolUse": []}, "permissions": {"deny": ["x"]}}
+        snapshot = json.loads(json.dumps(donor))
+        sync_invariants({"permissions": {"deny": []}}, donor, ["hooks.PostToolUse"])
+        assert donor == snapshot
+
+    def test_selective_merge_with_donor_syncs_allows_but_regenerates_webfetch(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "settings.full.json"
+        target.write_text(
+            json.dumps(
+                {
+                    "permissions": {
+                        "deny": [],
+                        "allow": ["Read", "WebFetch(domain:stale.example.com)"],
+                    }
+                }
+            )
+        )
+        donor = tmp_path / "settings.yolo.json"
+        donor.write_text(
+            json.dumps(
+                {
+                    "permissions": {
+                        "deny": [],
+                        "allow": [
+                            "Read",
+                            "mcp__memory__store",
+                            "WebFetch(domain:donor.example.com)",
+                        ],
+                    },
+                    "model": "opus",
+                }
+            )
+        )
+        generated = {
+            "permissions": {
+                "deny": ["Bash(rm)"],
+                "allow": ["WebFetch(domain:github.com)"],
+            },
+            "sandbox": {"network": {"allowedDomains": ["github.com"]}},
+        }
+        result = selective_merge(target, generated, donor=donor)
+        assert result["permissions"]["allow"] == [
+            "Read",
+            "mcp__memory__store",
+            "WebFetch(domain:github.com)",
+        ]
+        assert result["permissions"]["deny"] == ["Bash(rm)"]
+        assert result["model"] == "opus"
+
+    def test_selective_merge_without_donor_is_unchanged(self, tmp_path: Path) -> None:
+        target = tmp_path / "settings.full.json"
+        target.write_text(json.dumps({"permissions": {"deny": []}, "theme": "light"}))
+        generated = {"permissions": {"deny": ["Bash(rm)"], "allow": []}, "sandbox": {}}
+        result = selective_merge(target, generated)
+        assert result["theme"] == "light"
+        assert result["permissions"]["deny"] == ["Bash(rm)"]
+
+    def test_selective_merge_missing_target_bootstraps_from_donor(
+        self, tmp_path: Path
+    ) -> None:
+        donor = tmp_path / "settings.full.json"
+        donor.write_text(
+            json.dumps(
+                {
+                    "permissions": {"deny": ["Bash(old)"], "allow": ["Read"]},
+                    "hooks": {"UserPromptSubmit": []},
+                    "skipDangerousModePermissionPrompt": False,
+                }
+            )
+        )
+        generated = {"permissions": {"deny": ["Bash(rm)"], "allow": []}, "sandbox": {}}
+        result = selective_merge(
+            None,
+            generated,
+            donor=donor,
+            mode_specific=["skipDangerousModePermissionPrompt"],
+        )
+        assert result["hooks"] == {"UserPromptSubmit": []}
+        assert result["permissions"]["allow"] == ["Read"]
+        assert result["permissions"]["deny"] == ["Bash(rm)"]
+        assert "skipDangerousModePermissionPrompt" not in result

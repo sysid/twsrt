@@ -1651,3 +1651,183 @@ class TestEditNoArgument:
         """T013: edit with invalid source shows error and valid sources."""
         result = runner.invoke(app, ["init"])
         assert result.exit_code == 2
+
+
+# --- Invariant sync between full and yolo targets ---
+
+
+def _sync_fixture(
+    tmp_path: Path, claude_sync: str | None
+) -> tuple[Path, Path, Path, Path]:
+    """Config with [targets] and optional [claude_sync]; returns
+    (config, full_target, yolo_target, anchor)."""
+    config = _make_config(tmp_path, {}, {"deny": ["rm"], "ask": ["git push"]})
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    full_target = claude_dir / "settings.full.json"
+    yolo_target = claude_dir / "settings.yolo.json"
+    anchor = claude_dir / "settings.json"
+    extra = f'\n[targets]\nclaude_settings = "{full_target}"\n'
+    if claude_sync is not None:
+        extra += claude_sync
+    config.write_text(config.read_text() + extra)
+    return config, full_target, yolo_target, anchor
+
+
+_SYNC_TABLE = (
+    "\n[claude_sync]\n"
+    'mode_specific = ["skipDangerousModePermissionPrompt", "hooks.PostToolUse"]\n'
+)
+
+_FULL_SETTINGS = {
+    "permissions": {"deny": ["Bash(old)"], "ask": [], "allow": ["Read"]},
+    "hooks": {
+        "UserPromptSubmit": [{"hooks": [{"command": "old-prompt"}]}],
+        "PostToolUse": [{"hooks": [{"command": "full-post"}]}],
+    },
+    "skipDangerousModePermissionPrompt": False,
+    "effortLevel": "medium",
+}
+
+_YOLO_SETTINGS = {
+    "permissions": {"deny": ["Bash(old)"], "allow": ["Read", "mcp__memory__store"]},
+    "hooks": {
+        "UserPromptSubmit": [{"hooks": [{"command": "new-prompt"}]}],
+        "PostToolUse": [{"hooks": [{"command": "yolo-post"}]}],
+    },
+    "skipDangerousModePermissionPrompt": True,
+    "model": "claude-fable-5-1[1m]",
+    "theme": "dark",
+}
+
+
+class TestInvariantSyncGenerateClaude:
+    """generate -w claude copies unmanaged keys from the file settings.json
+    points to (the donor) into the target, minus declared mode-specific keys."""
+
+    def test_full_generate_syncs_invariants_from_yolo(self, tmp_path: Path) -> None:
+        config, full, yolo, anchor = _sync_fixture(tmp_path, _SYNC_TABLE)
+        full.write_text(json.dumps(_FULL_SETTINGS))
+        yolo.write_text(json.dumps(_YOLO_SETTINGS))
+        anchor.symlink_to("settings.yolo.json")
+
+        result = runner.invoke(app, ["-c", str(config), "generate", "claude", "-w"])
+        assert result.exit_code == 0, result.output
+        assert "Synced invariant settings from settings.yolo.json" in result.output
+
+        written = json.loads(full.read_text())
+        # invariants taken from donor
+        assert written["model"] == "claude-fable-5-1[1m]"
+        assert written["theme"] == "dark"
+        assert (
+            written["hooks"]["UserPromptSubmit"]
+            == _YOLO_SETTINGS["hooks"]["UserPromptSubmit"]
+        )
+        assert "mcp__memory__store" in written["permissions"]["allow"]
+        # deleted in donor, so removed from target
+        assert "effortLevel" not in written
+        # mode-specific keys keep the target's values
+        assert written["skipDangerousModePermissionPrompt"] is False
+        assert written["hooks"]["PostToolUse"] == _FULL_SETTINGS["hooks"]["PostToolUse"]
+        # managed sections regenerated, not synced
+        assert "Bash(rm)" in written["permissions"]["deny"]
+        assert "Bash(old)" not in written["permissions"]["deny"]
+        assert "Bash(git push)" in written["permissions"]["ask"]
+        # yolo untouched, symlink repointed
+        assert json.loads(yolo.read_text()) == _YOLO_SETTINGS
+        import os
+
+        assert os.readlink(str(anchor)) == "settings.full.json"
+
+    def test_yolo_generate_syncs_invariants_from_full(self, tmp_path: Path) -> None:
+        config, full, yolo, anchor = _sync_fixture(tmp_path, _SYNC_TABLE)
+        full.write_text(json.dumps(_FULL_SETTINGS))
+        yolo.write_text(json.dumps(_YOLO_SETTINGS))
+        anchor.symlink_to("settings.full.json")
+
+        result = runner.invoke(
+            app, ["-c", str(config), "generate", "--yolo", "claude", "-w"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "Synced invariant settings from settings.full.json" in result.output
+
+        written = json.loads(yolo.read_text())
+        assert written["effortLevel"] == "medium"
+        assert "model" not in written
+        assert written["skipDangerousModePermissionPrompt"] is True
+        assert written["hooks"]["PostToolUse"] == _YOLO_SETTINGS["hooks"]["PostToolUse"]
+        # yolo mode drops ask entirely
+        assert "ask" not in written["permissions"]
+
+    def test_donor_equals_target_is_noop(self, tmp_path: Path) -> None:
+        config, full, yolo, anchor = _sync_fixture(tmp_path, _SYNC_TABLE)
+        full.write_text(json.dumps(_FULL_SETTINGS))
+        yolo.write_text(json.dumps(_YOLO_SETTINGS))
+        anchor.symlink_to("settings.full.json")
+
+        result = runner.invoke(app, ["-c", str(config), "generate", "claude", "-w"])
+        assert result.exit_code == 0, result.output
+        assert "Synced invariant" not in result.output
+        written = json.loads(full.read_text())
+        assert "model" not in written
+        assert written["effortLevel"] == "medium"
+
+    def test_without_claude_sync_table_nothing_is_synced(self, tmp_path: Path) -> None:
+        config, full, yolo, anchor = _sync_fixture(tmp_path, None)
+        full.write_text(json.dumps(_FULL_SETTINGS))
+        yolo.write_text(json.dumps(_YOLO_SETTINGS))
+        anchor.symlink_to("settings.yolo.json")
+
+        result = runner.invoke(app, ["-c", str(config), "generate", "claude", "-w"])
+        assert result.exit_code == 0, result.output
+        assert "Synced invariant" not in result.output
+        written = json.loads(full.read_text())
+        assert "model" not in written
+        assert written["effortLevel"] == "medium"
+
+    def test_dangling_symlink_skips_sync(self, tmp_path: Path) -> None:
+        config, full, yolo, anchor = _sync_fixture(tmp_path, _SYNC_TABLE)
+        full.write_text(json.dumps(_FULL_SETTINGS))
+        anchor.symlink_to("settings.yolo.json")
+
+        result = runner.invoke(app, ["-c", str(config), "generate", "claude", "-w"])
+        assert result.exit_code == 0, result.output
+        assert "Synced invariant" not in result.output
+        written = json.loads(full.read_text())
+        assert written["effortLevel"] == "medium"
+
+    def test_missing_target_is_bootstrapped_from_donor(self, tmp_path: Path) -> None:
+        config, full, yolo, anchor = _sync_fixture(tmp_path, _SYNC_TABLE)
+        full.write_text(json.dumps(_FULL_SETTINGS))
+        anchor.symlink_to("settings.full.json")
+
+        result = runner.invoke(
+            app, ["-c", str(config), "generate", "--yolo", "claude", "-w"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "Synced invariant settings from settings.full.json" in result.output
+        written = json.loads(yolo.read_text())
+        assert written["effortLevel"] == "medium"
+        assert (
+            written["hooks"]["UserPromptSubmit"]
+            == _FULL_SETTINGS["hooks"]["UserPromptSubmit"]
+        )
+        assert "PostToolUse" not in written["hooks"]
+        assert "skipDangerousModePermissionPrompt" not in written
+        assert "Bash(rm)" in written["permissions"]["deny"]
+
+    def test_dry_run_reports_sync_without_writing(self, tmp_path: Path) -> None:
+        config, full, yolo, anchor = _sync_fixture(tmp_path, _SYNC_TABLE)
+        full.write_text(json.dumps(_FULL_SETTINGS))
+        yolo.write_text(json.dumps(_YOLO_SETTINGS))
+        anchor.symlink_to("settings.yolo.json")
+
+        result = runner.invoke(
+            app, ["-c", str(config), "generate", "claude", "-w", "-n"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "Synced invariant settings from settings.yolo.json" in result.output
+        assert json.loads(full.read_text()) == _FULL_SETTINGS
+        import os
+
+        assert os.readlink(str(anchor)) == "settings.yolo.json"

@@ -1,7 +1,10 @@
 """ClaudeGenerator — translate SecurityRules to Claude Code settings.json format."""
 
+import copy
 import json
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from twsrt.lib.models import (
     Action,
@@ -235,7 +238,70 @@ def _is_webfetch_entry(entry: str) -> bool:
     return entry.startswith("WebFetch(domain:")
 
 
-def selective_merge(target: Path, generated: dict) -> dict:
+# Sections owned by generate; sync_invariants never takes these from the donor.
+# `sandbox` as a whole stays with the target because [sandbox_overrides.*] and
+# the key-by-key merge below already define it per mode.
+_MANAGED_PATHS = ("permissions.deny", "permissions.ask", "sandbox")
+
+
+def sync_invariants(existing: dict, donor: dict, mode_specific: Sequence[str]) -> dict:
+    """Replace the target's invariant keys with the donor's.
+
+    The donor is the file Claude Code has been writing runtime settings to,
+    so its invariants are the freshest. Wholesale replacement means deletions
+    propagate too (last writer wins). Managed sections and declared
+    mode-specific paths keep the target's value, or stay absent.
+    """
+    result = copy.deepcopy(donor)
+    for path in (*_MANAGED_PATHS, *mode_specific):
+        found, value = _get_path(existing, path)
+        if found:
+            _set_path(result, path, copy.deepcopy(value))
+        else:
+            _delete_path(result, path)
+    return result
+
+
+# ponytail: dotted paths cannot address keys containing a literal '.'; no such
+# key exists in Claude settings today. An escape syntax is the upgrade path.
+def _get_path(doc: dict, path: str) -> tuple[bool, Any]:
+    node: Any = doc
+    for part in path.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return False, None
+        node = node[part]
+    return True, node
+
+
+def _set_path(doc: dict, path: str, value: Any) -> None:
+    *parents, leaf = path.split(".")
+    node = doc
+    for part in parents:
+        child = node.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            node[part] = child
+        node = child
+    node[leaf] = value
+
+
+def _delete_path(doc: dict, path: str) -> None:
+    *parents, leaf = path.split(".")
+    node: Any = doc
+    for part in parents:
+        node = node.get(part) if isinstance(node, dict) else None
+        if node is None:
+            return
+    if isinstance(node, dict):
+        node.pop(leaf, None)
+
+
+def selective_merge(
+    target: Path | None,
+    generated: dict,
+    donor: Path | None = None,
+    mode_specific: Sequence[str] = (),
+) -> dict:
     """Merge generated permissions into existing settings.json.
 
     Selective merge rules:
@@ -246,9 +312,18 @@ def selective_merge(target: Path, generated: dict) -> dict:
     - sandbox.network: key-by-key merge (preserves unmanaged keys)
     - sandbox.filesystem: key-by-key merge (preserves unmanaged keys)
     - sandbox top-level keys: dict.update() (preserves Claude-only keys)
-    - hooks, plugins, additionalDirectories: preserved unchanged
+    - hooks, plugins, additionalDirectories: preserved unchanged, unless a
+      donor is given — then every unmanaged key not listed in mode_specific
+      is taken from the donor (see sync_invariants)
+
+    target may be None (not yet created); with a donor the target is then
+    bootstrapped from the donor's invariants.
     """
-    existing = json.loads(target.read_text())
+    existing = json.loads(target.read_text()) if target is not None else {}
+    if donor is not None:
+        existing = sync_invariants(
+            existing, json.loads(donor.read_text()), mode_specific
+        )
 
     # Replace deny and ask fully
     existing.setdefault("permissions", {})

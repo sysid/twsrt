@@ -194,6 +194,25 @@ codex_rules = "~/.codex/rules/twsrt.rules"
 
 
 # -----------------------------------------------------------------------------
+# Invariant sync between the Claude full and yolo targets
+# -----------------------------------------------------------------------------
+# Claude Code writes runtime settings (model, theme, editorMode, hooks added via
+# the UI, ...) into whatever settings.json points to. With this table present,
+# generate -w claude first copies every key twsrt does not manage from that file
+# (the donor) into the target being generated, so the two targets converge on
+# each mode switch. Deletions propagate; last writer wins. Managed sections
+# (permissions.deny/ask, WebFetch allows, sandbox.*) are never synced.
+# Remove the table to disable the sync.
+[claude_sync]
+# Keys that legitimately differ between modes and are never synced.
+# Dotted paths address nested keys, e.g. "hooks.PostToolUse".
+mode_specific = [
+  "skipDangerousModePermissionPrompt",
+  "skipAutoPermissionPrompt",
+]
+
+
+# -----------------------------------------------------------------------------
 # Mode-specific sandbox overrides
 # -----------------------------------------------------------------------------
 # These optional tables are shallow top-level overrides applied after compiled
@@ -524,9 +543,20 @@ def _stage_agent_files(
             if not existing.exists() and anchor.exists() and not anchor.is_symlink():
                 existing = anchor
             generated = json.loads(rendered[generator.name])
-            document = (
-                selective_merge(existing, generated) if existing.exists() else generated
-            )
+            donor = _resolve_sync_donor(config, target)
+            if donor is not None:
+                _info(f"Synced invariant settings from {donor.name}")
+            if existing.exists() or donor is not None:
+                document = selective_merge(
+                    existing if existing.exists() else None,
+                    generated,
+                    donor=donor,
+                    mode_specific=(
+                        config.claude_sync.mode_specific if config.claude_sync else ()
+                    ),
+                )
+            else:
+                document = generated
             staged[target] = json.dumps(document, indent=2) + "\n"
         elif generator.name == "copilot":
             target = _resolve_copilot_target(config)
@@ -536,6 +566,25 @@ def _stage_agent_files(
             assert isinstance(generator, CodexGenerator)
             staged.update(generator.render_write_files(compiled.rules, config))
     return staged
+
+
+def _resolve_sync_donor(config: AppConfig, target: Path) -> Path | None:
+    """The file settings.json currently points to, if it should feed the target.
+
+    Staging runs before ensure_symlink repoints the anchor, so the anchor still
+    names the previous mode's file — the one Claude Code has been writing to.
+    None when sync is disabled, the anchor is not a symlink (fresh install or
+    migration), the link dangles, or it already points at the target.
+    """
+    if config.claude_sync is None:
+        return None
+    anchor = config.symlink_anchor
+    if not anchor.is_symlink():
+        return None
+    donor = anchor.resolve()
+    if not donor.exists() or donor == target.resolve():
+        return None
+    return donor
 
 
 def _write_agent_files(staged: dict[Path, str], config: AppConfig) -> None:

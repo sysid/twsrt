@@ -164,3 +164,56 @@ class TestSandboxOverrides:
         path = tmp_twsrt_dir / "config.toml"
         path.write_text(base_config("[sandbox_overrides.yolo]\nenabled = true\n"))
         assert load_config(path).sandbox_overrides == {"yolo": {"enabled": True}}
+
+
+class TestClaudeSync:
+    def test_absent_table_disables_sync(self, tmp_twsrt_dir: Path) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(base_config())
+        assert load_config(path).claude_sync is None
+
+    def test_mode_specific_list_parsed(self, tmp_twsrt_dir: Path) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(
+            base_config(
+                "[claude_sync]\n"
+                'mode_specific = ["skipDangerousModePermissionPrompt", "hooks.PostToolUse"]\n'
+            )
+        )
+        config = load_config(path)
+        assert config.claude_sync is not None
+        assert config.claude_sync.mode_specific == [
+            "skipDangerousModePermissionPrompt",
+            "hooks.PostToolUse",
+        ]
+
+    def test_empty_table_enables_sync_with_no_exclusions(
+        self, tmp_twsrt_dir: Path
+    ) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(base_config("[claude_sync]\n"))
+        config = load_config(path)
+        assert config.claude_sync is not None
+        assert config.claude_sync.mode_specific == []
+
+    def test_mode_specific_must_be_list(self, tmp_twsrt_dir: Path) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(base_config('[claude_sync]\nmode_specific = "theme"\n'))
+        with pytest.raises(
+            ValueError, match="claude_sync.mode_specific must be a list"
+        ):
+            load_config(path)
+
+    def test_mode_specific_entries_must_be_non_empty_strings(
+        self, tmp_twsrt_dir: Path
+    ) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(base_config('[claude_sync]\nmode_specific = ["theme", ""]\n'))
+        with pytest.raises(ValueError, match="claude_sync.mode_specific"):
+            load_config(path)
+
+    def test_unknown_field_rejected(self, tmp_twsrt_dir: Path) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(base_config("[claude_sync]\nmode_specifc = []\n"))
+        with pytest.raises(ValueError, match="claude_sync: unknown field"):
+            load_config(path)

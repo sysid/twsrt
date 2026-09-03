@@ -295,9 +295,34 @@ and are guarded only by the generated `permissions` rules (best-effort).
 | `sandbox.network` | **Key-by-key merge** | unmanaged keys preserved |
 | `sandbox.filesystem` | **Key-by-key merge** | unmanaged keys preserved; deny lists reset to `[]` |
 | `sandbox.*` (top-level) | **Key-by-key merge** | generated SRT/override keys overwrite; other Claude-only keys preserved |
-| `hooks` | **Preserved** | Untouched |
-| `additionalDirectories` | **Preserved** | Untouched |
-| All other keys | **Preserved** | Untouched |
+| `hooks` | **Preserved** or **synced** | Untouched; with `[claude_sync]` taken from the donor (see below) |
+| `additionalDirectories` | **Preserved** or **synced** | Untouched; with `[claude_sync]` taken from the donor |
+| All other keys | **Preserved** or **synced** | Untouched; with `[claude_sync]` taken from the donor, minus `mode_specific` paths |
+
+### Invariant sync between full and yolo (`[claude_sync]`)
+
+Claude Code writes runtime settings (`model`, `theme`, `editorMode`, `tui`,
+hooks added via the UI, ...) into whatever `settings.json` resolves to. With two
+targets and a symlink flip per launch, those keys would land in one file only.
+
+With a `[claude_sync]` table in `config.toml`, `generate -w claude` first copies
+every key twsrt does not manage from the file `settings.json` currently points
+to (the *donor*, the file Claude has been writing to) into the target, then
+applies the selective merge above. The two targets converge on every mode
+switch. Rules:
+
+- Donor invariants replace target invariants wholesale, so deletions propagate.
+  Last writer wins; there is no three-way merge.
+- Managed sections (`permissions.deny`, `permissions.ask`, `WebFetch(domain:...)`
+  allows, the whole `sandbox` subtree) are never synced. `sandbox` stays
+  per-mode because `[sandbox_overrides.*]` already defines it per mode.
+- Paths listed in `mode_specific` (dotted, e.g. `hooks.PostToolUse`) keep the
+  target's value and are never synced.
+- No donor, no sync: fresh install, migration from a regular `settings.json`,
+  dangling symlink, or symlink already pointing at the target.
+- A missing target is bootstrapped from the donor's invariants.
+- Drift between the two files is transient by design; `twsrt diff` does not
+  report it.
 
 ### Example: before and after `generate claude -w`
 
@@ -623,6 +648,11 @@ copilot_output = "~/.config/twsrt/copilot-flags.txt"    # optional, stdout if om
 # claude_settings_yolo = "~/.claude/settings.yolo.json"
 # copilot_output_yolo = "~/.config/twsrt/copilot-flags.yolo.txt"
 
+# Sync unmanaged Claude settings between full and yolo targets (optional;
+# omit the table to disable). Dotted paths listed here are never synced.
+[claude_sync]
+mode_specific = ["skipDangerousModePermissionPrompt", "skipAutoPermissionPrompt"]
+
 # Mode-specific sandbox overrides (applied after SRT values, take precedence)
 [sandbox_overrides.yolo]
 enabled = true
@@ -798,7 +828,9 @@ bash deny ───────► claude deny            ─► copilot deny   
    warning; Bash allows never become unsandboxed execution.
 3. **Selective merge owns only declared sections.** Everything else in a
    target file (hooks, MCP servers, projects, credentials) is preserved
-   byte-for-byte where the format allows.
+   byte-for-byte where the format allows. With `[claude_sync]`, those
+   unmanaged keys converge between the full and yolo targets on the next mode
+   switch; drift between them is transient by design.
 4. **Fail-safe on ambiguity.** Disabled canonical sandbox, malformed paths,
    conflicting fragments, incomplete profiles, and legacy Codex
    `sandbox_mode` in the managed file abort generation instead of guessing.

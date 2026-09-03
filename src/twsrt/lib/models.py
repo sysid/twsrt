@@ -126,6 +126,17 @@ def yolo_path(original: Path) -> Path:
 
 
 @dataclass
+class ClaudeSync:
+    """[claude_sync] table: sync unmanaged Claude settings between full and yolo.
+
+    Extension point for further sync policy; today only the exclusion list.
+    """
+
+    # Dotted key paths that legitimately differ per mode and are never synced.
+    mode_specific: list[str] = field(default_factory=list)
+
+
+@dataclass
 class AppConfig:
     sources: dict[str, CanonicalSource] = field(default_factory=dict)
     profiles: dict[str, Profile] = field(default_factory=dict)
@@ -153,6 +164,8 @@ class AppConfig:
     sandbox_config: dict[str, Any] = field(default_factory=dict)
     srt_sandbox_enabled: bool | None = None
     sandbox_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # None = [claude_sync] absent: invariant sync between full/yolo disabled.
+    claude_sync: ClaudeSync | None = None
     yolo: bool = False
 
     def apply_sandbox_overrides(self) -> None:
