@@ -13,7 +13,7 @@ import typer
 
 from twsrt.lib.models import AppConfig, CompilationResult, yolo_path
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 app = typer.Typer(
     name="twsrt",
@@ -566,6 +566,7 @@ def test_command(
         )
     else:
         _print_probe_details(results)
+        _print_probe_summary(results, widths)
         line = " ".join(
             f"{key}={value}" for key, value in summary.items() if key != "total"
         )
@@ -647,6 +648,27 @@ def _print_probe_details(results: list) -> None:
         typer.echo(f"  command: {probe.command}")
         if result.sandbox_stderr.strip():
             typer.echo(f"  stderr: {result.sandbox_stderr.strip()}")
+
+
+def _print_probe_summary(results: list, widths: tuple[int, int]) -> None:
+    """One line per probe that did not pass, so a long table needs no scrolling."""
+    from twsrt.lib.probe import Status
+
+    flagged = [result for result in results if result.status is not Status.PASS]
+    if not flagged:
+        return
+    kind_width, rule_width = widths
+    _info("--- summary ---")
+    for result in flagged:
+        status = result.status.value
+        probe = result.probe
+        line = (
+            f"{status:<8} {probe.kind:<{kind_width}} {probe.rule:<{rule_width}}  "
+            f"{result.reason}"
+        )
+        typer.echo(
+            typer.style(status, fg=_PROBE_STATUS_COLORS[status]) + line[len(status) :]
+        )
 
 
 def _summarize(results: list) -> dict[str, int]:

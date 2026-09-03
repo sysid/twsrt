@@ -320,10 +320,17 @@ PASS     net-deny   example.com (not allowlisted)  0  56  412  curl -sS -m 10 -o
 --- read-deny ~/.aws (realpath): FAIL ---
   not blocked: command succeeded inside the sandbox
   command: head -c 1 -- /Users/x/configs/dot-aws/sso/cache/x.json
+--- summary ---
+FAIL     read-deny  ~/.aws (realpath)  not blocked: command succeeded inside the sandbox
+SKIP     read-deny  **/.env            glob pattern: no concrete probe
 passed=7 failed=1 invalid=0 error=0 skipped=1
 ```
 
-`CTL` and `SBX` are the exit codes of the control and sandboxed run. Statuses:
+After the table come a detail block per `FAIL`/`INVALID`/`ERROR` (reason,
+command, sandbox stderr), a short summary listing every probe that did not
+pass including `SKIP`s, and the counts line. A clean run prints only the
+table and the counts. `CTL` and `SBX` are the exit codes of the control and
+sandboxed run. Statuses:
 
 | Status | Meaning |
 |---|---|

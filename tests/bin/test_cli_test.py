@@ -200,6 +200,54 @@ class TestHumanOutput:
         assert "read-deny" in result.stdout
         assert "not blocked" in result.stdout
 
+    def test_short_summary_lists_every_failed_and_skipped_probe(
+        self, tmp_path: Path
+    ) -> None:
+        # One FAIL (secret not blocked), one SKIP (glob), one PASS (canary).
+        secret = tmp_path / "secret.txt"
+        secret.write_text("hunter2\n")
+        config = _make_config(
+            tmp_path,
+            {
+                "filesystem": {"denyRead": [str(secret), "**/.env"]},
+                "network": {"allowedDomains": [], "deniedDomains": []},
+            },
+        )
+        fake = FakeRunner(blocked=("example.com",))
+
+        with patch(RUN, fake):
+            result = runner.invoke(app, ["-c", str(config), "test"])
+
+        assert result.exit_code == 1
+        lines = result.stdout.splitlines()
+        header = lines.index("--- summary ---")
+        summary = lines[header + 1 :]
+        assert any(
+            line.startswith("FAIL") and str(secret) in line and "not blocked" in line
+            for line in summary
+        )
+        assert any(
+            line.startswith("SKIP") and "**/.env" in line and "glob" in line
+            for line in summary
+        )
+        assert not any(line.startswith("PASS") for line in summary)
+        assert summary[-1] == "passed=1 failed=1 invalid=0 error=0 skipped=1"
+        # Details (with the command) come before the short summary.
+        assert lines.index(f"  command: head -c 1 -- {secret}") < header
+
+    def test_clean_run_has_no_summary_section(self, tmp_path: Path) -> None:
+        config, secret = _secret_config(tmp_path)
+        fake = FakeRunner(blocked=(str(secret), "example.com"))
+
+        with patch(RUN, fake):
+            result = runner.invoke(app, ["-c", str(config), "test"])
+
+        assert result.exit_code == 0, result.output
+        assert "--- summary ---" not in result.stdout
+        assert result.stdout.splitlines()[-1] == (
+            "passed=2 failed=0 invalid=0 error=0 skipped=0"
+        )
+
     def test_statuses_are_colored_on_a_terminal(self, tmp_path: Path) -> None:
         config, secret = _secret_config(tmp_path)
         fake = FakeRunner(blocked=(str(secret),))
