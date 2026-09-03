@@ -205,14 +205,30 @@ Full example: [example/bash-rules.jsonc](example/bash-rules.jsonc).
 | `twsrt generate --yolo <agent>` | Yolo mode: no ask rules, `*.yolo.*` targets, yolo sandbox overrides |
 | `twsrt generate -p work <agent>` | Use profile `work` instead of `default_profile` |
 | `twsrt diff [agent] [--yolo]` | Compare fragments against canonical outputs and targets on disk |
+| `twsrt test [-k TEXT] [--json]` | Prove the compiled SRT settings are enforced by probing the sandbox |
 
 `diff` exit codes: `0` no drift, `1` drift, `2` target missing. It compiles
 the profile in memory and catches both unapplied fragment edits and
 out-of-band changes to generated files.
 
+`test` derives one probe command per effective SRT rule from the compiled
+`~/.srt-settings.json` (a `head` on a file inside every `denyRead` path, a
+write matching every `denyWrite` glob, a `curl` per concrete domain, plus a
+canary for a host outside the allowlist) and runs each probe twice: plainly as
+a control, then under `srt -s <settings> -c`. A deny rule passes only if the
+control succeeds and the sandboxed run fails, so a missing file can never
+count as protected. Symlinked deny paths get a second probe on their real
+path, which exposes the macOS symlink no-op (see
+[Security model](#security-model)). Exit codes: `0` all probes passed, `1` any
+`FAIL`, `INVALID`, or `ERROR`, `2` settings missing or srt unable to sandbox.
+`--json` replaces the table with a machine-readable report. It must run from a
+plain terminal: inside another sandbox (Claude Code's Bash tool, Codex) srt
+cannot apply its profile and the preflight aborts with exit `2`.
+
 Generated content goes to stdout unstyled; diagnostics go to stderr with
 color. `--verbose` before the subcommand adds debug output that never prints
-policy contents. Details in
+policy contents; the one exception is `test`, whose debug lines show the probe
+commands and therefore the deny paths being probed. Details in
 [Diagnostic output](doc/REFERENCE.md#diagnostic-output).
 
 ## Claude Code target
@@ -338,6 +354,16 @@ srt -c "copilot --allow-tool 'shell(*)' --deny-tool 'shell(rm)' ..."
 | Built-in tools | in-process, app rules only | in-process, flags only | run as sandboxed subprocesses |
 | ask tier | native | absent, mapped to deny | native default, not restated |
 | Known trap | `allowWrite` hardcoded | ask to deny fidelity loss | `sandbox_mode` anywhere disables the profile |
+
+**Verifying enforcement.** Configuration says what should be blocked; only a
+probe shows what is. `twsrt test` runs derived probes under the SRT wrapper
+and fails when a rule is not enforced. The case it was built for: on macOS,
+srt keeps a symlinked `denyRead` path unresolved while Seatbelt matches the
+real path, so `denyRead: ["~/.aws"]` blocks nothing when `~/.aws` is a
+symlink. The `(realpath)` probe row turns that silent gap into a `FAIL`; the
+fix is to deny the real directory as well. Run it after every srt or agent
+upgrade. It exercises srt only; Claude Code's native sandbox and Codex are
+not probed.
 
 Rule-by-rule translation: [Rule mapping per agent](doc/REFERENCE.md#rule-mapping-per-agent).
 Guarantees twsrt upholds: [Invariants](doc/REFERENCE.md#invariants).

@@ -827,11 +827,21 @@ are invisible to it. Mitigations: twsrt prints a reminder on every Codex
 generate/diff, and `codex doctor` shows the effective sandbox posture — run
 it after changing any other config layer.
 
+**Symlinked deny paths (macOS)**: srt keeps a `denyRead` path unresolved in
+the Seatbelt profile when its symlink target lies outside the original tree,
+while Seatbelt matches on the real vnode path. A rule such as
+`denyRead: ["~/.aws"]` therefore blocks nothing when `~/.aws` is a symlink to
+a dotfiles repository — the most common layout for managed configs. The
+mitigation is to deny the real directory as well; `twsrt test` probes every
+deny path through its real path and reports the gap as `FAIL` (Section 8.4).
+
 **Recommendation**: For the highest-value secrets (cloud credentials, SSH
 keys, GPG keys), rely on the SRT sandbox as the primary control. Ensure
 these paths are in `denyRead` so that Bash-based access is kernel-blocked.
 The agent-level deny rules provide additional coverage but should not be
-the sole control for critical assets.
+the sole control for critical assets. Verify the result with `twsrt test`
+after every srt, agent, or OS upgrade: a control that is not probed is a
+control that is assumed.
 
 
 ## 8. Operational Model
@@ -890,7 +900,38 @@ twsrt diff                              # Check all agents
 #   - Bash(docker run:*) (in existing, not in sources)
 ```
 
-### 8.4 Adding a New Agent
+### 8.4 Enforcement Verification
+
+`diff` proves the files match the fragments; `test` proves the kernel enforces
+them. It derives a probe per effective SRT rule and runs each one twice —
+plainly as a control, then under `srt -s ~/.srt-settings.json -c`:
+
+```bash
+twsrt test                              # table, one row per probe
+twsrt test --json | jq .summary         # machine-readable report
+# Exit 0: every executed probe passed
+# Exit 1: a rule is not enforced (FAIL), a probe is invalid, or a run errored
+# Exit 2: settings missing, or srt cannot apply a sandbox here
+```
+
+| Rule | Probe | Passes when |
+|---|---|---|
+| `denyRead` file or directory | `head -c 1` on the file (or a file inside) | control reads it, sandbox cannot |
+| `denyRead` symlinked path | the same probe through the real path | sandbox cannot read the real path either |
+| `denyWrite` `**/`-glob | write a matching file below an `allowWrite` dir | control writes, sandbox cannot |
+| `allowWrite` directory | write a file inside | both succeed |
+| `allowedDomains` host | `curl -I https://host/` | both connect |
+| `deniedDomains` host, allowlist canary | `curl -I https://host/` | control connects, sandbox cannot |
+
+The control run is the fail-safe: without it a missing file or an unreachable
+host would read as "blocked". Command output is discarded, never captured, so
+a failing deny probe does not print the secret. Globs in `denyRead`, wildcard
+domains, and absent paths are reported as `SKIP` rather than silently dropped.
+The command must run from a plain terminal: inside another sandbox srt cannot
+apply its own profile, and the preflight aborts with exit 2 instead of
+producing false passes.
+
+### 8.5 Adding a New Agent
 
 ```python
 # 1. Implement the AgentGenerator protocol
@@ -921,7 +962,7 @@ GENERATORS["pimono"] = PiMonoGenerator()
 
 No changes to canonical fragments, profiles, or other generators are required.
 
-### 8.5 Adding a Canonical Source Kind
+### 8.6 Adding a Canonical Source Kind
 
 Canonical composition is reusable, but accepting a new kind without domain
 semantics would be unsafe. Adding one therefore requires an explicit adapter:

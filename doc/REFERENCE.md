@@ -302,7 +302,74 @@ Colors are enabled only on an interactive terminal; `NO_COLOR` (even empty)
 disables ANSI output. `--verbose` goes before the subcommand and reports
 lifecycle facts only: selected profile, mode, agent names, counts, target
 paths, caught exception tracebacks. It never prints policy contents, rule
-patterns, domains, environment values, or credentials.
+patterns, domains, environment values, or credentials. `test` is the
+exception: its debug lines show each probe command, which names the path or
+host under test.
+
+### `twsrt test` output
+
+The table lists one row per probe as it completes:
+
+```
+srt 0.0.75, settings /Users/x/.srt-settings.json, 9 probes
+STATUS   KIND       RULE               CTL SBX     MS  PROBE
+PASS     read-deny  ~/.ssh               0   1     85  head -c 1 -- /Users/x/.ssh/config
+FAIL     read-deny  ~/.aws (realpath)    0   0     90  head -c 1 -- /Users/x/configs/dot-aws/sso/cache/x.json
+SKIP     read-deny  **/.env              -   -      -  glob pattern: no concrete probe
+PASS     net-deny   example.com (not allowlisted)  0  56  412  curl -sS -m 10 -o /dev/null -I https://example.com/
+--- read-deny ~/.aws (realpath): FAIL ---
+  not blocked: command succeeded inside the sandbox
+  command: head -c 1 -- /Users/x/configs/dot-aws/sso/cache/x.json
+passed=7 failed=1 invalid=0 error=0 skipped=1
+```
+
+`CTL` and `SBX` are the exit codes of the control and sandboxed run. Statuses:
+
+| Status | Meaning |
+|---|---|
+| `PASS` | control succeeded; sandboxed run matched the expectation |
+| `FAIL` | rule not enforced (deny probe succeeded) or over-enforced (allow probe blocked) |
+| `INVALID` | control run failed: the probe proves nothing (file absent, host unreachable) |
+| `ERROR` | timeout, or srt could not apply the sandbox for that probe |
+| `SKIP` | no concrete probe derivable (glob deny-read, wildcard domain, absent path) |
+
+Command stdout is discarded for both runs and never captured, so a failing
+deny probe cannot leak the secret it just read. Only the sandboxed run's
+stderr is kept (last 400 characters). Write probes create their files below
+the first concrete `allowWrite` directory (`.` is the working directory) in a
+temporary `.twsrt-test-*` directory that is removed afterwards.
+
+Exit codes: `0` every executed probe passed, `1` any `FAIL`, `INVALID`, or
+`ERROR`, `2` configuration or settings missing, or the preflight
+`srt -s <settings> -c true` failed (srt not on `PATH`, unloadable settings,
+or `sandbox_apply` refused because twsrt itself runs inside a sandbox).
+
+`--json` prints this document instead of the table (warnings stay on stderr):
+
+```json
+{
+  "srt_version": "0.0.75",
+  "settings": "/Users/x/.srt-settings.json",
+  "summary": {"total": 9, "passed": 7, "failed": 1, "invalid": 0, "error": 0, "skipped": 1},
+  "results": [
+    {
+      "kind": "read-deny",
+      "rule": "~/.aws (realpath)",
+      "command": "head -c 1 -- /Users/x/configs/dot-aws/sso/cache/x.json",
+      "expect": "deny",
+      "status": "FAIL",
+      "control_exit": 0,
+      "sandbox_exit": 0,
+      "sandbox_stderr": "",
+      "duration_ms": 90,
+      "reason": "not blocked: command succeeded inside the sandbox"
+    }
+  ]
+}
+```
+
+`srt_version` comes from the `package.json` next to the resolved `srt` binary
+because `srt --version` reports a hardcoded `1.0.0`.
 
 ## Invariants
 

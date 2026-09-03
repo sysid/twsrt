@@ -477,6 +477,223 @@ def diff(
         raise typer.Exit(1)
 
 
+@app.command(name="test")
+def test_command(
+    ctx: typer.Context,
+    profile: str | None = typer.Option(
+        None, "--profile", "-p", help="Canonical-source profile"
+    ),
+    keyword: str | None = typer.Option(
+        None, "--keyword", "-k", help="Run only probes whose kind or rule contains this"
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Print a JSON report instead of the table"
+    ),
+    timeout: float = typer.Option(30.0, "--timeout", help="Seconds per command"),
+) -> None:
+    """Prove the effective SRT settings are enforced by probing the sandbox."""
+    from twsrt.lib.probe import (
+        ProbeError,
+        derive_probes,
+        preflight,
+        run_probe,
+        scratch_root,
+    )
+    from twsrt.lib.sources import read_srt
+
+    try:
+        config, compiled = _compile(ctx.obj["config_path"], profile, yolo=False)
+        settings = config.srt_path
+        if not settings.exists():
+            raise FileNotFoundError(
+                f"SRT settings not found: {settings}. Run `twsrt generate -w` first."
+            )
+        srt = read_srt(settings)
+        if _read_json_object(settings) != compiled.documents["srt"].document:
+            _warning(
+                f"srt canonical drift: probing the on-disk {settings}; "
+                "run `twsrt generate -w` to apply fragment changes"
+            )
+        version = preflight(settings)
+    except (FileNotFoundError, ValueError, ProbeError) as exc:
+        log.debug("Test setup failed", exc_info=True)
+        _error(str(exc))
+        raise typer.Exit(2)
+
+    cwd, home = Path.cwd(), Path.home()
+    with tempfile.TemporaryDirectory(
+        dir=scratch_root(srt, cwd, home), prefix=".twsrt-test-"
+    ) as scratch:
+        probes = derive_probes(srt, cwd, home, Path(scratch))
+        if keyword:
+            probes = [p for p in probes if keyword in p.kind or keyword in p.rule]
+        log.debug(
+            "Derived %d probes (srt %s, settings %s)", len(probes), version, settings
+        )
+        widths = _probe_widths(probes)
+        if not json_output:
+            _info(f"srt {version}, settings {settings}, {len(probes)} probes")
+            typer.echo(
+                _probe_row(
+                    "STATUS", "KIND", "RULE", "CTL", "SBX", "MS", "PROBE", widths
+                )
+            )
+        results = []
+        for probe in probes:
+            log.debug(
+                "Probe kind=%s rule=%s command=%s",
+                probe.kind,
+                probe.rule,
+                probe.command,
+            )
+            result = run_probe(probe, settings, timeout)
+            log.debug(
+                "Result kind=%s rule=%s status=%s control=%s sandbox=%s",
+                probe.kind,
+                probe.rule,
+                result.status.value,
+                result.control_exit,
+                result.sandbox_exit,
+            )
+            results.append(result)
+            if not json_output:
+                _print_probe_result(result, widths)
+
+    summary = _summarize(results)
+    if json_output:
+        typer.echo(
+            json.dumps(_probe_report(version, settings, summary, results), indent=2)
+        )
+    else:
+        _print_probe_details(results)
+        line = " ".join(
+            f"{key}={value}" for key, value in summary.items() if key != "total"
+        )
+        (_success if _probes_clean(summary) else _extra)(line)
+    if not _probes_clean(summary):
+        raise typer.Exit(1)
+
+
+_PROBE_STATUS_COLORS = {
+    "PASS": typer.colors.GREEN,
+    "SKIP": typer.colors.YELLOW,
+    "FAIL": typer.colors.RED,
+    "INVALID": typer.colors.RED,
+    "ERROR": typer.colors.RED,
+}
+
+
+_PROBE_RULE_WIDTH_CAP = 48
+
+
+def _probe_widths(probes: list) -> tuple[int, int]:
+    """Column widths for the table; a long absolute rule overflows its own row
+    instead of widening every row."""
+    kind = max([len("KIND"), *(len(p.kind) for p in probes)])
+    rule = max([len("RULE"), *(len(p.rule) for p in probes)])
+    return kind, min(rule, _PROBE_RULE_WIDTH_CAP)
+
+
+def _probe_row(
+    status: str,
+    kind: str,
+    rule: str,
+    control: str,
+    sandbox: str,
+    duration: str,
+    probe: str,
+    widths: tuple[int, int],
+) -> str:
+    kind_width, rule_width = widths
+    return (
+        f"{status:<8} {kind:<{kind_width}} {rule:<{rule_width}} "
+        f"{control:>3} {sandbox:>3} {duration:>6}  {probe}"
+    )
+
+
+def _print_probe_result(result, widths: tuple[int, int]) -> None:
+    from twsrt.lib.probe import Status
+
+    probe = result.probe
+    status = result.status.value
+    if result.status is Status.SKIP:
+        row = _probe_row(
+            status, probe.kind, probe.rule, "-", "-", "-", result.reason, widths
+        )
+    else:
+        row = _probe_row(
+            status,
+            probe.kind,
+            probe.rule,
+            "-" if result.control_exit is None else str(result.control_exit),
+            "-" if result.sandbox_exit is None else str(result.sandbox_exit),
+            str(result.duration_ms),
+            probe.command,
+            widths,
+        )
+    colored = typer.style(row[: len(status)], fg=_PROBE_STATUS_COLORS[status])
+    typer.echo(colored + row[len(status) :])
+
+
+def _print_probe_details(results: list) -> None:
+    from twsrt.lib.probe import Status
+
+    for result in results:
+        if result.status in (Status.PASS, Status.SKIP):
+            continue
+        probe = result.probe
+        _extra(f"--- {probe.kind} {probe.rule}: {result.status.value} ---")
+        typer.echo(f"  {result.reason}")
+        typer.echo(f"  command: {probe.command}")
+        if result.sandbox_stderr.strip():
+            typer.echo(f"  stderr: {result.sandbox_stderr.strip()}")
+
+
+def _summarize(results: list) -> dict[str, int]:
+    from twsrt.lib.probe import Status
+
+    def count(status: Status) -> int:
+        return sum(1 for result in results if result.status is status)
+
+    return {
+        "total": len(results),
+        "passed": count(Status.PASS),
+        "failed": count(Status.FAIL),
+        "invalid": count(Status.INVALID),
+        "error": count(Status.ERROR),
+        "skipped": count(Status.SKIP),
+    }
+
+
+def _probes_clean(summary: dict[str, int]) -> bool:
+    return summary["failed"] + summary["invalid"] + summary["error"] == 0
+
+
+def _probe_report(
+    version: str, settings: Path, summary: dict[str, int], results: list
+) -> dict:
+    return {
+        "srt_version": version,
+        "settings": str(settings),
+        "summary": summary,
+        "results": [
+            {
+                "kind": result.probe.kind,
+                "rule": result.probe.rule,
+                "command": result.probe.command,
+                "expect": result.probe.expect.value,
+                "status": result.status.value,
+                "control_exit": result.control_exit,
+                "sandbox_exit": result.sandbox_exit,
+                "sandbox_stderr": result.sandbox_stderr,
+                "duration_ms": result.duration_ms,
+                "reason": result.reason,
+            }
+            for result in results
+        ],
+    }
+
+
 def _compile(
     config_path: Path, profile_name: str | None, yolo: bool
 ) -> tuple[AppConfig, CompilationResult]:
