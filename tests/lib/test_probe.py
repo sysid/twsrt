@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -44,11 +46,13 @@ class FakeRunner:
         self,
         blocked: tuple[str, ...] = (),
         control_failures: tuple[str, ...] = (),
+        control_denied: tuple[str, ...] = (),
         srt_failure: tuple[int, str] | None = None,
         raise_for_srt: Exception | None = None,
     ) -> None:
         self.blocked = blocked
         self.control_failures = control_failures
+        self.control_denied = control_denied
         self.srt_failure = srt_failure
         self.raise_for_srt = raise_for_srt
         self.calls: list[tuple[list[str], dict]] = []
@@ -72,41 +76,57 @@ class FakeRunner:
                 )
             return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
         command = argv[2]
+        if any(marker in command for marker in self.control_denied):
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="sh: line 1: x: Operation not permitted\n"
+            )
         if any(marker in command for marker in self.control_failures):
-            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="")
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="head: x: No such file or directory\n"
+            )
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
 
 class TestJudge:
     @pytest.mark.parametrize(
-        ("expect", "control", "sandbox", "status"),
+        ("expect", "control", "denied", "sandbox", "status", "reason_part"),
         [
-            (Expect.DENY, 1, 1, Status.INVALID),
-            (Expect.DENY, 1, 0, Status.INVALID),
-            (Expect.DENY, 0, 0, Status.FAIL),
-            (Expect.DENY, 0, 1, Status.PASS),
-            (Expect.ALLOW, 1, 0, Status.INVALID),
-            (Expect.ALLOW, 0, 1, Status.FAIL),
-            (Expect.ALLOW, 0, 0, Status.PASS),
+            # control failed for another reason (missing file, host down)
+            (Expect.DENY, 1, False, 1, Status.INVALID, "without sandbox"),
+            (Expect.DENY, 1, False, 0, Status.INVALID, "without sandbox"),
+            # control was refused by the OS itself: the deny intent is met
+            (Expect.DENY, 1, True, 1, Status.PASS, "outside the sandbox"),
+            (Expect.DENY, 1, True, 0, Status.FAIL, "not blocked"),
+            (Expect.DENY, 0, False, 0, Status.FAIL, "not blocked"),
+            (Expect.DENY, 0, False, 1, Status.PASS, ""),
+            # an allow rule cannot be verified when the OS refuses anyway
+            (Expect.ALLOW, 1, True, 1, Status.INVALID, "without sandbox"),
+            (Expect.ALLOW, 1, False, 0, Status.INVALID, "without sandbox"),
+            (Expect.ALLOW, 0, False, 1, Status.FAIL, "should be allowed"),
+            (Expect.ALLOW, 0, False, 0, Status.PASS, ""),
         ],
     )
     def test_truth_table(
-        self, expect: Expect, control: int, sandbox: int, status: Status
+        self,
+        expect: Expect,
+        control: int,
+        denied: bool,
+        sandbox: int,
+        status: Status,
+        reason_part: str,
     ) -> None:
-        verdict, reason = judge(expect, control, sandbox)
+        verdict, reason = judge(expect, control, sandbox, control_denied=denied)
 
         assert verdict is status
-        assert (reason == "") == (status is Status.PASS)
+        assert reason_part in reason
+        if reason_part == "":
+            assert reason == ""
 
-    def test_deny_not_blocked_names_the_gap(self) -> None:
-        _, reason = judge(Expect.DENY, 0, 0)
+    def test_os_denial_is_a_pass_that_says_so(self) -> None:
+        verdict, reason = judge(Expect.DENY, 1, 1, control_denied=True)
 
-        assert "not blocked" in reason
-
-    def test_invalid_explains_control_failure(self) -> None:
-        _, reason = judge(Expect.DENY, 2, 1)
-
-        assert "without sandbox" in reason
+        assert verdict is Status.PASS
+        assert "OS" in reason or "permission" in reason
 
 
 class TestDeriveReadDeny:
@@ -247,7 +267,7 @@ class TestDeriveWriteDeny:
         [probe] = _by_kind(probes, "write-deny")
         target = scratch / relative
         assert probe.rule == pattern
-        assert probe.command == f"printf x > {target}"
+        assert probe.command == f": >> {target}"
         assert probe.artifact == target
         assert probe.expect is Expect.DENY
         assert target.parent.is_dir(), "parent directories are pre-created on host"
@@ -284,7 +304,7 @@ class TestDeriveWriteAllow:
         assert probe.expect is Expect.ALLOW
         assert probe.artifact is not None
         assert probe.artifact.parent == cwd
-        assert probe.command == f"printf x > {probe.artifact}"
+        assert probe.command == f": >> {probe.artifact}"
 
     def test_home_relative_directory(self, tmp_path: Path) -> None:
         (tmp_path / "xxx").mkdir()
@@ -308,6 +328,82 @@ class TestDeriveWriteAllow:
         absent, glob = _by_kind(probes, "write-allow")
         assert absent.skip_reason is not None and "not present" in absent.skip_reason
         assert glob.skip_reason is not None and "glob" in glob.skip_reason
+
+    def test_file_entry_opens_for_append_without_touching_it(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / ".claude.json"
+        target.write_text("{}")
+
+        probes = derive_probes(
+            _srt({"allowWrite": ["~/.claude.json"]}), tmp_path, tmp_path, tmp_path / "s"
+        )
+
+        [probe] = _by_kind(probes, "write-allow")
+        assert probe.command == f": >> {target}"
+        assert probe.expect is Expect.ALLOW
+        assert probe.artifact is None, "an existing file is never deleted"
+        assert probe.skip_reason is None
+
+    def test_append_open_probe_leaves_the_file_byte_for_byte_and_mtime_intact(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "notes.txt"
+        target.write_text("original\n")
+        before = target.stat()
+        [probe] = _by_kind(
+            derive_probes(
+                _srt({"allowWrite": [str(target)]}), tmp_path, tmp_path, tmp_path / "s"
+            ),
+            "write-allow",
+        )
+
+        completed = subprocess.run(["sh", "-c", probe.command])
+
+        assert completed.returncode == 0
+        assert target.read_text() == "original\n"
+        assert target.stat().st_mtime_ns == before.st_mtime_ns
+        assert target.stat().st_size == before.st_size
+
+
+class TestDeriveWriteDenyConcretePaths:
+    def test_existing_file_opens_for_append_and_expects_denial(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "prod.env"
+        target.write_text("SECRET=1\n")
+
+        probes = derive_probes(
+            _srt({"denyWrite": ["~/prod.env"]}), tmp_path, tmp_path, tmp_path / "s"
+        )
+
+        [probe] = _by_kind(probes, "write-deny")
+        assert probe.command == f": >> {target}"
+        assert probe.expect is Expect.DENY
+        assert probe.artifact is None
+        assert probe.skip_reason is None
+
+    def test_existing_directory_probes_a_new_file_inside(self, tmp_path: Path) -> None:
+        (tmp_path / "vault").mkdir()
+
+        probes = derive_probes(
+            _srt({"denyWrite": ["~/vault"]}), tmp_path, tmp_path, tmp_path / "s"
+        )
+
+        [probe] = _by_kind(probes, "write-deny")
+        assert probe.artifact is not None
+        assert probe.artifact.parent == tmp_path / "vault"
+        assert probe.command == f": >> {probe.artifact}"
+        assert probe.expect is Expect.DENY
+
+    def test_absent_concrete_path_is_skipped(self, tmp_path: Path) -> None:
+        probes = derive_probes(
+            _srt({"denyWrite": ["~/missing.env"]}), tmp_path, tmp_path, tmp_path / "s"
+        )
+
+        [probe] = _by_kind(probes, "write-deny")
+        assert probe.skip_reason is not None
+        assert "not present" in probe.skip_reason
 
 
 class TestDeriveNetwork:
@@ -479,6 +575,45 @@ class TestRunProbe:
         result = run_probe(self._probe(), SETTINGS, timeout=5, run=runner)
 
         assert result.status is Status.INVALID
+        assert "No such file" in result.control_stderr
+
+    @pytest.mark.parametrize(
+        "stderr",
+        [
+            "sh: line 1: /Library/Keychains/.twsrt-probe-1: Operation not permitted\n",
+            "sh: line 1: /root/x: Permission denied\n",
+            "sh: line 1: /Volumes/ro/x: Read-only file system\n",
+        ],
+    )
+    def test_deny_probe_refused_by_the_os_itself_passes(self, stderr: str) -> None:
+        # /Library/Keychains is root-owned: the intent "cannot write here" is
+        # met before srt is even involved.
+        def runner(argv: list[str], **kwargs) -> subprocess.CompletedProcess:
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr=stderr)
+
+        result = run_probe(self._probe(": >> /x"), SETTINGS, timeout=5, run=runner)
+
+        assert result.status is Status.PASS
+        assert result.control_exit == 1
+        assert result.sandbox_exit == 1
+        assert "outside the sandbox" in result.reason
+
+    def test_allow_probe_refused_by_the_os_is_invalid(self) -> None:
+        runner = FakeRunner(control_denied=("/x",), blocked=("/x",))
+        probe = Probe("write-allow", "/x", ": >> /x", Expect.ALLOW)
+
+        result = run_probe(probe, SETTINGS, timeout=5, run=runner)
+
+        assert result.status is Status.INVALID
+
+    def test_control_stdout_is_still_never_captured(self) -> None:
+        runner = FakeRunner(control_denied=("/x",), blocked=("/x",))
+
+        run_probe(self._probe(), SETTINGS, timeout=5, run=runner)
+
+        control_kwargs = runner.calls[0][1]
+        assert control_kwargs["stdout"] is subprocess.DEVNULL
+        assert control_kwargs["stderr"] is subprocess.PIPE
 
     def test_control_can_be_disabled_per_probe(self) -> None:
         runner = FakeRunner(blocked=("/x",))
@@ -512,7 +647,7 @@ class TestRunProbe:
         probe = Probe(
             kind="write-deny",
             rule="**/*.pem",
-            command=f"printf x > {artifact}",
+            command=f": >> {artifact}",
             expect=Expect.DENY,
             artifact=artifact,
         )
@@ -521,6 +656,48 @@ class TestRunProbe:
 
         assert result.status is Status.PASS
         assert not artifact.exists()
+
+    def test_no_probe_command_can_truncate_a_file(self, tmp_path: Path) -> None:
+        # Defense in depth: every write probe uses append-open, so even a wrong
+        # target path could never lose content.
+        (tmp_path / ".ssh").mkdir()
+        (tmp_path / ".ssh" / "config").write_text("Host x")
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+
+        probes = derive_probes(
+            _srt(
+                {
+                    "denyRead": ["~/.ssh"],
+                    "denyWrite": ["**/*.pem", "~/.ssh", "~/.ssh/config"],
+                    "allowWrite": [".", "~/.ssh/config"],
+                }
+            ),
+            tmp_path,
+            tmp_path,
+            scratch,
+        )
+
+        for probe in probes:
+            assert " > " not in probe.command, probe
+            assert "printf" not in probe.command, probe
+
+    def test_artifact_that_existed_before_the_run_is_never_removed(
+        self, tmp_path: Path
+    ) -> None:
+        artifact = tmp_path / "existing.pem"
+        artifact.write_text("keep me\n")
+        probe = Probe(
+            "write-deny",
+            "**/*.pem",
+            f": >> {artifact}",
+            Expect.DENY,
+            artifact=artifact,
+        )
+
+        run_probe(probe, SETTINGS, timeout=5, run=FakeRunner(blocked=(".pem",)))
+
+        assert artifact.read_text() == "keep me\n"
 
     def test_timeout_yields_error(self) -> None:
         def runner(argv: list[str], **kwargs) -> subprocess.CompletedProcess:
@@ -545,6 +722,119 @@ class TestRunProbe:
         result = run_probe(self._probe(), SETTINGS, timeout=5, run=FakeRunner())
 
         assert result.duration_ms >= 0
+
+
+class _Records(logging.Handler):
+    """Collects debug messages from the probe logger without depending on
+    propagation, which the CLI switches off for the parent logger."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.DEBUG)
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(record.getMessage())
+
+
+@pytest.fixture
+def probe_log() -> Iterator[list[str]]:
+    logger = logging.getLogger("twsrt.probe")
+    handler = _Records()
+    previous = logger.level
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(handler)
+    try:
+        yield handler.messages
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous)
+
+
+class TestObservability:
+    def test_every_subprocess_is_logged_as_a_copyable_command_with_exit_code(
+        self, probe_log: list[str]
+    ) -> None:
+        runner = FakeRunner(blocked=("my secret",))
+        probe = Probe("read-deny", "/x", "head -c 1 -- '/my secret'", Expect.DENY)
+
+        run_probe(probe, SETTINGS, timeout=5, run=runner)
+
+        assert "exec: sh -c 'head -c 1 -- '\"'\"'/my secret'\"'\"''" in probe_log
+        assert (
+            "exec: srt -s /settings/.srt-settings.json -c "
+            "'head -c 1 -- '\"'\"'/my secret'\"'\"''" in probe_log
+        )
+        exits = [m for m in probe_log if m.startswith("exit=")]
+        assert len(exits) == 2
+        assert exits[0].startswith("exit=0 ")
+        assert exits[1].startswith("exit=1 ")
+        assert "Operation not permitted" in exits[1]
+
+    def test_preflight_logs_binary_version_source_and_check(
+        self, probe_log: list[str], tmp_path: Path
+    ) -> None:
+        package_dir = tmp_path / "node_modules" / "@anthropic-ai" / "sandbox-runtime"
+        (package_dir / "dist").mkdir(parents=True)
+        (package_dir / "package.json").write_text(json.dumps({"version": "0.0.99"}))
+        binary = package_dir / "dist" / "cli.js"
+        binary.write_text("")
+
+        preflight(SETTINGS, run=FakeRunner(), which=lambda _: str(binary))
+
+        assert f"srt binary: {binary}" in probe_log
+        assert any("0.0.99" in m and "package.json" in m for m in probe_log)
+        assert "exec: srt -s /settings/.srt-settings.json -c true" in probe_log
+
+    def test_derivation_decisions_are_logged(
+        self, probe_log: list[str], tmp_path: Path
+    ) -> None:
+        real = tmp_path / "configs" / "dot-aws"
+        real.mkdir(parents=True)
+        (real / "config").write_text("x")
+        os.symlink(real, tmp_path / ".aws")
+
+        derive_probes(
+            _srt({"denyRead": ["~/.aws", "~/.kube", "**/.env"]}),
+            tmp_path,
+            tmp_path,
+            tmp_path / "s",
+        )
+
+        assert any(
+            "read-deny ~/.aws" in m and str(real / "config") in m for m in probe_log
+        )
+        assert any("symlink" in m and str(real) in m for m in probe_log)
+        assert any(
+            "skip read-deny ~/.kube" in m and "not present" in m for m in probe_log
+        )
+        assert any("skip read-deny **/.env" in m and "glob" in m for m in probe_log)
+
+    def test_artifact_removal_is_logged(
+        self, probe_log: list[str], tmp_path: Path
+    ) -> None:
+        artifact = tmp_path / "probe.pem"
+
+        def runner(argv: list[str], **kwargs) -> subprocess.CompletedProcess:
+            artifact.write_text("x")
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        probe = Probe(
+            "write-deny", "**/*.pem", ": >> x", Expect.DENY, artifact=artifact
+        )
+
+        run_probe(probe, SETTINGS, timeout=5, run=runner)
+
+        assert probe_log.count(f"removed artifact {artifact}") == 2
+
+    def test_timeout_is_logged(self, probe_log: list[str]) -> None:
+        def runner(argv: list[str], **kwargs) -> subprocess.CompletedProcess:
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+        run_probe(
+            Probe("read-deny", "/x", "sleep 99", Expect.DENY), SETTINGS, 5, run=runner
+        )
+
+        assert any(m.startswith("timeout after 5s: sh -c") for m in probe_log)
 
 
 class TestPreflight:

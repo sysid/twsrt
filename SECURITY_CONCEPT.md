@@ -918,15 +918,26 @@ twsrt test --json | jq .summary         # machine-readable report
 |---|---|---|
 | `denyRead` file or directory | `head -c 1` on the file (or a file inside) | control reads it, sandbox cannot |
 | `denyRead` symlinked path | the same probe through the real path | sandbox cannot read the real path either |
-| `denyWrite` `**/`-glob | write a matching file below an `allowWrite` dir | control writes, sandbox cannot |
-| `allowWrite` directory | write a file inside | both succeed |
+| `denyWrite` `**/`-glob | append-open a matching witness file below an `allowWrite` dir (removed afterwards) | control creates it, sandbox cannot |
+| `denyWrite` directory | append-open a new file inside (removed afterwards) | control creates it, sandbox cannot |
+| `denyWrite` file | append-open the file, write nothing (`: >> file`) | control opens, sandbox cannot |
+| `allowWrite` directory | append-open a new file inside (removed afterwards) | both succeed |
+| `allowWrite` file | append-open the file, write nothing (`: >> file`) | both succeed |
 | `allowedDomains` host | `curl -I https://host/` | both connect |
 | `deniedDomains` host, allowlist canary | `curl -I https://host/` | control connects, sandbox cannot |
 
 The control run is the fail-safe: without it a missing file or an unreachable
-host would read as "blocked". Command output is discarded, never captured, so
-a failing deny probe does not print the secret. Globs in `denyRead`, wildcard
-domains, and absent paths are reported as `SKIP` rather than silently dropped.
+host would read as "blocked". A deny probe that the OS refuses even outside
+the sandbox (root-owned directory, read-only volume) still passes, because the
+intent is met by a lower layer; any other control failure is `INVALID`. Command output is discarded, never captured, so
+a failing deny probe does not print the secret. No probe can modify content:
+every write probe is an append-open that writes nothing (`: >> path`, never
+`>`), which the kernel checks at `open()` and which leaves size, content,
+and mtime of an existing file untouched; only files a run created itself are
+removed afterwards. Globs in `denyRead`, wildcard domains, and absent paths are
+reported as `SKIP` rather than silently dropped. The full probe catalogue,
+verdict table, and safety properties are in
+[doc/REFERENCE.md, Sandbox probes](doc/REFERENCE.md#sandbox-probes).
 The command must run from a plain terminal: inside another sandbox srt cannot
 apply its own profile, and the preflight aborts with exit 2 instead of
 producing false passes.

@@ -9,6 +9,7 @@ probe itself is valid — a missing file or an unreachable host must not count a
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shlex
 import shutil
@@ -20,6 +21,10 @@ from enum import Enum
 from pathlib import Path
 
 from twsrt.lib.models import Action, Scope, SrtResult
+
+# Child of the CLI's "twsrt" logger: --verbose shows every subprocess as a
+# copyable command line, its exit code, and every derivation decision.
+log = logging.getLogger("twsrt.probe")
 
 Runner = Callable[..., subprocess.CompletedProcess]
 
@@ -71,6 +76,8 @@ class ProbeResult:
     status: Status
     control_exit: int | None = None
     sandbox_exit: int | None = None
+    # stderr only, last 400 chars; stdout of either run is never captured.
+    control_stderr: str = ""
     sandbox_stderr: str = ""
     duration_ms: int = 0
     reason: str = ""
@@ -87,10 +94,19 @@ def derive_probes(srt: SrtResult, cwd: Path, home: Path, scratch: Path) -> list[
     net_allow = _patterns(srt, Scope.NETWORK, Action.ALLOW)
     net_deny = _patterns(srt, Scope.NETWORK, Action.DENY)
 
+    log.debug(
+        "deriving probes: denyRead=%d denyWrite=%d allowWrite=%d "
+        "allowedDomains=%d deniedDomains=%d",
+        len(read_deny),
+        len(write_deny),
+        len(write_allow),
+        len(net_allow),
+        len(net_deny),
+    )
     probes: list[Probe] = []
     for pattern in read_deny:
         probes.extend(_read_deny(pattern, cwd, home))
-    probes.extend(_write_deny(pattern, scratch) for pattern in write_deny)
+    probes.extend(_write_deny(pattern, cwd, home, scratch) for pattern in write_deny)
     probes.extend(_write_allow(pattern, cwd, home) for pattern in write_allow)
     probes.extend(_network(host, "net-allow", Expect.ALLOW) for host in net_allow)
     probes.extend(_network(host, "net-deny", Expect.DENY) for host in net_deny)
@@ -109,7 +125,9 @@ def scratch_root(srt: SrtResult, cwd: Path, home: Path) -> Path:
             continue
         directory = _expand(pattern, cwd, home)
         if directory.is_dir():
+            log.debug("scratch root: %s (allowWrite %r)", directory, pattern)
             return directory
+    log.debug("scratch root: %s (no concrete allowWrite directory, using cwd)", cwd)
     return cwd
 
 
@@ -131,6 +149,12 @@ def _read_deny(pattern: str, cwd: Path, home: Path) -> list[Probe]:
         return [_skip("read-deny", pattern, Expect.DENY, "path not present on host")]
 
     subject = path if path.is_file() else _first_file(path)
+    if subject == path:
+        log.debug("read-deny %s: %s is a file, probing it", pattern, path)
+    elif subject is None:
+        log.debug("read-deny %s: %s has no regular file, probing ls", pattern, path)
+    else:
+        log.debug("read-deny %s: %s is a directory, probing %s", pattern, path, subject)
     probes = [Probe("read-deny", pattern, _read_command(path, subject), Expect.DENY)]
 
     # srt keeps symlinked deny paths unresolved while Seatbelt matches the real
@@ -139,6 +163,12 @@ def _read_deny(pattern: str, cwd: Path, home: Path) -> list[Probe]:
     target = subject or path
     real = Path(os.path.realpath(target))
     if real != target:
+        log.debug(
+            "read-deny %s: symlink, %s resolves to %s; adding realpath probe",
+            pattern,
+            target,
+            real,
+        )
         command = _read_command(real, None if subject is None else real)
         probes.append(Probe("read-deny", f"{pattern} (realpath)", command, Expect.DENY))
     return probes
@@ -164,7 +194,9 @@ def _first_file(directory: Path) -> Path | None:
     return None
 
 
-def _write_deny(pattern: str, scratch: Path) -> Probe:
+def _write_deny(pattern: str, cwd: Path, home: Path, scratch: Path) -> Probe:
+    if not _is_glob(pattern):
+        return _concrete_write_probe("write-deny", pattern, cwd, home, Expect.DENY)
     relative = _glob_probe_name(pattern)
     if relative is None:
         return _skip(
@@ -180,7 +212,7 @@ def _write_deny(pattern: str, scratch: Path) -> Probe:
     return Probe(
         "write-deny",
         pattern,
-        f"printf x > {shlex.quote(str(target))}",
+        f": >> {shlex.quote(str(target))}",
         Expect.DENY,
         artifact=target,
     )
@@ -217,19 +249,41 @@ def _write_allow(pattern: str, cwd: Path, home: Path) -> Probe:
         return _skip(
             "write-allow", pattern, Expect.ALLOW, "glob pattern: no concrete probe"
         )
-    directory = _expand(pattern, cwd, home)
-    if not directory.is_dir():
-        return _skip(
-            "write-allow", pattern, Expect.ALLOW, "directory not present on host"
+    return _concrete_write_probe("write-allow", pattern, cwd, home, Expect.ALLOW)
+
+
+def _concrete_write_probe(
+    kind: str, pattern: str, cwd: Path, home: Path, expect: Expect
+) -> Probe:
+    """Write probe for a path that names a real directory or file.
+
+    Every write probe is an append-open that writes nothing (``: >> path``):
+    the kernel checks write permission at open(), and ``>>`` can never
+    truncate. A directory gets a new file created inside it, removed after
+    each run; an existing file keeps size, content, and mtime. A missing path
+    is skipped rather than created.
+    """
+    path = _expand(pattern, cwd, home)
+    if path.is_dir():
+        artifact = path / f".twsrt-probe-{os.getpid()}"
+        log.debug(
+            "%s %s: %s is a directory, probing new file %s",
+            kind,
+            pattern,
+            path,
+            artifact,
         )
-    artifact = directory / f".twsrt-probe-{os.getpid()}"
-    return Probe(
-        "write-allow",
-        pattern,
-        f"printf x > {shlex.quote(str(artifact))}",
-        Expect.ALLOW,
-        artifact=artifact,
-    )
+        return Probe(
+            kind,
+            pattern,
+            f": >> {shlex.quote(str(artifact))}",
+            expect,
+            artifact=artifact,
+        )
+    if path.is_file():
+        log.debug("%s %s: %s is a file, probing append-open", kind, pattern, path)
+        return Probe(kind, pattern, f": >> {shlex.quote(str(path))}", expect)
+    return _skip(kind, pattern, expect, "path not present on host")
 
 
 def _network(host: str, kind: str, expect: Expect) -> Probe:
@@ -250,6 +304,7 @@ def _allowlist_canary(allowed: list[str]) -> Probe:
 
 
 def _skip(kind: str, rule: str, expect: Expect, reason: str) -> Probe:
+    log.debug("skip %s %s: %s", kind, rule, reason)
     return Probe(kind, rule, "", expect, skip_reason=reason)
 
 
@@ -269,9 +324,34 @@ def _expand(pattern: str, cwd: Path, home: Path) -> Path:
 # --- execution --------------------------------------------------------------
 
 
-def judge(expect: Expect, control_exit: int, sandbox_exit: int) -> tuple[Status, str]:
-    """Verdict from the two exit codes. Control failure invalidates the probe."""
+# stderr fragments that mean the OS itself refused the operation.
+_DENIAL_MARKERS = (
+    "Operation not permitted",
+    "Permission denied",
+    "Read-only file system",
+)
+
+
+def is_permission_denial(stderr: str) -> bool:
+    return any(marker in stderr for marker in _DENIAL_MARKERS)
+
+
+def judge(
+    expect: Expect, control_exit: int, sandbox_exit: int, control_denied: bool = False
+) -> tuple[Status, str]:
+    """Verdict from the two exit codes.
+
+    A failing control normally invalidates the probe: a missing file or an
+    unreachable host proves nothing. The exception is a deny rule whose control
+    was refused by the OS itself (root-owned directory, read-only volume): the
+    intent "cannot write/read here" is met regardless of which layer enforces
+    it, so that counts as a pass and says so in the reason.
+    """
     if control_exit != 0:
+        if expect is Expect.DENY and control_denied:
+            if sandbox_exit == 0:
+                return Status.FAIL, "not blocked: command succeeded inside the sandbox"
+            return Status.PASS, "denied outside the sandbox too (OS permission)"
         return Status.INVALID, f"probe fails even without sandbox (exit {control_exit})"
     if expect is Expect.DENY:
         if sandbox_exit == 0:
@@ -292,25 +372,34 @@ def run_probe(
 
     started = time.monotonic()
     control_exit: int | None = None
+    # Only a file this run creates may be removed. Write probes never truncate
+    # (append-open only), so a pre-existing file at the artifact path is left
+    # exactly as it was.
+    artifact = probe.artifact
+    if artifact is not None and artifact.exists():
+        log.debug("artifact %s exists before the run; it will not be removed", artifact)
+        artifact = None
+    control_stderr = ""
     try:
         if probe.control:
-            control_exit = _execute(
-                run, ["sh", "-c", probe.command], timeout, capture=False
-            ).returncode
-            _remove(probe.artifact)
+            control = _execute(run, ["sh", "-c", probe.command], timeout, capture=True)
+            control_exit = control.returncode
+            control_stderr = (control.stderr or "")[-_STDERR_LIMIT:]
+            _remove(artifact)
         completed = _execute(
             run,
             ["srt", "-s", str(settings), "-c", probe.command],
             timeout,
             capture=True,
         )
-        _remove(probe.artifact)
+        _remove(artifact)
     except subprocess.TimeoutExpired:
-        _remove(probe.artifact)
+        _remove(artifact)
         return ProbeResult(
             probe,
             Status.ERROR,
             control_exit=control_exit,
+            control_stderr=control_stderr,
             duration_ms=_elapsed_ms(started),
             reason=f"timed out after {timeout:g}s",
         )
@@ -323,12 +412,14 @@ def run_probe(
             probe.expect,
             0 if control_exit is None else control_exit,
             completed.returncode,
+            control_denied=is_permission_denial(control_stderr),
         )
     return ProbeResult(
         probe,
         status,
         control_exit=control_exit,
         sandbox_exit=completed.returncode,
+        control_stderr=control_stderr,
         sandbox_stderr=stderr,
         duration_ms=_elapsed_ms(started),
         reason=reason,
@@ -360,6 +451,7 @@ def preflight(
         raise ProbeError(
             f"srt preflight failed (exit {check.returncode}): {stderr}{hint}"
         )
+    log.debug("preflight ok: srt %s sandboxed `true` with %s", version, settings)
     return version
 
 
@@ -367,14 +459,16 @@ def _srt_version(run: Runner, which: Callable[[str], str | None]) -> str:
     # `srt --version` reports a hardcoded 1.0.0 upstream; package.json next to
     # the resolved binary is the truthful source, --version the fallback.
     binary = which("srt")
+    log.debug("srt binary: %s", binary or "not resolved via PATH lookup")
     if binary is not None:
         package = Path(os.path.realpath(binary)).parent.parent / "package.json"
         try:
             version = json.loads(package.read_text()).get("version")
             if isinstance(version, str) and version:
+                log.debug("srt version %s from package.json %s", version, package)
                 return version
         except (OSError, ValueError):
-            pass
+            log.debug("srt version: %s unreadable, falling back to --version", package)
     completed = run(
         ["srt", "--version"],
         stdin=subprocess.DEVNULL,
@@ -383,20 +477,36 @@ def _srt_version(run: Runner, which: Callable[[str], str | None]) -> str:
         text=True,
         timeout=_PREFLIGHT_TIMEOUT,
     )
-    return (completed.stdout or "").strip() or "unknown"
+    version = (completed.stdout or "").strip() or "unknown"
+    log.debug("srt version %s from `srt --version` (may be a hardcoded 1.0.0)", version)
+    return version
 
 
 def _execute(
     run: Runner, argv: list[str], timeout: float, capture: bool
 ) -> subprocess.CompletedProcess:
-    return run(
-        argv,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE if capture else subprocess.DEVNULL,
-        text=True,
-        timeout=timeout,
+    log.debug("exec: %s", shlex.join(argv))
+    started = time.monotonic()
+    try:
+        completed = run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE if capture else subprocess.DEVNULL,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        log.debug("timeout after %gs: %s", timeout, shlex.join(argv))
+        raise
+    stderr = " ".join((completed.stderr or "").split())[-_STDERR_LIMIT:]
+    log.debug(
+        "exit=%d in %dms%s",
+        completed.returncode,
+        _elapsed_ms(started),
+        f" stderr: {stderr}" if stderr else "",
     )
+    return completed
 
 
 def _remove(artifact: Path | None) -> None:
@@ -405,7 +515,8 @@ def _remove(artifact: Path | None) -> None:
     try:
         artifact.unlink()
     except FileNotFoundError:
-        pass
+        return
+    log.debug("removed artifact %s", artifact)
 
 
 def _elapsed_ms(started: float) -> int:

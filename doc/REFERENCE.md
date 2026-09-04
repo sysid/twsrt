@@ -11,6 +11,7 @@ before/after merge example, Codex translation rules, diagnostics, and roadmap.
 - [Claude merge example](#claude-merge-example)
 - [Codex translation rules](#codex-translation-rules)
 - [Compiler model](#compiler-model)
+- [Sandbox probes](#sandbox-probes)
 - [Diagnostic output](#diagnostic-output)
 - [Invariants](#invariants)
 - [Scope and roadmap](#scope-and-roadmap)
@@ -283,6 +284,176 @@ document, and translating it into normalized rules; profile resolution and
 composition are reused. Adding an agent consumes the normalized rules and
 does not touch fragments or profiles.
 
+## Sandbox probes
+
+`twsrt test` answers one question: does the kernel enforce what
+`~/.srt-settings.json` says? `diff` proves the file matches the fragments;
+`test` proves the sandbox matches the file. It exercises the SRT wrapper only
+(`srt -s <settings> -c`), not Claude Code's native sandbox, Codex, or the
+bash deny/ask rules.
+
+### Execution model
+
+Every effective rule becomes one or two probes. A probe is a plain `sh`
+command with an expectation, and it runs twice:
+
+```
+ rule in ~/.srt-settings.json
+        │  derive (reads the host: file or dir? symlink? exists?)
+        ▼
+ probe: command + expect (deny | allow)
+        │
+        ├──► control:  sh -c '<command>'                     exit code C
+        │
+        └──► sandbox:  srt -s <settings> -c '<command>'      exit code S
+                                                             │
+                                                             ▼
+                                            verdict = judge(expect, C, S)
+```
+
+The control run is the fail-safe. Without it, `head` on a file that does
+not exist or `curl` to a host that is down would exit non-zero and read as
+"blocked". A deny rule passes when the very same command succeeds outside
+the sandbox and fails inside it. One exception: when the control run is
+refused by the OS itself (its stderr says `Operation not permitted`,
+`Permission denied`, or `Read-only file system`, as for a root-owned
+`/Library/Keychains`), the deny intent is met by a layer below srt, and the
+probe passes with the reason "denied outside the sandbox too". Any other
+control failure stays `INVALID`. Verdict table:
+
+| expect | control C | sandbox S | status | meaning |
+|---|---|---|---|---|
+| deny | ≠ 0, other error | any | `INVALID` | the probe proves nothing (file absent, host unreachable) |
+| deny | ≠ 0, OS permission denial | ≠ 0 | `PASS` | intent met before srt is involved (root-owned dir, read-only volume); reason says so |
+| deny | ≠ 0, OS permission denial | 0 | `FAIL` | the sandbox is more permissive than a plain shell |
+| deny | 0 | 0 | `FAIL` | not blocked: the rule is not enforced |
+| deny | 0 | ≠ 0 | `PASS` | |
+| allow | ≠ 0 | any | `INVALID` | an allow rule cannot be verified when the plain shell is refused too |
+| allow | 0 | ≠ 0 | `FAIL` | blocked although allowed |
+| allow | 0 | 0 | `PASS` | |
+| any | — | — | `SKIP` | no concrete command could be derived (never executed) |
+| any | — | — | `ERROR` | timeout, or `sandbox_apply` refused mid-run |
+
+Probes run sequentially in a fixed order: read-deny, write-deny,
+write-allow, net-allow, net-deny, then the allowlist canary. Each row is
+printed as soon as its verdict is known.
+
+### Probe catalogue
+
+| Rule | Host condition | Command | Expect | Leaves behind | `SKIP` when |
+|---|---|---|---|---|---|
+| `denyRead` path | regular file | `head -c 1 -- <file>` | deny | nothing | glob pattern; path absent |
+| `denyRead` path | directory with a file inside | `head -c 1 -- <first regular file>` | deny | nothing | as above |
+| `denyRead` path | directory without files | `ls -- <dir>` | deny | nothing | as above |
+| `denyRead` path | symlink anywhere in the probed path | second probe on the realpath, rule shown as `<pattern> (realpath)` | deny | nothing | never |
+| `denyWrite` `**/`-glob | — | `: >> <scratch>/<name>` | deny | file removed after each run | mid-path wildcard, `[...]`, absolute or `~` glob |
+| `denyWrite` path | directory | `: >> <dir>/.twsrt-probe-<pid>` | deny | file removed after each run | path absent |
+| `denyWrite` path | existing file | `: >> <file>` | deny | nothing | path absent |
+| `allowWrite` path | directory (`.` = cwd) | `: >> <dir>/.twsrt-probe-<pid>` | allow | file removed after each run | glob; path absent |
+| `allowWrite` path | existing file | `: >> <file>` | allow | nothing | glob; path absent |
+| `allowedDomains` host | — | `curl -sS -m 10 -o /dev/null -I https://<host>/` | allow | nothing | wildcard (`*.`) |
+| `deniedDomains` host | — | same curl | deny | nothing | wildcard |
+| allowlist canary | — | same curl against `example.com`, `.org`, or `.net`, whichever is not allowlisted | deny | nothing | never |
+
+### Read probes
+
+- `head -c 1` reads a single byte: enough to trigger the kernel's
+  `file-read*` check, cheap on large files. Its output goes to `/dev/null`.
+- For a directory, the first regular file is found by a sorted walk at most
+  four levels deep, ignoring symlinks. Sorting makes the choice stable across
+  runs. A directory without files is probed with `ls`, which needs read
+  permission on the directory itself.
+- **Realpath twin.** On macOS, srt keeps a `denyRead` path unresolved in the
+  Seatbelt profile when its symlink target lies outside the original tree,
+  while Seatbelt matches the real vnode path. `denyRead: ["~/.aws"]` then
+  blocks nothing when `~/.aws` is a symlink. Whenever the probed path
+  resolves to something else, a second probe reads the same file through its
+  real path. That row failing while the plain row passes is the signature of
+  the symlink gap; the fix is to deny the real directory as well.
+
+### Write probes
+
+- **Glob rules** need a witness file that matches the glob. It is created
+  in a temporary `.twsrt-test-*` directory below the first concrete
+  `allowWrite` directory (falling back to cwd), because a deny glob can only
+  be observed where writing is otherwise allowed. The witness name is
+  derived from the last segment: `*` becomes `probe`, `?` becomes `x`, a
+  trailing `**` becomes `<segment>/probe`. Examples:
+
+  | glob | witness |
+  |---|---|
+  | `**/.env` | `.env` |
+  | `**/*.pem` | `probe.pem` |
+  | `**/serviceAccount*.json` | `serviceAccountprobe.json` |
+  | `**/secrets/**` | `secrets/probe` |
+  | `**/.github/workflows/**` | `.github/workflows/probe` |
+
+  Only `**/`-anchored globs are convertible: they match anywhere, so a file
+  in the scratch directory is a valid witness. Parent directories are
+  created on the host beforehand so a sandboxed failure can only come from
+  the deny rule, not from a missing directory. The scratch directory is
+  removed when the run ends.
+- **Every write probe is an append-open that writes nothing**, `: >> path`.
+  The kernel checks write permission at `open()`, so the sandboxed run fails
+  exactly when the rule denies writing. On a missing path `>>` creates an
+  empty file; on an existing one it leaves size, content, and mtime
+  untouched. There is deliberately no `>` redirect and no `printf`/`touch`
+  anywhere: `>` would truncate, `touch` bumps mtime, and a wrong target path
+  must never be able to lose data.
+- **Directory rules** create `.twsrt-probe-<pid>` inside the directory.
+  Existing files are never opened.
+- **File rules** open the named file itself. A file that does not exist is
+  skipped rather than created.
+- A file a probe creates is recorded as its artifact and removed after the
+  control run and again after the sandboxed run, so both runs start from the
+  same state and nothing is left behind, even on a timeout. A file that
+  already exists at the artifact path before the run is never removed.
+
+### Network probes
+
+- `curl -I` sends a HEAD request with a 10-second limit. Exit code 0 means
+  the connection was established; the HTTP status is irrelevant, so a 403
+  or 405 still counts as reachable. Under srt the proxy refuses the
+  `CONNECT` for a non-allowlisted host and curl exits non-zero.
+- Wildcard entries (`*.github.com`) have no concrete host to dial and are
+  skipped. Add the bare domain to the allowlist if you want it probed.
+- The canary proves allowlist mode is active at all: it dials the first of
+  `example.com`, `example.org`, `example.net` that is not allowlisted and
+  expects the sandbox to block it. Without the canary, an empty or ignored
+  allowlist would produce no failing row.
+- The control run of a network probe really connects to the host from your
+  machine, including for `deniedDomains` entries.
+
+### Preflight and safety
+
+- Before any probe, `test` resolves `srt` on `PATH`, reads its version from
+  the `package.json` next to the binary (`srt --version` reports a
+  hardcoded `1.0.0`), and runs `srt -s <settings> -c true`. If that fails
+  the run aborts with exit `2`; `sandbox_apply: Operation not permitted`
+  means srt cannot nest inside another sandbox, so run from a plain
+  terminal rather than from Claude Code's Bash tool.
+- The compiled settings file is compared against the fragments first; drift
+  is a warning, and the on-disk file is what gets probed, because that is
+  what srt enforces.
+- Command stdout is sent to `/dev/null` for both runs and never captured, so
+  a failing deny probe cannot leak the secret it just read. Only stderr is
+  kept, for both runs, truncated to 400 characters; the control run's
+  stderr is what distinguishes an OS permission denial from a broken probe.
+- The control run executes each command as your user with full privileges:
+  it reads one byte of each protected file and opens each writable file for
+  append. Nothing is modified.
+- `--timeout` (default 30 s) bounds each command; a timeout yields `ERROR`.
+
+### Known limits
+
+- Only the SRT wrapper is exercised. Claude Code's native sandbox consumes
+  the same deny paths but is not probed.
+- `denyRead` globs, wildcard domains, and globs with wildcards in a
+  non-final segment are reported as `SKIP`, never silently dropped.
+- Bash deny/ask rules are application-layer and out of scope.
+- Probes run one after another; a long allowlist costs one HEAD request per
+  domain.
+
 ## Diagnostic output
 
 Generated JSON, TOML, rules, and Copilot flags stay unstyled on stdout so they
@@ -303,12 +474,30 @@ disables ANSI output. `--verbose` goes before the subcommand and reports
 lifecycle facts only: selected profile, mode, agent names, counts, target
 paths, caught exception tracebacks. It never prints policy contents, rule
 patterns, domains, environment values, or credentials. `test` is the
-exception: its debug lines show each probe command, which names the path or
-host under test.
+exception: with `-v` it traces the whole run on stderr so a verdict can be
+reproduced by hand. In order: the compiled profile, whether the settings file
+matches the fragments, the resolved `srt` binary and where its version came
+from, the preflight, the scratch directory, every derivation decision (which
+file inside a deny directory is probed, symlink detection, why a rule is
+skipped), the keyword filter, and per probe the control and sandboxed
+command as copyable `exec:` lines, each followed by `exit=<code> in <ms>ms`
+with the stderr tail, artifact cleanup, and the verdict with its reason:
+
+```
+Debug: exec: sh -c 'head -c 1 -- /Users/x/.ssh/config'
+Debug: exit=0 in 12ms
+Debug: exec: srt -s /Users/x/.srt-settings.json -c 'head -c 1 -- /Users/x/.ssh/config'
+Debug: exit=1 in 88ms stderr: head: /Users/x/.ssh/config: Operation not permitted
+Debug: verdict PASS read-deny ~/.ssh control=0 sandbox=1 101ms
+```
+
+Command stdout is still never captured or logged.
 
 ### `twsrt test` output
 
-The table lists one row per probe as it completes:
+How probes are derived and judged is described under
+[Sandbox probes](#sandbox-probes). The table lists one row per probe as it
+completes:
 
 ```
 srt 0.0.75, settings /Users/x/.srt-settings.json, 9 probes
@@ -334,17 +523,21 @@ sandboxed run. Statuses:
 
 | Status | Meaning |
 |---|---|
-| `PASS` | control succeeded; sandboxed run matched the expectation |
+| `PASS` | control succeeded and the sandboxed run matched the expectation, or a deny probe was refused by the OS itself (reason field says so) |
 | `FAIL` | rule not enforced (deny probe succeeded) or over-enforced (allow probe blocked) |
-| `INVALID` | control run failed: the probe proves nothing (file absent, host unreachable) |
+| `INVALID` | control run failed for a reason other than an OS permission denial: the probe proves nothing (file absent, host unreachable) |
 | `ERROR` | timeout, or srt could not apply the sandbox for that probe |
 | `SKIP` | no concrete probe derivable (glob deny-read, wildcard domain, absent path) |
 
 Command stdout is discarded for both runs and never captured, so a failing
 deny probe cannot leak the secret it just read. Only the sandboxed run's
-stderr is kept (last 400 characters). Write probes create their files below
-the first concrete `allowWrite` directory (`.` is the working directory) in a
-temporary `.twsrt-test-*` directory that is removed afterwards.
+stderr is kept (last 400 characters). Glob write probes create their files
+below the first concrete `allowWrite` directory (`.` is the working directory)
+in a temporary `.twsrt-test-*` directory that is removed afterwards. A
+`denyWrite` or `allowWrite` entry naming a directory gets a new file inside it
+that is removed after each run; one naming an existing file is opened for
+append without writing a byte (`: >> file`), which exercises the kernel's
+write check while leaving size, content, and mtime unchanged.
 
 Exit codes: `0` every executed probe passed, `1` any `FAIL`, `INVALID`, or
 `ERROR`, `2` configuration or settings missing, or the preflight
@@ -367,6 +560,7 @@ or `sandbox_apply` refused because twsrt itself runs inside a sandbox).
       "status": "FAIL",
       "control_exit": 0,
       "sandbox_exit": 0,
+      "control_stderr": "",
       "sandbox_stderr": "",
       "duration_ms": 90,
       "reason": "not blocked: command succeeded inside the sandbox"

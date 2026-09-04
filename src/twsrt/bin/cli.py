@@ -514,6 +514,8 @@ def test_command(
                 f"srt canonical drift: probing the on-disk {settings}; "
                 "run `twsrt generate -w` to apply fragment changes"
             )
+        else:
+            log.debug("settings %s match the compiled srt document", settings)
         version = preflight(settings)
     except (FileNotFoundError, ValueError, ProbeError) as exc:
         log.debug("Test setup failed", exc_info=True)
@@ -524,12 +526,13 @@ def test_command(
     with tempfile.TemporaryDirectory(
         dir=scratch_root(srt, cwd, home), prefix=".twsrt-test-"
     ) as scratch:
+        log.debug("scratch dir %s (cwd %s, home %s)", scratch, cwd, home)
         probes = derive_probes(srt, cwd, home, Path(scratch))
+        log.debug("derived %d probes", len(probes))
         if keyword:
+            derived = len(probes)
             probes = [p for p in probes if keyword in p.kind or keyword in p.rule]
-        log.debug(
-            "Derived %d probes (srt %s, settings %s)", len(probes), version, settings
-        )
+            log.debug("keyword %r kept %d of %d probes", keyword, len(probes), derived)
         widths = _probe_widths(probes)
         if not json_output:
             _info(f"srt {version}, settings {settings}, {len(probes)} probes")
@@ -539,21 +542,26 @@ def test_command(
                 )
             )
         results = []
-        for probe in probes:
+        for index, probe in enumerate(probes, start=1):
             log.debug(
-                "Probe kind=%s rule=%s command=%s",
+                "probe %d/%d %s %s expect=%s%s",
+                index,
+                len(probes),
                 probe.kind,
                 probe.rule,
-                probe.command,
+                probe.expect.value,
+                " (skipped)" if probe.skip_reason else "",
             )
             result = run_probe(probe, settings, timeout)
             log.debug(
-                "Result kind=%s rule=%s status=%s control=%s sandbox=%s",
+                "verdict %s %s %s control=%s sandbox=%s %dms%s",
+                result.status.value,
                 probe.kind,
                 probe.rule,
-                result.status.value,
                 result.control_exit,
                 result.sandbox_exit,
+                result.duration_ms,
+                f": {result.reason}" if result.reason else "",
             )
             results.append(result)
             if not json_output:
@@ -707,6 +715,7 @@ def _probe_report(
                 "status": result.status.value,
                 "control_exit": result.control_exit,
                 "sandbox_exit": result.sandbox_exit,
+                "control_stderr": result.control_stderr,
                 "sandbox_stderr": result.sandbox_stderr,
                 "duration_ms": result.duration_ms,
                 "reason": result.reason,

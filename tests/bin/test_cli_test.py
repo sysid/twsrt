@@ -276,16 +276,54 @@ class TestHumanOutput:
         assert "net-deny" in result.stdout
         assert all("secret.txt" not in argv[-1] for argv in fake.calls[2:])
 
-    def test_verbose_logs_each_command(self, tmp_path: Path) -> None:
+    def test_verbose_shows_the_whole_execution_flow(self, tmp_path: Path) -> None:
+        config, secret = _secret_config(tmp_path)
+        settings = tmp_path / ".srt-settings.json"
+        fake = FakeRunner(blocked=(str(secret), "example.com"))
+
+        with patch(RUN, fake):
+            result = runner.invoke(app, ["-v", "-c", str(config), "test", "-k", "read"])
+
+        assert result.exit_code == 0, result.output
+        debug = [
+            line.removeprefix("Debug: ")
+            for line in result.stderr.splitlines()
+            if line.startswith("Debug: ")
+        ]
+        # Setup: compile, settings check, preflight with copyable argv.
+        assert any(line.startswith("Compiled profile") for line in debug)
+        assert any(f"settings {settings}" in line and "match" in line for line in debug)
+        assert f"exec: srt -s {settings} -c true" in debug
+        assert any(line.startswith("preflight ok: srt 0.0.75") for line in debug)
+        # Derivation and filtering.
+        assert any("scratch" in line and ".twsrt-test-" in line for line in debug)
+        assert any("keyword 'read' kept 1 of 2 probes" in line for line in debug)
+        # Per probe: control and sandbox argv, exit codes, verdict with duration.
+        assert f"exec: sh -c 'head -c 1 -- {secret}'" in debug
+        assert f"exec: srt -s {settings} -c 'head -c 1 -- {secret}'" in debug
+        assert any(line.startswith("exit=0 ") for line in debug)
+        assert any(
+            line.startswith("exit=1 ") and "Operation not permitted" in line
+            for line in debug
+        )
+        assert any(
+            line.startswith("probe 1/1 read-deny") and "expect=deny" in line
+            for line in debug
+        )
+        assert any(
+            line.startswith("verdict PASS read-deny") and "ms" in line for line in debug
+        )
+
+    def test_without_verbose_no_commands_are_logged(self, tmp_path: Path) -> None:
         config, secret = _secret_config(tmp_path)
         fake = FakeRunner(blocked=(str(secret), "example.com"))
 
         with patch(RUN, fake):
-            result = runner.invoke(app, ["-v", "-c", str(config), "test"])
+            result = runner.invoke(app, ["-c", str(config), "test"])
 
         assert result.exit_code == 0, result.output
-        assert "Debug:" in result.stderr
-        assert "head -c 1" in result.stderr
+        assert "exec:" not in result.stderr
+        assert "Debug:" not in result.stderr
 
 
 class TestJsonOutput:

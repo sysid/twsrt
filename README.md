@@ -212,23 +212,30 @@ the profile in memory and catches both unapplied fragment edits and
 out-of-band changes to generated files.
 
 `test` derives one probe command per effective SRT rule from the compiled
-`~/.srt-settings.json` (a `head` on a file inside every `denyRead` path, a
-write matching every `denyWrite` glob, a `curl` per concrete domain, plus a
-canary for a host outside the allowlist) and runs each probe twice: plainly as
-a control, then under `srt -s <settings> -c`. A deny rule passes only if the
-control succeeds and the sandboxed run fails, so a missing file can never
-count as protected. Symlinked deny paths get a second probe on their real
+`~/.srt-settings.json` (a `head` on a file inside every `denyRead` path, an
+append-open that writes nothing for every `denyWrite` glob, directory, or
+file and every `allowWrite` directory or file, a `curl` per concrete domain,
+plus a canary for a host outside the allowlist) and runs each probe twice:
+plainly as
+a control, then under `srt -s <settings> -c`. A deny rule passes if the
+control succeeds and the sandboxed run fails, or if the OS itself refuses the
+control run (a root-owned directory), so a missing file can never count as
+protected while an already-protected path still does. Symlinked deny paths get a second probe on their real
 path, which exposes the macOS symlink no-op (see
 [Security model](#security-model)). Exit codes: `0` all probes passed, `1` any
 `FAIL`, `INVALID`, or `ERROR`, `2` settings missing or srt unable to sandbox.
 `--json` replaces the table with a machine-readable report. It must run from a
 plain terminal: inside another sandbox (Claude Code's Bash tool, Codex) srt
-cannot apply its profile and the preflight aborts with exit `2`.
+cannot apply its profile and the preflight aborts with exit `2`. Probe
+catalogue, verdict table, and safety properties:
+[Sandbox probes](doc/REFERENCE.md#sandbox-probes).
 
 Generated content goes to stdout unstyled; diagnostics go to stderr with
 color. `--verbose` before the subcommand adds debug output that never prints
-policy contents; the one exception is `test`, whose debug lines show the probe
-commands and therefore the deny paths being probed. Details in
+policy contents; the one exception is `test`, where `-v` traces the whole run:
+every executed command as a copyable line (`exec: sh -c ...`,
+`exec: srt -s ... -c ...`) with exit code, duration, and stderr, plus each
+derivation decision, so the deny paths under test do appear. Details in
 [Diagnostic output](doc/REFERENCE.md#diagnostic-output).
 
 ## Claude Code target
@@ -363,7 +370,7 @@ real path, so `denyRead: ["~/.aws"]` blocks nothing when `~/.aws` is a
 symlink. The `(realpath)` probe row turns that silent gap into a `FAIL`; the
 fix is to deny the real directory as well. Run it after every srt or agent
 upgrade. It exercises srt only; Claude Code's native sandbox and Codex are
-not probed.
+not probed. Mechanics: [Sandbox probes](doc/REFERENCE.md#sandbox-probes).
 
 Rule-by-rule translation: [Rule mapping per agent](doc/REFERENCE.md#rule-mapping-per-agent).
 Guarantees twsrt upholds: [Invariants](doc/REFERENCE.md#invariants).
