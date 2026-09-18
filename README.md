@@ -226,8 +226,12 @@ path, which exposes the macOS symlink no-op (see
 `FAIL`, `INVALID`, or `ERROR`, `2` settings missing or srt unable to sandbox.
 `--json` replaces the table with a machine-readable report. It must run from a
 plain terminal: inside another sandbox (Claude Code's Bash tool, Codex) srt
-cannot apply its profile and the preflight aborts with exit `2`. Probe
-catalogue, verdict table, and safety properties:
+cannot apply its profile and the preflight aborts with exit `2`. The probe set
+is derived, never authored: there is no test list to maintain, you change what
+is tested by changing the fragments and re-running `twsrt generate -w`. That
+also bounds what a green run means — `test` proves the rules you wrote are
+enforced, not that you wrote the right rules. Probe
+catalogue, verdict table, maintenance, and safety properties:
 [Sandbox probes](doc/REFERENCE.md#sandbox-probes).
 
 Generated content goes to stdout unstyled; diagnostics go to stderr with

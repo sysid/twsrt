@@ -444,8 +444,48 @@ printed as soon as its verdict is known.
   append. Nothing is modified.
 - `--timeout` (default 30 s) bounds each command; a timeout yields `ERROR`.
 
+### Maintaining the probe set
+
+There is no probe catalogue to maintain. Every probe is derived at run time
+from the effective rules in the compiled settings file, so the set of tests
+follows the rules and can never fall out of sync with them:
+
+```
+ srt fragments (*.jsonc)
+        │  twsrt generate -w
+        ▼
+ ~/.srt-settings.json                      read at test time
+        │  derive_probes()
+        ▼
+ Probe(kind, rule, command, expect)
+        │  run_probe(): control + sandbox
+        ▼
+ judge() → PASS | FAIL | INVALID | SKIP | ERROR
+```
+
+Three kinds of change, three different places:
+
+| To change | Edit | Consequence |
+|---|---|---|
+| which rules are probed | the registered JSONC fragments, then `twsrt generate -w` | the probe set follows automatically; no code change |
+| how a rule becomes a command | `derive_probes` and its `_read_deny` / `_write_deny` / `_write_allow` / `_network` helpers in `src/twsrt/lib/probe.py` | new probe shape; update the [probe catalogue](#probe-catalogue) above |
+| what counts as a pass | `judge` in the same module | update the [verdict table](#execution-model) above |
+
+A fragment edit that was never applied cannot be mistaken for a passing run:
+`test` compares the compiled document against the on-disk settings and warns
+`srt canonical drift` before probing the file srt actually enforces.
+
+Derivation and verdict logic are covered by `tests/lib/test_probe.py` and
+`tests/bin/test_cli_test.py`, which substitute a fake runner for
+`subprocess.run`; the unit tests never execute a probe or invoke `srt`.
+
 ### Known limits
 
+- **Enforcement, not intent.** Probes are derived from the rules that exist,
+  so a rule never written produces no row and no failure. `test` cannot say
+  that `~/.aws/credentials` is unprotected — only that every path already
+  denied is enforced. The allowlist canary is the one assertion not derived
+  from your own settings.
 - Only the SRT wrapper is exercised. Claude Code's native sandbox consumes
   the same deny paths but is not probed.
 - `denyRead` globs, wildcard domains, and globs with wildcards in a
