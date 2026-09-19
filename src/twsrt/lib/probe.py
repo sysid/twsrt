@@ -429,10 +429,13 @@ def run_probe(
 def preflight(
     settings: Path,
     run: Runner | None = None,
-    which: Callable[[str], str | None] = shutil.which,
+    which: Callable[[str], str | None] | None = None,
 ) -> str:
     """Verify srt is present and can sandbox a trivial command; return its version."""
+    # Resolved at call time, not as a default: a def-time default captures the
+    # original shutil.which and silently defeats patching it in tests.
     run = run or subprocess.run
+    which = which or shutil.which
     try:
         version = _srt_version(run, which)
         check = _execute(
