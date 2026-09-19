@@ -209,7 +209,7 @@ class TestGenerate:
     ) -> None:
         result = runner.invoke(app, ["-c", str(config_toml_file), "generate", "claude"])
         assert result.exit_code == 0, result.output
-        output = json.loads(result.output)
+        output = json.loads(result.stdout)
         assert "permissions" in output
         assert "deny" in output["permissions"]
 
@@ -246,6 +246,50 @@ class TestGenerate:
         assert result.exit_code == 0, result.output
         # Should produce valid output (JSON for claude at minimum)
         assert "permissions" in result.output
+
+    def test_generate_without_write_warns_in_red_that_nothing_was_written(
+        self, srt_file: Path, bash_rules_file: Path, config_toml_file: Path
+    ) -> None:
+        result = runner.invoke(
+            app,
+            ["-c", str(config_toml_file), "generate", "claude"],
+            env={"NO_COLOR": None},
+            color=True,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Nothing written" in result.stderr
+        assert "--write" in result.stderr
+        assert "\x1b[31m" in result.stderr
+        # The preview itself stays machine-readable on stdout.
+        assert "Nothing written" not in result.stdout
+        assert json.loads(result.stdout)["permissions"]
+
+    def test_generate_with_write_does_not_warn_about_nothing_written(
+        self,
+        srt_file: Path,
+        bash_rules_file: Path,
+        config_toml_file: Path,
+        claude_settings_file: Path,
+    ) -> None:
+        result = runner.invoke(
+            app, ["-c", str(config_toml_file), "generate", "claude", "--write"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Nothing written" not in result.output
+        assert "Nothing written" not in result.stderr
+
+    def test_generate_dry_run_without_write_warns_that_nothing_was_written(
+        self, srt_file: Path, bash_rules_file: Path, config_toml_file: Path
+    ) -> None:
+        """-n alone previews without writing — the same gotcha as bare generate."""
+        result = runner.invoke(
+            app, ["-c", str(config_toml_file), "generate", "claude", "--dry-run"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Nothing written" in result.stderr
 
     def test_generate_missing_source_exits_1(self, tmp_path: Path) -> None:
         config = tmp_path / "config.toml"
@@ -397,7 +441,7 @@ class TestUS1AcceptanceScenarios:
         config = _make_config(tmp_path, srt)
         result = runner.invoke(app, ["-c", str(config), "generate", "claude"])
         assert result.exit_code == 0
-        output = json.loads(result.output)
+        output = json.loads(result.stdout)
         deny = output["permissions"]["deny"]
         for path in ["~/.aws", "~/.ssh"]:
             assert f"Read({path})" in deny
@@ -421,7 +465,7 @@ class TestUS1AcceptanceScenarios:
         config = _make_config(tmp_path, srt)
         result = runner.invoke(app, ["-c", str(config), "generate", "claude"])
         assert result.exit_code == 0
-        output = json.loads(result.output)
+        output = json.loads(result.stdout)
         assert output["permissions"]["deny"] == []
         assert output["permissions"]["allow"] == []
 
@@ -435,7 +479,7 @@ class TestUS1AcceptanceScenarios:
         config = _make_config(tmp_path, srt)
         result = runner.invoke(app, ["-c", str(config), "generate", "claude"])
         assert result.exit_code == 0
-        output = json.loads(result.output)
+        output = json.loads(result.stdout)
         allow = output["permissions"]["allow"]
         assert "WebFetch(domain:github.com)" in allow
         assert "WebFetch(domain:*.github.com)" in allow
@@ -450,7 +494,7 @@ class TestUS1AcceptanceScenarios:
         config = _make_config(tmp_path, srt, bash_rules)
         result = runner.invoke(app, ["-c", str(config), "generate", "claude"])
         assert result.exit_code == 0
-        output = json.loads(result.output)
+        output = json.loads(result.stdout)
         deny = output["permissions"]["deny"]
         assert "Bash(rm)" in deny
         assert "Bash(rm *)" in deny
@@ -466,7 +510,7 @@ class TestUS1AcceptanceScenarios:
         config = _make_config(tmp_path, srt, bash_rules)
         result = runner.invoke(app, ["-c", str(config), "generate", "claude"])
         assert result.exit_code == 0
-        output = json.loads(result.output)
+        output = json.loads(result.stdout)
         ask = output["permissions"]["ask"]
         assert "Bash(git push)" in ask
         assert "Bash(git push *)" in ask
@@ -485,7 +529,7 @@ class TestUS1AcceptanceScenarios:
         config = _make_config(tmp_path, srt)
         result = runner.invoke(app, ["-c", str(config), "generate", "claude"])
         assert result.exit_code == 0
-        output = json.loads(result.output)
+        output = json.loads(result.stdout)
         deny = output["permissions"]["deny"]
         assert "Edit(**/.env)" in deny
         assert "Edit(**/*.pem)" in deny
@@ -862,7 +906,7 @@ class TestYoloGenerateClaude:
         config = _make_config(tmp_path, srt, bash_rules)
         result = runner.invoke(app, ["-c", str(config), "generate", "--yolo", "claude"])
         assert result.exit_code == 0, result.output
-        output = json.loads(result.output)
+        output = json.loads(result.stdout)
         assert "ask" not in output["permissions"]
         assert "Bash(rm)" in output["permissions"]["deny"]
         assert "Bash(git push)" not in output["permissions"]["deny"]

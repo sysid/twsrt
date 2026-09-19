@@ -199,7 +199,7 @@ Full example: [example/bash-rules.jsonc](example/bash-rules.jsonc).
 |---|---|
 | `twsrt config --init` | Create starter `config.toml` and fragments |
 | `twsrt config` | Open `config.toml` in `$EDITOR` |
-| `twsrt generate [claude\|codex\|copilot]` | Print the generated config for one agent, or all |
+| `twsrt generate [claude\|codex\|copilot]` | Print the generated config for one agent, or all. Writes nothing — a red stderr reminder says so |
 | `twsrt generate <agent> -w` | Write the canonical outputs and the agent target (selective merge) |
 | `twsrt generate <agent> -w -n` | Dry run: show what would be written |
 | `twsrt generate --yolo <agent>` | Yolo mode: no ask rules, `*.yolo.*` targets, yolo sandbox overrides |

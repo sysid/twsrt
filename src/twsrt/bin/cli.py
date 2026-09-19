@@ -31,6 +31,11 @@ def _warning(message: str) -> None:
     typer.secho(f"Warning: {message}", fg=typer.colors.YELLOW, err=True)
 
 
+def _alert(message: str) -> None:
+    """Red stderr note for a successful run whose outcome is easy to misread."""
+    typer.secho(message, fg=typer.colors.RED, bold=True, err=True)
+
+
 def _info(message: str) -> None:
     typer.secho(message, fg=typer.colors.CYAN)
 
@@ -399,6 +404,14 @@ def generate(
         if len(rendered) > 1:
             _info(f"--- {name} ---")
         typer.echo(output)
+
+    canonical = ", ".join(
+        str(document.output_path) for document in compiled.documents.values()
+    )
+    _alert(
+        f"Nothing written: preview only. Re-run with -w/--write to update "
+        f"{canonical} and the agent targets."
+    )
 
 
 @app.command()
