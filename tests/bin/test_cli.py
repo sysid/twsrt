@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
-from twsrt.bin.cli import __version__, _resolve_editor, app
+from twsrt.bin.cli import __version__, _editor_argv, _resolve_editor, app
 
 runner = CliRunner()
 
@@ -201,6 +201,262 @@ class TestInit:
             result = runner.invoke(app, ["-c", str(config), "config", "--init"])
         assert result.exit_code == 0
         assert config.read_text() == "old"
+
+
+class TestEdit:
+    """`twsrt edit` opens the fragments the resolved profile is made of."""
+
+    def test_dry_run_names_the_fragments_without_opening_an_editor(
+        self, srt_file: Path, bash_rules_file: Path, config_toml_file: Path
+    ) -> None:
+        with patch("twsrt.bin.cli.subprocess.run") as run:
+            result = runner.invoke(app, ["-c", str(config_toml_file), "edit", "-n"])
+
+        assert result.exit_code == 0, result.output
+        assert str(srt_file) in result.stdout
+        assert str(bash_rules_file) in result.stdout
+        run.assert_not_called()
+
+    def test_every_fragment_opens_in_one_editor_invocation(
+        self,
+        srt_file: Path,
+        bash_rules_file: Path,
+        config_toml_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("EDITOR", "dummy-editor")
+        with patch("twsrt.bin.cli.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0)
+            result = runner.invoke(app, ["-c", str(config_toml_file), "edit"])
+
+        assert result.exit_code == 0, result.output
+        run.assert_called_once()
+        argv = run.call_args[0][0]
+        # Source kind order follows config.toml: srt before bash.
+        assert argv[1:] == [str(srt_file), str(bash_rules_file)]
+
+    def test_one_source_kind_can_be_selected(
+        self,
+        srt_file: Path,
+        bash_rules_file: Path,
+        config_toml_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("EDITOR", "dummy-editor")
+        with patch("twsrt.bin.cli.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0)
+            result = runner.invoke(app, ["-c", str(config_toml_file), "edit", "srt"])
+
+        assert result.exit_code == 0, result.output
+        assert run.call_args[0][0][1:] == [str(srt_file)]
+
+    def test_an_unknown_kind_lists_the_available_ones(
+        self, srt_file: Path, bash_rules_file: Path, config_toml_file: Path
+    ) -> None:
+        result = runner.invoke(app, ["-c", str(config_toml_file), "edit", "bogus"])
+
+        assert result.exit_code == 1
+        assert "bogus" in result.stderr
+        assert "srt" in result.stderr and "bash" in result.stderr
+
+    def test_an_editor_with_arguments_is_split_into_argv(
+        self,
+        srt_file: Path,
+        bash_rules_file: Path,
+        config_toml_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """EDITOR='nvim -p' must exec nvim, not a binary called 'nvim -p'."""
+        monkeypatch.setenv("EDITOR", "nvim -p")
+
+        with patch("twsrt.bin.cli.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0)
+            result = runner.invoke(app, ["-c", str(config_toml_file), "edit"])
+
+        assert result.exit_code == 0, result.output
+        assert run.call_args[0][0][:2] == ["nvim", "-p"]
+
+    def test_the_editor_exit_code_is_passed_through(
+        self, srt_file: Path, bash_rules_file: Path, config_toml_file: Path
+    ) -> None:
+        with patch("twsrt.bin.cli.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=3)
+            result = runner.invoke(app, ["-c", str(config_toml_file), "edit"])
+
+        assert result.exit_code == 3
+
+    def test_a_missing_editor_is_reported(
+        self,
+        srt_file: Path,
+        bash_rules_file: Path,
+        config_toml_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("EDITOR", "definitely-not-an-editor")
+
+        with patch("twsrt.bin.cli.subprocess.run", side_effect=FileNotFoundError):
+            result = runner.invoke(app, ["-c", str(config_toml_file), "edit"])
+
+        assert result.exit_code == 1
+        assert "definitely-not-an-editor" in result.stderr
+
+    def test_a_registered_fragment_missing_on_disk_warns_but_still_opens(
+        self, srt_file: Path, bash_rules_file: Path, config_toml_file: Path
+    ) -> None:
+        """Opening a not-yet-existing fragment is how you create one."""
+        srt_file.unlink()
+
+        with patch("twsrt.bin.cli.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0)
+            result = runner.invoke(app, ["-c", str(config_toml_file), "edit"])
+
+        assert "Warning" in result.stderr
+        assert str(srt_file) in run.call_args[0][0]
+        # The editor was mocked, so the fragment is still absent afterwards and
+        # the policy still does not compile -- which the report must say.
+        assert result.exit_code == 1
+        assert "not found" in result.stderr.lower()
+
+    def test_verbose_dry_run_shows_the_exact_editor_command(
+        self,
+        srt_file: Path,
+        bash_rules_file: Path,
+        config_toml_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A dry run that hides the -p it would pass is not much of a dry run."""
+        monkeypatch.setenv("EDITOR", "nvim")
+
+        result = runner.invoke(
+            app, ["--verbose", "-c", str(config_toml_file), "edit", "-n"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "nvim -p" in result.stderr
+
+    def test_an_unstattable_fragment_warns_instead_of_crashing(
+        self, srt_file: Path, bash_rules_file: Path, config_toml_file: Path
+    ) -> None:
+        """Path.exists() raises on EPERM; a sandbox or TCC-protected dir hits this."""
+        real_exists = Path.exists
+
+        def exists(self: Path, **kwargs) -> bool:
+            if self == srt_file:
+                raise PermissionError(1, "Operation not permitted")
+            return real_exists(self, **kwargs)
+
+        with patch.object(Path, "exists", exists):
+            with patch("twsrt.bin.cli.subprocess.run") as run:
+                run.return_value = MagicMock(returncode=0)
+                result = runner.invoke(app, ["-c", str(config_toml_file), "edit", "-n"])
+
+        assert result.exit_code == 0, result.output
+        assert "Operation not permitted" in result.stderr
+        assert str(srt_file) in result.stdout, "still offered for editing"
+
+    def test_drift_after_editing_points_at_the_regenerate_command(
+        self, srt_file: Path, bash_rules_file: Path, config_toml_file: Path
+    ) -> None:
+        with patch("twsrt.bin.cli.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0)
+            result = runner.invoke(app, ["-c", str(config_toml_file), "edit"])
+
+        # No canonical output has ever been written, so the compiled srt
+        # document cannot match disk.
+        assert result.exit_code == 0, result.output
+        assert "drift" in result.output
+        assert "twsrt generate -w" in result.output
+
+    def test_no_drift_is_reported_when_the_targets_are_current(
+        self,
+        srt_file: Path,
+        bash_rules_file: Path,
+        config_toml_file: Path,
+        tmp_path: Path,
+    ) -> None:
+        with patch("twsrt.bin.cli.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0)
+            runner.invoke(app, ["-c", str(config_toml_file), "generate", "-w"])
+            result = runner.invoke(app, ["-c", str(config_toml_file), "edit"])
+
+        assert result.exit_code == 0, result.output
+        assert "no drift" in result.output
+        assert "twsrt generate -w" not in result.output
+
+    def test_a_fragment_broken_during_editing_fails_loudly(
+        self, srt_file: Path, bash_rules_file: Path, config_toml_file: Path
+    ) -> None:
+        """The editor still ran; the policy is now unusable and must say so."""
+
+        def break_the_fragment(*args, **kwargs):
+            srt_file.write_text("{ this is not json")
+            return MagicMock(returncode=0)
+
+        with patch("twsrt.bin.cli.subprocess.run", side_effect=break_the_fragment):
+            result = runner.invoke(app, ["-c", str(config_toml_file), "edit"])
+
+        assert result.exit_code == 1
+        assert "Error" in result.stderr
+
+    def test_a_broken_fragment_still_opens_so_it_can_be_fixed(
+        self, srt_file: Path, bash_rules_file: Path, config_toml_file: Path
+    ) -> None:
+        """edit resolves the profile; it must not compile before opening."""
+        srt_file.write_text("{ broken before we even start")
+
+        with patch("twsrt.bin.cli.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0)
+            result = runner.invoke(app, ["-c", str(config_toml_file), "edit"])
+
+        run.assert_called_once()
+        assert str(srt_file) in run.call_args[0][0]
+        assert result.exit_code == 1, "but the post-edit report still fails"
+
+
+class TestEditorArgv:
+    """One tab per file where the editor supports it; nothing clever elsewhere."""
+
+    FILES = [Path("/tmp/a.jsonc"), Path("/tmp/b.jsonc")]
+
+    def test_nvim_gets_a_tab_per_file(self) -> None:
+        assert _editor_argv(["nvim"], self.FILES) == [
+            "nvim",
+            "-p",
+            "/tmp/a.jsonc",
+            "/tmp/b.jsonc",
+        ]
+
+    def test_the_whole_vim_family_gets_it(self) -> None:
+        for name in ("vim", "gvim", "mvim"):
+            assert _editor_argv([name], self.FILES)[:2] == [name, "-p"]
+
+    def test_an_absolute_path_is_matched_on_its_basename(self) -> None:
+        argv = _editor_argv(["/opt/homebrew/bin/nvim"], self.FILES)
+        assert argv[:2] == ["/opt/homebrew/bin/nvim", "-p"]
+
+    def test_an_editor_that_already_carries_arguments_is_left_alone(self) -> None:
+        """`EDITOR='nvim -O'` is a stated preference; do not second-guess it."""
+        assert _editor_argv(["nvim", "-O"], self.FILES) == [
+            "nvim",
+            "-O",
+            "/tmp/a.jsonc",
+            "/tmp/b.jsonc",
+        ]
+
+    def test_other_editors_just_get_the_files(self) -> None:
+        assert _editor_argv(["code"], self.FILES) == [
+            "code",
+            "/tmp/a.jsonc",
+            "/tmp/b.jsonc",
+        ]
+
+    def test_plain_vi_is_left_alone_for_portability(self) -> None:
+        """vi is the fallback; a real POSIX vi has no -p."""
+        assert _editor_argv(["vi"], self.FILES) == [
+            "vi",
+            "/tmp/a.jsonc",
+            "/tmp/b.jsonc",
+        ]
 
 
 class TestGenerate:
@@ -1600,17 +1856,24 @@ class TestResolveEditor:
 
     def test_returns_editor_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("EDITOR", "nvim")
-        assert _resolve_editor() == "nvim"
+        assert _resolve_editor() == ["nvim"]
+
+    def test_an_editor_carrying_arguments_is_split(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`EDITOR="code -w"` is conventional; it is argv, not one binary name."""
+        monkeypatch.setenv("EDITOR", "code -w")
+        assert _resolve_editor() == ["code", "-w"]
 
     def test_falls_back_to_visual(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("EDITOR", raising=False)
         monkeypatch.setenv("VISUAL", "code")
-        assert _resolve_editor() == "vi"
+        assert _resolve_editor() == ["vi"]
 
     def test_falls_back_to_vi(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("EDITOR", raising=False)
         monkeypatch.delenv("VISUAL", raising=False)
-        assert _resolve_editor() == "vi"
+        assert _resolve_editor() == ["vi"]
 
 
 class TestEditSrt:
@@ -1682,17 +1945,16 @@ class TestEditBash:
         assert config.read_text() == "existing"
 
 
-class TestEditNoArgument:
-    """T012-T013: obsolete bootstrap/edit commands are removed."""
+class TestRemovedCommands:
+    """The obsolete bootstrap command stays removed.
 
-    def test_edit_no_argument_shows_sources(self, tmp_path: Path) -> None:
-        """T012: edit with no argument lists available sources."""
-        config = tmp_path / "config.toml"
-        result = runner.invoke(app, ["-c", str(config), "edit"])
-        assert result.exit_code == 2
+    The sibling guard for `edit` is gone: `edit` is back, but inverted. The
+    removed one opened the generated outputs (config.srt_path,
+    config.bash_rules_path); TestEdit covers the replacement, which opens the
+    source fragments a profile selects.
+    """
 
-    def test_edit_invalid_source_exits_1(self, tmp_path: Path) -> None:
-        """T013: edit with invalid source shows error and valid sources."""
+    def test_init_is_not_a_command(self) -> None:
         result = runner.invoke(app, ["init"])
         assert result.exit_code == 2
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 import subprocess
 import tempfile
 from pathlib import Path
@@ -331,12 +332,116 @@ def config_command(
 
     editor = _resolve_editor()
     try:
-        result = subprocess.run([editor, str(target)])
+        result = subprocess.run([*editor, str(target)])
     except FileNotFoundError:
         log.debug("Opening config in editor failed", exc_info=True)
-        _error(f"Editor not found: {editor}")
+        _error(f"Editor not found: {shlex.join(editor)}")
         raise typer.Exit(1)
     raise typer.Exit(result.returncode)
+
+
+@app.command()
+def edit(
+    ctx: typer.Context,
+    kind: str = typer.Argument(
+        "all", help="Source kind to edit: srt, bash, or all"
+    ),
+    profile: str | None = typer.Option(
+        None, "--profile", "-p", help="Canonical-source profile"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", "-n", help="Name the fragments, open nothing"
+    ),
+) -> None:
+    """Open the profile's canonical-source fragments in $EDITOR.
+
+    The complement of `config`: that opens the registry, this opens the policy.
+    Only the profile is resolved, never compiled, so a fragment with a syntax
+    error still opens -- that is exactly when you need an editor.
+    """
+    from twsrt.lib.config import load_config
+    from twsrt.lib.profiles import resolve_profile
+
+    config_path: Path = ctx.obj["config_path"]
+    try:
+        config = load_config(config_path)
+        resolved = resolve_profile(config, profile)
+    except (FileNotFoundError, ValueError) as exc:
+        log.debug("Edit setup failed", exc_info=True)
+        _error(str(exc))
+        raise typer.Exit(1)
+
+    if kind != "all" and kind not in config.sources:
+        available = ", ".join(sorted(config.sources))
+        _error(f"Unknown source kind {kind!r}; available: {available}")
+        raise typer.Exit(1)
+
+    # config.sources order, so srt precedes bash exactly as config.toml reads.
+    paths: list[Path] = []
+    for source_kind in config.sources:
+        if kind not in ("all", source_kind):
+            continue
+        for fragment in resolved.fragments.get(source_kind, []):
+            if fragment.path not in paths:
+                paths.append(fragment.path)
+
+    log.debug(
+        "Editing profile %r kind=%s fragments=%d", resolved.name, kind, len(paths)
+    )
+    for path in paths:
+        try:
+            absent = not path.exists()
+        except OSError as exc:
+            # exists() raises rather than returning False when the path cannot
+            # be stat'ed at all -- a sandbox deny, or a TCC-protected directory.
+            _warning(f"Cannot check fragment {path}: {exc.strerror or exc}")
+            continue
+        if absent:
+            # Registered but absent: opening it is how a new fragment is created.
+            _warning(f"Fragment does not exist yet: {path}")
+
+    editor = _resolve_editor()
+    argv = _editor_argv(editor, paths)
+    # Logged before the dry-run exit, so `-v -n` shows the exact command line.
+    log.debug("Opening %d fragments: %s", len(paths), shlex.join(argv))
+
+    if dry_run:
+        for path in paths:
+            _info(str(path))
+        return
+
+    try:
+        result = subprocess.run(argv)
+    except FileNotFoundError:
+        log.debug("Opening fragments in editor failed", exc_info=True)
+        _error(f"Editor not found: {shlex.join(editor)}")
+        raise typer.Exit(1)
+
+    _report_stale_targets(config_path, profile)
+    raise typer.Exit(result.returncode)
+
+
+def _report_stale_targets(config_path: Path, profile: str | None) -> None:
+    """After editing, say whether the generated targets still match the sources.
+
+    A fragment that no longer compiles exits non-zero: you just broke the policy
+    and should hear it now, not at the next agent launch. Drift only warns --
+    it is the expected outcome of an edit.
+    """
+    try:
+        _, compiled = _compile(config_path, profile, yolo=False)
+    except (FileNotFoundError, ValueError) as exc:
+        log.debug("Post-edit compile failed", exc_info=True)
+        _error(str(exc))
+        raise typer.Exit(1)
+
+    drifted = _canonical_drift(compiled)
+    if not drifted:
+        _success("canonical: no drift")
+        return
+    for kind in drifted:
+        _drift(f"{kind} canonical: drift")
+    _drift("run `twsrt generate -w` to apply fragment changes")
 
 
 @app.command()
@@ -438,14 +543,13 @@ def diff(
         "Diffing agents=%s",
         ",".join(generator.name for generator in generators),
     )
-    has_drift = False
-    for kind, document in compiled.documents.items():
-        actual = _read_json_object(document.output_path)
-        if actual == document.document:
-            _success(f"{kind} canonical: no drift")
-        else:
-            has_drift = True
+    drifted = _canonical_drift(compiled)
+    has_drift = bool(drifted)
+    for kind in compiled.documents:
+        if kind in drifted:
             _drift(f"{kind} canonical: drift")
+        else:
+            _success(f"{kind} canonical: no drift")
 
     for generator in generators:
         target = _resolve_diff_target(generator.name, config)
@@ -522,7 +626,7 @@ def test_command(
                 f"SRT settings not found: {settings}. Run `twsrt generate -w` first."
             )
         srt = read_srt(settings)
-        if _read_json_object(settings) != compiled.documents["srt"].document:
+        if "srt" in _canonical_drift(compiled):
             _warning(
                 f"srt canonical drift: probing the on-disk {settings}; "
                 "run `twsrt generate -w` to apply fragment changes"
@@ -902,15 +1006,46 @@ def _resolve_diff_target(name: str, config: AppConfig) -> Path | None:
     return None
 
 
-def _resolve_editor() -> str:
-    """Resolve the editor exactly like twagent: $EDITOR, then vi."""
-    return os.environ.get("EDITOR") or "vi"
+# Editors that take one tab per file. `vi` is deliberately absent: it is the
+# portable fallback and a genuine POSIX vi has no -p.
+_TAB_PER_FILE_EDITORS = frozenset({"vim", "nvim", "gvim", "mvim"})
+
+
+def _editor_argv(editor: list[str], paths: list[Path]) -> list[str]:
+    """Build the editor command line, one tab per file where that is supported.
+
+    An $EDITOR that already carries arguments is a stated preference and is
+    passed through untouched; only a bare vim-family binary is augmented.
+    """
+    argv = list(editor)
+    if len(argv) == 1 and Path(argv[0]).name in _TAB_PER_FILE_EDITORS:
+        argv.append("-p")
+    return [*argv, *(str(path) for path in paths)]
+
+
+def _resolve_editor() -> list[str]:
+    """Resolve the editor exactly like twagent: $EDITOR, then vi.
+
+    Split with shlex: the conventional `EDITOR="code -w"` or `EDITOR="nvim -p"`
+    is argv, and passing it as one string makes exec hunt for a binary whose
+    name contains a space.
+    """
+    return shlex.split(os.environ.get("EDITOR") or "vi")
 
 
 def _serialize(document: dict) -> str:
     from twsrt.lib.sources import serialize_document
 
     return serialize_document(document)
+
+
+def _canonical_drift(compiled: CompilationResult) -> list[str]:
+    """Source kinds whose compiled document no longer matches its output file."""
+    return [
+        kind
+        for kind, document in compiled.documents.items()
+        if _read_json_object(document.output_path) != document.document
+    ]
 
 
 def _read_json_object(path: Path) -> dict | None:

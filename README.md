@@ -71,8 +71,7 @@ uv tool install twsrt        # or: pip install twsrt
 
 twsrt config --init          # writes ~/.config/twsrt/config.toml + starter fragments
 twsrt config                 # opens config.toml in $EDITOR
-$EDITOR ~/.config/twsrt/srt/base.jsonc     # deny paths, allowed domains
-$EDITOR ~/.config/twsrt/bash/base.jsonc    # command deny / ask lists
+twsrt edit                   # opens the profile's fragments: deny paths, domains, command rules
 
 twsrt generate claude        # preview what would be written
 twsrt generate claude -w     # write ~/.claude/settings.full.json, point settings.json at it
@@ -199,6 +198,8 @@ Full example: [example/bash-rules.jsonc](example/bash-rules.jsonc).
 |---|---|
 | `twsrt config --init` | Create starter `config.toml` and fragments |
 | `twsrt config` | Open `config.toml` in `$EDITOR` |
+| `twsrt edit [srt\|bash]` | Open the fragments the profile selects in `$EDITOR`, then report whether the targets are now stale |
+| `twsrt edit -p work -n` | Name the fragments profile `work` is made of, open nothing |
 | `twsrt generate [claude\|codex\|copilot]` | Print the generated config for one agent, or all. Writes nothing — a red stderr reminder says so |
 | `twsrt generate <agent> -w` | Write the canonical outputs and the agent target (selective merge) |
 | `twsrt generate <agent> -w -n` | Dry run: show what would be written |
@@ -206,6 +207,12 @@ Full example: [example/bash-rules.jsonc](example/bash-rules.jsonc).
 | `twsrt generate -p work <agent>` | Use profile `work` instead of `default_profile` |
 | `twsrt diff [agent] [--yolo]` | Compare fragments against canonical outputs and targets on disk |
 | `twsrt test [-k TEXT] [--json]` | Prove the compiled SRT settings are enforced by probing the sandbox |
+
+`edit` opens every selected fragment in one editor invocation. A bare `vim`,
+`nvim`, `gvim` or `mvim` gets `-p`, so each fragment lands in its own tab; every
+other editor just receives the files. An `$EDITOR` that already carries
+arguments (`EDITOR="nvim -O"`, `EDITOR="code -w"`) is passed through untouched.
+`twsrt -v edit -n` prints the exact command line without running it.
 
 `diff` exit codes: `0` no drift, `1` drift, `2` target missing. It compiles
 the profile in memory and catches both unapplied fragment edits and

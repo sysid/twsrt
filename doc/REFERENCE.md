@@ -467,7 +467,7 @@ Three kinds of change, three different places:
 
 | To change | Edit | Consequence |
 |---|---|---|
-| which rules are probed | the registered JSONC fragments, then `twsrt generate -w` | the probe set follows automatically; no code change |
+| which rules are probed | the registered JSONC fragments (`twsrt edit`), then `twsrt generate -w` | the probe set follows automatically; no code change |
 | how a rule becomes a command | `derive_probes` and its `_read_deny` / `_write_deny` / `_write_allow` / `_network` helpers in `src/twsrt/lib/probe.py` | new probe shape; update the [probe catalogue](#probe-catalogue) above |
 | what counts as a pass | `judge` in the same module | update the [verdict table](#execution-model) above |
 

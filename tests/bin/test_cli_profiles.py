@@ -180,3 +180,33 @@ def test_diff_reports_canonical_output_drift(tmp_path: Path) -> None:
 
     assert result.exit_code == 1
     assert "srt canonical: drift" in result.output
+
+
+def test_edit_opens_the_fragments_the_profile_inherits(tmp_path: Path) -> None:
+    """`work` extends `base`, so editing it opens both srt fragments, in order."""
+    config, _ = make_profile_config(tmp_path)
+    fragments = tmp_path / "fragments"
+
+    with patch("twsrt.bin.cli.subprocess.run") as run:
+        run.return_value = MagicMock(returncode=0)
+        result = runner.invoke(app, ["-c", str(config), "edit", "-p", "work", "-n"])
+
+    assert result.exit_code == 0, result.output
+    opened = [line for line in result.stdout.splitlines() if line.strip()]
+    assert opened == [
+        str(fragments / "srt-base.jsonc"),
+        str(fragments / "srt-work.jsonc"),
+        str(fragments / "bash-base.jsonc"),
+    ]
+    run.assert_not_called()
+
+
+def test_edit_defaults_to_the_configured_profile(tmp_path: Path) -> None:
+    """default_profile is `base`, which selects no srt-work fragment."""
+    config, _ = make_profile_config(tmp_path)
+
+    result = runner.invoke(app, ["-c", str(config), "edit", "-n"])
+
+    assert result.exit_code == 0, result.output
+    assert "srt-work.jsonc" not in result.stdout
+    assert "srt-base.jsonc" in result.stdout
