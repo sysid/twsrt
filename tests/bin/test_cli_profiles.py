@@ -290,6 +290,27 @@ def test_show_conflicting_fragments_exits_1(tmp_path: Path) -> None:
     assert "conflict at /enabled" in result.stderr
 
 
+def test_generate_yolo_write_leaves_the_canonical_srt_document_unchanged(
+    tmp_path: Path,
+) -> None:
+    """Canonical config depends on the profile only; yolo overrides stay agent-side."""
+    config, claude_target = make_profile_config(tmp_path)
+    with config.open("a") as handle:
+        handle.write("\n[sandbox_overrides.yolo]\nenabled = false\n")
+
+    result = runner.invoke(
+        app, ["-c", str(config), "generate", "claude", "--yolo", "--write"]
+    )
+
+    assert result.exit_code == 0, result.output
+    yolo_target = claude_target.parent / "settings.yolo.json"
+    assert json.loads(yolo_target.read_text())["sandbox"]["enabled"] is False
+    assert json.loads((tmp_path / "compiled/srt.json").read_text()) == {
+        "enabled": True,
+        "filesystem": {"denyRead": ["~/.ssh"]},
+    }
+
+
 @pytest.mark.parametrize(
     ("argv", "exit_code"),
     [

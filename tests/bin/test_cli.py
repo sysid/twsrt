@@ -31,6 +31,28 @@ class TestBareInvocation:
         assert "Usage" in result.output
         assert "config" in result.output
 
+    def test_top_level_help_explains_canonical_config_feeds_agent_translations(
+        self,
+    ) -> None:
+        result = runner.invoke(app, ["--help"], env={"COLUMNS": "200", "NO_COLOR": "1"})
+
+        assert result.exit_code == 0, result.output
+        # Rich wraps help text at terminal width; compare the words, not lines.
+        help_text = " ".join(result.output.split())
+        assert "canonical config" in help_text
+        assert "input for every agent translation" in help_text
+
+    def test_show_help_says_its_output_is_the_input_for_agent_translations(
+        self,
+    ) -> None:
+        result = runner.invoke(
+            app, ["show", "--help"], env={"COLUMNS": "200", "NO_COLOR": "1"}
+        )
+
+        assert result.exit_code == 0, result.output
+        help_text = " ".join(result.output.split())
+        assert "input for every agent translation" in help_text
+
 
 class TestDiagnosticOutput:
     def test_warning_is_yellow_on_stderr_without_coloring_generated_stdout(
@@ -546,6 +568,32 @@ class TestGenerate:
 
         assert result.exit_code == 0, result.output
         assert "Nothing written" in result.stderr
+
+    def test_generate_help_says_preview_is_default_and_dry_run_needs_write(
+        self,
+    ) -> None:
+        """-n alone is a no-op; the help must not let users believe otherwise."""
+        result = runner.invoke(
+            app, ["generate", "--help"], env={"COLUMNS": "200", "NO_COLOR": "1"}
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Without -w nothing is written" in result.output
+        assert "Only with -w" in result.output
+        assert "alone it changes nothing" in result.output
+
+    def test_generate_help_says_write_also_rewrites_canonical_for_any_agent(
+        self,
+    ) -> None:
+        """`generate copilot -w` rewriting ~/.srt-settings.json must not surprise."""
+        result = runner.invoke(
+            app, ["generate", "--help"], env={"COLUMNS": "200", "NO_COLOR": "1"}
+        )
+
+        assert result.exit_code == 0, result.output
+        help_text = " ".join(result.output.split())
+        assert "whichever agent is named" in help_text
+        assert "translated from the canonical config" in help_text
 
     def test_generate_missing_source_exits_1(self, tmp_path: Path) -> None:
         config = tmp_path / "config.toml"
