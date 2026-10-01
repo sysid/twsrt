@@ -343,9 +343,7 @@ def config_command(
 @app.command()
 def edit(
     ctx: typer.Context,
-    kind: str = typer.Argument(
-        "all", help="Source kind to edit: srt, bash, or all"
-    ),
+    kind: str = typer.Argument("all", help="Source kind to edit: srt, bash, or all"),
     profile: str | None = typer.Option(
         None, "--profile", "-p", help="Canonical-source profile"
     ),
@@ -517,6 +515,35 @@ def generate(
         f"Nothing written: preview only. Re-run with -w/--write to update "
         f"{canonical} and the agent targets."
     )
+
+
+@app.command()
+def show(
+    ctx: typer.Context,
+    kind: str = typer.Argument("srt", help="Source kind to show: srt or bash"),
+    profile: str | None = typer.Option(
+        None, "--profile", "-p", help="Canonical-source profile"
+    ),
+) -> None:
+    """Print the compiled canonical document (e.g. ~/.srt-settings.json).
+
+    Writes nothing. Prints exactly what `generate -w` would write for the
+    profile. Agent and --yolo do not change canonical documents, so neither
+    is accepted here.
+    """
+    try:
+        _, compiled = _compile(ctx.obj["config_path"], profile, yolo=False)
+    except (FileNotFoundError, ValueError) as exc:
+        log.debug("Show setup failed", exc_info=True)
+        _error(str(exc))
+        raise typer.Exit(1)
+
+    if kind not in compiled.documents:
+        available = ", ".join(sorted(compiled.documents))
+        _error(f"Unknown source kind {kind!r}; available: {available}")
+        raise typer.Exit(1)
+
+    typer.echo(_serialize(compiled.documents[kind].document), nl=False)
 
 
 @app.command()

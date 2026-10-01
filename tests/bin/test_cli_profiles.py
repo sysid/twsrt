@@ -210,3 +210,80 @@ def test_edit_defaults_to_the_configured_profile(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "srt-work.jsonc" not in result.stdout
     assert "srt-base.jsonc" in result.stdout
+
+
+def test_show_prints_the_compiled_srt_document_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    config, claude_target = make_profile_config(tmp_path)
+
+    result = runner.invoke(app, ["-c", str(config), "show", "srt"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == {
+        "enabled": True,
+        "filesystem": {"denyRead": ["~/.ssh"]},
+    }
+    assert not (tmp_path / "compiled").exists()
+    assert not claude_target.exists()
+
+
+def test_show_defaults_to_the_srt_document(tmp_path: Path) -> None:
+    config, _ = make_profile_config(tmp_path)
+
+    result = runner.invoke(app, ["-c", str(config), "show"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["enabled"] is True
+
+
+def test_show_bash_prints_the_compiled_bash_rules(tmp_path: Path) -> None:
+    config, _ = make_profile_config(tmp_path)
+
+    result = runner.invoke(app, ["-c", str(config), "show", "bash"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["deny"] == ["rm"]
+
+
+def test_show_explicit_profile_prints_that_profiles_union(tmp_path: Path) -> None:
+    config, _ = make_profile_config(tmp_path)
+
+    result = runner.invoke(app, ["-c", str(config), "show", "srt", "-p", "work"])
+
+    assert result.exit_code == 0, result.output
+    shown = json.loads(result.stdout)
+    assert shown["filesystem"]["denyRead"] == ["~/.ssh", "~/.aws"]
+
+
+def test_show_prints_exactly_what_generate_write_would_write(tmp_path: Path) -> None:
+    """show is the preview of the canonical file, byte for byte."""
+    config, _ = make_profile_config(tmp_path)
+    shown = runner.invoke(app, ["-c", str(config), "show", "srt", "-p", "work"])
+    generated = runner.invoke(
+        app, ["-c", str(config), "generate", "claude", "-p", "work", "--write"]
+    )
+    assert generated.exit_code == 0, generated.output
+
+    assert shown.stdout == (tmp_path / "compiled/srt.json").read_text()
+
+
+def test_show_unknown_kind_exits_1_and_names_the_available_kinds(
+    tmp_path: Path,
+) -> None:
+    config, _ = make_profile_config(tmp_path)
+
+    result = runner.invoke(app, ["-c", str(config), "show", "claude"])
+
+    assert result.exit_code == 1
+    assert "Unknown source kind 'claude'" in result.stderr
+    assert "bash, srt" in result.stderr
+
+
+def test_show_conflicting_fragments_exits_1(tmp_path: Path) -> None:
+    config, _ = make_profile_config(tmp_path, conflicting=True)
+
+    result = runner.invoke(app, ["-c", str(config), "show", "srt", "-p", "work"])
+
+    assert result.exit_code == 1
+    assert "conflict at /enabled" in result.stderr
