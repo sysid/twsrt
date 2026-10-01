@@ -66,8 +66,8 @@ def test_compile_sources_unions_documents_and_derives_rules(tmp_path: Path) -> N
     compiled = compile_sources(config, resolve_profile(config))
 
     assert compiled.documents["srt"].document["filesystem"]["denyRead"] == [
-        "~/.ssh",
         "~/.aws",
+        "~/.ssh",
     ]
     assert compiled.documents["bash"].document == {
         "allow": ["git status"],
@@ -80,6 +80,34 @@ def test_compile_sources_unions_documents_and_derives_rules(tmp_path: Path) -> N
         and rule.pattern == "git push"
         for rule in compiled.rules
     )
+
+
+def test_compile_sources_sorts_schema_sets_but_keeps_pass_through_list_order(
+    tmp_path: Path,
+) -> None:
+    """Known rule lists are sets; an unknown pass-through list may be argv."""
+    config = load_config(
+        configured_profile(
+            tmp_path,
+            """{
+  "network": {"allowedDomains": ["anthropic.com"], "allowUnixSockets": ["/tmp/b", "/tmp/a"]},
+  "ignoreViolations": {"*": ["/usr/bin", "/System"]},
+  "ripgrep": {"command": "rg", "args": ["--hidden", "-g", "!.git"]}
+}""",
+            '{"allow": ["ls"], "deny": ["sudo", "rm"]}',
+        )
+    )
+
+    compiled = compile_sources(config, resolve_profile(config))
+
+    srt = compiled.documents["srt"].document
+    assert srt["network"]["allowedDomains"] == ["anthropic.com", "github.com"]
+    assert srt["network"]["allowUnixSockets"] == ["/tmp/a", "/tmp/b"]
+    assert srt["ignoreViolations"] == {"*": ["/System", "/usr/bin"]}
+    assert srt["ripgrep"]["args"] == ["--hidden", "-g", "!.git"]
+    bash = compiled.documents["bash"].document
+    assert bash["allow"] == ["git status", "ls"]
+    assert bash["deny"] == ["rm", "sudo"]
 
 
 def test_claude_output_covers_every_denied_path_via_rules(tmp_path: Path) -> None:

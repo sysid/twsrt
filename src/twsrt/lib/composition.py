@@ -16,8 +16,15 @@ def compose_documents(
     profile_name: str,
     source_kind: str,
     fragments: list[tuple[SourceFragment, dict[str, Any]]],
+    set_paths: tuple[str, ...] = (),
 ) -> dict[str, Any]:
-    """Union documents, rejecting every unequal scalar or type conflict."""
+    """Union documents, rejecting every unequal scalar or type conflict.
+
+    String lists at `set_paths` (JSON pointers; `*` matches any key) come back
+    sorted, so the generated artifacts do not depend on fragment order and diff
+    cleanly between profiles and runs. Every other list keeps first-seen order:
+    an unknown pass-through list may be a sequence such as argv.
+    """
     result: dict[str, Any] = {}
     origins: dict[str, SourceFragment] = {}
     for fragment, document in fragments:
@@ -30,7 +37,23 @@ def compose_documents(
             profile_name,
             source_kind,
         )
+    for set_path in set_paths:
+        _sort_set(result, set_path.strip("/").split("/"))
     return result
+
+
+def _sort_set(node: Any, segments: list[str]) -> None:
+    if not isinstance(node, dict):
+        return
+    head, rest = segments[0], segments[1:]
+    keys = list(node) if head == "*" else [head] if head in node else []
+    for key in keys:
+        if rest:
+            _sort_set(node[key], rest)
+        elif isinstance(node[key], list) and all(
+            isinstance(item, str) for item in node[key]
+        ):
+            node[key] = sorted(node[key])
 
 
 def _merge(

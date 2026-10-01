@@ -146,8 +146,11 @@ claude-yolo() { twsrt generate --yolo -w claude; claude --allow-dangerously-skip
 | Target | An agent config file translated from the canonical output: Claude settings, Codex config and rules, Copilot flags. |
 | Mode | `full` (default) keeps ask rules and interactive approval. `--yolo` drops ask rules and writes to separate `*.yolo.*` targets, for launches that skip permission prompts. |
 
-Composition merges objects recursively and unions arrays. Conflicting scalars
-or opposing allow/deny rules fail with the path and the fragments involved.
+Composition merges objects recursively and unions arrays. Rule arrays (paths,
+domains, sockets, commands) are sorted, so generated artifacts do not depend on
+fragment order; every other array, including unknown pass-through keys, keeps
+fragment order. Conflicting scalars or opposing allow/deny rules fail with the
+path and the fragments involved.
 Nothing is written until every target rendered cleanly. Details in
 [Compiler model](doc/REFERENCE.md#compiler-model).
 

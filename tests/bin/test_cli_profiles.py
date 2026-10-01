@@ -153,7 +153,7 @@ def test_generate_explicit_profile_changes_compiled_union(tmp_path: Path) -> Non
 
     assert result.exit_code == 0, result.output
     compiled = json.loads((tmp_path / "compiled/srt.json").read_text())
-    assert compiled["filesystem"]["denyRead"] == ["~/.ssh", "~/.aws"]
+    assert compiled["filesystem"]["denyRead"] == ["~/.aws", "~/.ssh"]
 
 
 def test_generate_conflict_fails_before_writing_any_output(tmp_path: Path) -> None:
@@ -254,7 +254,7 @@ def test_show_explicit_profile_prints_that_profiles_union(tmp_path: Path) -> Non
 
     assert result.exit_code == 0, result.output
     shown = json.loads(result.stdout)
-    assert shown["filesystem"]["denyRead"] == ["~/.ssh", "~/.aws"]
+    assert shown["filesystem"]["denyRead"] == ["~/.aws", "~/.ssh"]
 
 
 def test_show_prints_exactly_what_generate_write_would_write(tmp_path: Path) -> None:

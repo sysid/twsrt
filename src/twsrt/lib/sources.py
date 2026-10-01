@@ -40,6 +40,16 @@ _SRT_LISTS = {
     "network": ("allowedDomains", "deniedDomains"),
 }
 _BASH_ACTIONS = ("allow", "ask", "deny")
+# Lists whose order carries no meaning, sorted on compile for stable output.
+# Anything else -- notably unknown pass-through keys -- keeps fragment order.
+_SET_PATHS = {
+    "srt": (
+        *(f"/{section}/{key}" for section, keys in _SRT_LISTS.items() for key in keys),
+        "/network/allowUnixSockets",
+        "/ignoreViolations/*",
+    ),
+    "bash": tuple(f"/{action}" for action in _BASH_ACTIONS),
+}
 
 
 def compile_sources(config: AppConfig, profile: ResolvedProfile) -> CompilationResult:
@@ -50,7 +60,9 @@ def compile_sources(config: AppConfig, profile: ResolvedProfile) -> CompilationR
     for kind, fragments in profile.fragments.items():
         loaded = [(fragment, load_jsonc(fragment.path)) for fragment in fragments]
         _validate_loaded_fragments(profile.name, kind, loaded)
-        document = compose_documents(profile.name, kind, loaded)
+        document = compose_documents(
+            profile.name, kind, loaded, set_paths=_SET_PATHS.get(kind, ())
+        )
         loaded_by_kind[kind] = loaded
         documents[kind] = CompiledDocument(
             source_kind=kind,

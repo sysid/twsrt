@@ -268,8 +268,13 @@ printed.
 | Compiled document | Strict JSON from recursively composing one source kind's selected fragments. |
 | Agent target | Configuration derived from the normalized rules after compilation succeeds. |
 
-Composition rules: objects merge recursively, arrays form a stable
-deduplicated union, equal scalars agree. Unequal scalars, incompatible types,
+Composition rules: objects merge recursively, arrays form a deduplicated
+union, equal scalars agree. The rule arrays the schema knows to be sets
+(`filesystem.*`, `network.allowedDomains`/`deniedDomains`/`allowUnixSockets`,
+`ignoreViolations.*`, Bash `allow`/`ask`/`deny`) are sorted, so the output is
+independent of fragment order; every other array keeps first-seen order,
+because an unknown pass-through list may be a sequence such as argv.
+Unequal scalars, incompatible types,
 cycles, missing source selections, unknown fragments, SRT allow/deny overlaps,
 and Bash allow/ask/deny overlaps fail with profile, path, and fragment
 context. Compilation and target rendering complete before `--write` touches
