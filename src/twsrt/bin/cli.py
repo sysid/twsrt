@@ -364,7 +364,7 @@ def edit(
     try:
         config = load_config(config_path)
         resolved = resolve_profile(config, profile)
-    except (FileNotFoundError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         log.debug("Edit setup failed", exc_info=True)
         _error(str(exc))
         raise typer.Exit(1)
@@ -428,7 +428,7 @@ def _report_stale_targets(config_path: Path, profile: str | None) -> None:
     """
     try:
         _, compiled = _compile(config_path, profile, yolo=False)
-    except (FileNotFoundError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         log.debug("Post-edit compile failed", exc_info=True)
         _error(str(exc))
         raise typer.Exit(1)
@@ -472,7 +472,7 @@ def generate(
         staged = (
             _stage_agent_files(generators, rendered, compiled, config) if write else {}
         )
-    except (FileExistsError, FileNotFoundError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         log.debug("Generation failed", exc_info=True)
         _error(str(exc))
         raise typer.Exit(1)
@@ -533,7 +533,7 @@ def show(
     """
     try:
         _, compiled = _compile(ctx.obj["config_path"], profile, yolo=False)
-    except (FileNotFoundError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         log.debug("Show setup failed", exc_info=True)
         _error(str(exc))
         raise typer.Exit(1)
@@ -561,7 +561,7 @@ def diff(
     try:
         config, compiled = _compile(ctx.obj["config_path"], profile, yolo)
         generators = _select_generators(agent, config, for_write=True)
-    except (FileNotFoundError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         log.debug("Diff setup failed", exc_info=True)
         _error(str(exc))
         raise typer.Exit(1)
@@ -661,7 +661,7 @@ def test_command(
         else:
             log.debug("settings %s match the compiled srt document", settings)
         version = preflight(settings)
-    except (FileNotFoundError, ValueError, ProbeError) as exc:
+    except (OSError, ValueError, ProbeError) as exc:
         log.debug("Test setup failed", exc_info=True)
         _error(str(exc))
         raise typer.Exit(2)

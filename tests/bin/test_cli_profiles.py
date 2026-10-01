@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 from twsrt.bin.cli import app
@@ -287,3 +288,50 @@ def test_show_conflicting_fragments_exits_1(tmp_path: Path) -> None:
 
     assert result.exit_code == 1
     assert "conflict at /enabled" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("argv", "exit_code"),
+    [
+        (["generate", "claude"], 1),
+        (["generate", "claude", "--write"], 1),
+        (["show", "srt"], 1),
+        (["diff", "claude"], 1),
+        (["test"], 2),
+    ],
+)
+def test_unreadable_fragment_is_a_clean_error_not_a_traceback(
+    tmp_path: Path, argv: list[str], exit_code: int
+) -> None:
+    """A sandbox deny or chmod 000 on a fragment names the file and exits."""
+    config, _ = make_profile_config(tmp_path)
+    fragment = tmp_path / "fragments" / "srt-base.jsonc"
+    fragment.chmod(0)
+    try:
+        result = runner.invoke(app, ["-c", str(config), *argv])
+    finally:
+        fragment.chmod(0o644)
+
+    assert result.exit_code == exit_code, result.output
+    assert not isinstance(result.exception, PermissionError)
+    assert "Permission denied" in result.stderr
+    assert str(fragment) in result.stderr
+
+
+def test_edit_reports_unreadable_fragment_after_the_editor_closes(
+    tmp_path: Path,
+) -> None:
+    """The post-edit compile must also fail cleanly, e.g. after a chmod."""
+    config, _ = make_profile_config(tmp_path)
+    fragment = tmp_path / "fragments" / "srt-base.jsonc"
+    fragment.chmod(0)
+    try:
+        with patch("twsrt.bin.cli.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0)
+            result = runner.invoke(app, ["-c", str(config), "edit", "srt"])
+    finally:
+        fragment.chmod(0o644)
+
+    assert result.exit_code == 1, result.output
+    assert not isinstance(result.exception, PermissionError)
+    assert str(fragment) in result.stderr
