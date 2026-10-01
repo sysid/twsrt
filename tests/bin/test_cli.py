@@ -4,12 +4,26 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import click
 import pytest
 from typer.testing import CliRunner
 
 from twsrt.bin.cli import __version__, _editor_argv, _resolve_editor, app
 
 runner = CliRunner()
+
+
+def _help_text(*argv: str) -> str:
+    """Rendered --help as plain words.
+
+    Typer forces Rich styling at import time under GITHUB_ACTIONS/FORCE_COLOR,
+    and NO_COLOR drops colour but not bold, so escape codes can split a phrase.
+    Rich also wraps at terminal width, and a narrow one splits option help
+    across table-cell borders: pin a wide terminal and compare words, not lines.
+    """
+    result = runner.invoke(app, [*argv, "--help"], env={"COLUMNS": "200"})
+    assert result.exit_code == 0, result.output
+    return " ".join(click.unstyle(result.output).split())
 
 
 class TestVersion:
@@ -34,23 +48,16 @@ class TestBareInvocation:
     def test_top_level_help_explains_canonical_config_feeds_agent_translations(
         self,
     ) -> None:
-        result = runner.invoke(app, ["--help"], env={"COLUMNS": "200", "NO_COLOR": "1"})
+        help_text = _help_text()
 
-        assert result.exit_code == 0, result.output
-        # Rich wraps help text at terminal width; compare the words, not lines.
-        help_text = " ".join(result.output.split())
         assert "canonical config" in help_text
         assert "input for every agent translation" in help_text
 
     def test_show_help_says_its_output_is_the_input_for_agent_translations(
         self,
     ) -> None:
-        result = runner.invoke(
-            app, ["show", "--help"], env={"COLUMNS": "200", "NO_COLOR": "1"}
-        )
+        help_text = _help_text("show")
 
-        assert result.exit_code == 0, result.output
-        help_text = " ".join(result.output.split())
         assert "input for every agent translation" in help_text
 
 
@@ -573,25 +580,18 @@ class TestGenerate:
         self,
     ) -> None:
         """-n alone is a no-op; the help must not let users believe otherwise."""
-        result = runner.invoke(
-            app, ["generate", "--help"], env={"COLUMNS": "200", "NO_COLOR": "1"}
-        )
+        help_text = _help_text("generate")
 
-        assert result.exit_code == 0, result.output
-        assert "Without -w nothing is written" in result.output
-        assert "Only with -w" in result.output
-        assert "alone it changes nothing" in result.output
+        assert "Without -w nothing is written" in help_text
+        assert "Only with -w" in help_text
+        assert "alone it changes nothing" in help_text
 
     def test_generate_help_says_write_also_rewrites_canonical_for_any_agent(
         self,
     ) -> None:
         """`generate copilot -w` rewriting ~/.srt-settings.json must not surprise."""
-        result = runner.invoke(
-            app, ["generate", "--help"], env={"COLUMNS": "200", "NO_COLOR": "1"}
-        )
+        help_text = _help_text("generate")
 
-        assert result.exit_code == 0, result.output
-        help_text = " ".join(result.output.split())
         assert "whichever agent is named" in help_text
         assert "translated from the canonical config" in help_text
 
