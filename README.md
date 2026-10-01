@@ -46,6 +46,55 @@ from the result:
                                                      Copilot CLI flags
 ```
 
+### Canonical config vs agent configs
+
+> **The canonical config is the input for every agent translation.**
+> `~/.srt-settings.json` and `bash-rules.json` are the compiled policy of one
+> profile: the single source of truth. SRT reads `~/.srt-settings.json`
+> directly; every agent config is translated from the same compile.
+
+```
+ stage 1: compile — depends on the profile only
+ ───────────────────────────────────────────────────────────────────────
+ fragments ─(profile)─► compose ─► canonical config (in memory)
+                                    ├─ srt  ──► ~/.srt-settings.json ──► read by SRT
+                                    └─ bash ──► bash-rules.json
+                                         │
+                                         ▼  parse
+                              normalized rules + sandbox/network/filesystem config
+                                         │
+ stage 2: translate — agent argument picks which generators run
+ ───────────────────────────────────────────────────────────────────────
+              ┌──────────────────────────┼──────────────────────────┐
+              ▼                          ▼                          ▼
+       Claude generator           Codex generator           Copilot generator
+       settings.full.json         config.toml + .rules      CLI flags
+
+ twsrt show            prints stage 1      generate <agent>      prints stage 2
+ generate <agent> -w   writes stage 1 (all of it) + stage 2 (that agent)
+```
+
+| | Canonical config | Agent configs |
+|---|---|---|
+| Files | `~/.srt-settings.json`, `bash-rules.json` | Claude `settings.full.json`, Codex `config.toml` + `.rules`, Copilot flags |
+| Role | Source of truth; SRT enforcement file | Lossy translations into each agent's native model |
+| Depends on | Profile only — never the agent, never `--yolo` | Canonical config + agent + `--yolo` |
+| Inspect | `twsrt show [srt\|bash]` | `twsrt generate <agent>` |
+| Written by | **every** `generate -w`, whichever agent is named | `generate <that agent> -w` |
+
+Consequences:
+
+- **`twsrt generate copilot -w` also rewrites `~/.srt-settings.json`.** The
+  agent argument only selects which translations run; the canonical outputs
+  are always rewritten so every target matches the policy it came from.
+- **Never hand-edit the canonical files.** Agent configs are translated from
+  the in-memory compile of the fragments, not from the files on disk, and the
+  next `generate -w` overwrites any hand edit. `twsrt diff` reports such an
+  edit as `srt canonical: drift`. Edit the fragments (`twsrt edit`) instead.
+- **One profile is in force at a time.** Output paths are per source kind, not
+  per profile: `generate -w -p work` and `generate -w` write the same files,
+  and the last run wins.
+
 Two enforcement layers come out of it:
 
 | Layer | Enforced by | Covers | Does not cover |
@@ -73,8 +122,9 @@ twsrt config --init          # writes ~/.config/twsrt/config.toml + starter frag
 twsrt config                 # opens config.toml in $EDITOR
 twsrt edit                   # opens the profile's fragments: deny paths, domains, command rules
 
-twsrt generate claude        # preview what would be written
-twsrt generate claude -w     # write ~/.claude/settings.full.json, point settings.json at it
+twsrt show                   # print the compiled canonical ~/.srt-settings.json
+twsrt generate claude        # preview the Claude translation; writes nothing
+twsrt generate claude -w     # write the canonical outputs + ~/.claude/settings.full.json
 twsrt diff                   # exit 0 when every target matches the fragments
 ```
 
@@ -92,8 +142,8 @@ claude-yolo() { twsrt generate --yolo -w claude; claude --allow-dangerously-skip
 | Source kind | A canonical document type. Two exist: `srt` (filesystem and network policy) and `bash` (command allow/ask/deny lists). |
 | Fragment | One named `.jsonc` file holding a slice of policy for one source kind. Fragments never include each other. |
 | Profile | Picks an ordered list of fragments per source kind and may extend other profiles. `default_profile` applies when `--profile` is omitted. |
-| Canonical output | The strict JSON each source kind compiles to: `~/.srt-settings.json` (read by SRT) and `bash-rules.json`. Generated; never hand-edited. |
-| Target | An agent config file derived from the compiled rules: Claude settings, Codex config and rules, Copilot flags. |
+| Canonical output | The strict JSON each source kind compiles to: `~/.srt-settings.json` (read by SRT) and `bash-rules.json`. The input for every agent translation. Rewritten by every `generate -w`; never hand-edited. See [Canonical config vs agent configs](#canonical-config-vs-agent-configs). |
+| Target | An agent config file translated from the canonical output: Claude settings, Codex config and rules, Copilot flags. |
 | Mode | `full` (default) keeps ask rules and interactive approval. `--yolo` drops ask rules and writes to separate `*.yolo.*` targets, for launches that skip permission prompts. |
 
 Composition merges objects recursively and unions arrays. Conflicting scalars
@@ -200,11 +250,12 @@ Full example: [example/bash-rules.jsonc](example/bash-rules.jsonc).
 | `twsrt config` | Open `config.toml` in `$EDITOR` |
 | `twsrt edit [srt\|bash]` | Open the fragments the profile selects in `$EDITOR`, then report whether the targets are now stale |
 | `twsrt edit -p work -n` | Name the fragments profile `work` is made of, open nothing |
-| `twsrt generate [claude\|codex\|copilot]` | Print the generated config for one agent, or all. Writes nothing — a red stderr reminder says so |
-| `twsrt generate <agent> -w` | Write the canonical outputs and the agent target (selective merge) |
-| `twsrt generate <agent> -w -n` | Dry run: show what would be written |
+| `twsrt generate [claude\|codex\|copilot]` | Print the generated config for one agent, or all. Writes nothing — a red stderr reminder says so. Canonical outputs are not printed; see `show` |
+| `twsrt generate <agent> -w` | Write the canonical outputs (always, whichever agent) and the agent target (selective merge) |
+| `twsrt generate <agent> -w -n` | Dry run of `-w`: list the paths it would write. `-n` without `-w` changes nothing |
 | `twsrt generate --yolo <agent>` | Yolo mode: no ask rules, `*.yolo.*` targets, yolo sandbox overrides |
 | `twsrt generate -p work <agent>` | Use profile `work` instead of `default_profile` |
+| `twsrt show [srt\|bash] [-p profile]` | Print the compiled canonical document (default `srt`, i.e. `~/.srt-settings.json`) exactly as `-w` would write it. Writes nothing. Agent-independent |
 | `twsrt diff [agent] [--yolo]` | Compare fragments against canonical outputs and targets on disk |
 | `twsrt test [-k TEXT] [--json]` | Prove the compiled SRT settings are enforced by probing the sandbox |
 

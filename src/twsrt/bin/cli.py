@@ -18,7 +18,13 @@ __version__ = "1.5.0"
 
 app = typer.Typer(
     name="twsrt",
-    help="Agent security configuration generator.",
+    help="Agent security configuration generator.\n\n"
+    "Two stages. (1) A profile's fragments compile into the canonical config "
+    "(~/.srt-settings.json and bash-rules.json): the single source of truth, "
+    "read directly by SRT and the input for every agent translation. "
+    "(2) Each agent's native config (Claude settings, Codex config/rules, "
+    "Copilot flags) is translated from it. Inspect stage 1 with `show`, "
+    "stage 2 with `generate <agent>`.",
     no_args_is_help=True,
 )
 log = logging.getLogger("twsrt")
@@ -343,9 +349,7 @@ def config_command(
 @app.command()
 def edit(
     ctx: typer.Context,
-    kind: str = typer.Argument(
-        "all", help="Source kind to edit: srt, bash, or all"
-    ),
+    kind: str = typer.Argument("all", help="Source kind to edit: srt, bash, or all"),
     profile: str | None = typer.Option(
         None, "--profile", "-p", help="Canonical-source profile"
     ),
@@ -366,7 +370,7 @@ def edit(
     try:
         config = load_config(config_path)
         resolved = resolve_profile(config, profile)
-    except (FileNotFoundError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         log.debug("Edit setup failed", exc_info=True)
         _error(str(exc))
         raise typer.Exit(1)
@@ -430,7 +434,7 @@ def _report_stale_targets(config_path: Path, profile: str | None) -> None:
     """
     try:
         _, compiled = _compile(config_path, profile, yolo=False)
-    except (FileNotFoundError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         log.debug("Post-edit compile failed", exc_info=True)
         _error(str(exc))
         raise typer.Exit(1)
@@ -450,14 +454,40 @@ def generate(
     agent: str = typer.Argument(
         "all", help="Target agent: claude, copilot, codex, or all"
     ),
-    write: bool = typer.Option(False, "--write", "-w", help="Write target files"),
-    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show writes"),
+    write: bool = typer.Option(
+        False,
+        "--write",
+        "-w",
+        help="Write the canonical outputs (e.g. ~/.srt-settings.json) and the "
+        "agent targets. Without -w nothing is written",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        "-n",
+        help="Only with -w: list the files -w would write, write nothing. "
+        "Without -w, alone it changes nothing",
+    ),
     yolo: bool = typer.Option(False, "--yolo", help="Deny-only agent mode"),
     profile: str | None = typer.Option(
         None, "--profile", "-p", help="Canonical-source profile"
     ),
 ) -> None:
-    """Compile canonical sources and generate agent-specific configuration."""
+    """Compile canonical sources and generate agent-specific configuration.
+
+    Agent configs are translated from the canonical config (e.g.
+    ~/.srt-settings.json); the agent argument only picks which translations
+    run.
+
+    Default (no -w): print the agent config to stdout and write nothing.
+    The canonical outputs are not printed; use `twsrt show` for those.
+
+    -w: write the canonical outputs AND the agent targets. The canonical
+    outputs are rewritten whichever agent is named, so `generate copilot -w`
+    also rewrites ~/.srt-settings.json; hand edits there are overwritten.
+
+    -w -n: dry run of -w; list the paths it would write.
+    """
     try:
         config, compiled = _compile(ctx.obj["config_path"], profile, yolo)
         generators = _select_generators(agent, config, for_write=write)
@@ -474,7 +504,7 @@ def generate(
         staged = (
             _stage_agent_files(generators, rendered, compiled, config) if write else {}
         )
-    except (FileExistsError, FileNotFoundError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         log.debug("Generation failed", exc_info=True)
         _error(str(exc))
         raise typer.Exit(1)
@@ -520,6 +550,36 @@ def generate(
 
 
 @app.command()
+def show(
+    ctx: typer.Context,
+    kind: str = typer.Argument("srt", help="Source kind to show: srt or bash"),
+    profile: str | None = typer.Option(
+        None, "--profile", "-p", help="Canonical-source profile"
+    ),
+) -> None:
+    """Print the compiled canonical document (e.g. ~/.srt-settings.json).
+
+    The canonical config is what SRT reads and the input for every agent
+    translation. Writes nothing. Prints exactly what `generate -w` would
+    write for the profile. Agent and --yolo do not change canonical
+    documents, so neither is accepted here.
+    """
+    try:
+        _, compiled = _compile(ctx.obj["config_path"], profile, yolo=False)
+    except (OSError, ValueError) as exc:
+        log.debug("Show setup failed", exc_info=True)
+        _error(str(exc))
+        raise typer.Exit(1)
+
+    if kind not in compiled.documents:
+        available = ", ".join(sorted(compiled.documents))
+        _error(f"Unknown source kind {kind!r}; available: {available}")
+        raise typer.Exit(1)
+
+    typer.echo(_serialize(compiled.documents[kind].document), nl=False)
+
+
+@app.command()
 def diff(
     ctx: typer.Context,
     agent: str = typer.Argument(
@@ -534,7 +594,7 @@ def diff(
     try:
         config, compiled = _compile(ctx.obj["config_path"], profile, yolo)
         generators = _select_generators(agent, config, for_write=True)
-    except (FileNotFoundError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         log.debug("Diff setup failed", exc_info=True)
         _error(str(exc))
         raise typer.Exit(1)
@@ -634,7 +694,7 @@ def test_command(
         else:
             log.debug("settings %s match the compiled srt document", settings)
         version = preflight(settings)
-    except (FileNotFoundError, ValueError, ProbeError) as exc:
+    except (OSError, ValueError, ProbeError) as exc:
         log.debug("Test setup failed", exc_info=True)
         _error(str(exc))
         raise typer.Exit(2)

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 from twsrt.bin.cli import app
@@ -210,3 +211,148 @@ def test_edit_defaults_to_the_configured_profile(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "srt-work.jsonc" not in result.stdout
     assert "srt-base.jsonc" in result.stdout
+
+
+def test_show_prints_the_compiled_srt_document_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    config, claude_target = make_profile_config(tmp_path)
+
+    result = runner.invoke(app, ["-c", str(config), "show", "srt"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == {
+        "enabled": True,
+        "filesystem": {"denyRead": ["~/.ssh"]},
+    }
+    assert not (tmp_path / "compiled").exists()
+    assert not claude_target.exists()
+
+
+def test_show_defaults_to_the_srt_document(tmp_path: Path) -> None:
+    config, _ = make_profile_config(tmp_path)
+
+    result = runner.invoke(app, ["-c", str(config), "show"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["enabled"] is True
+
+
+def test_show_bash_prints_the_compiled_bash_rules(tmp_path: Path) -> None:
+    config, _ = make_profile_config(tmp_path)
+
+    result = runner.invoke(app, ["-c", str(config), "show", "bash"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["deny"] == ["rm"]
+
+
+def test_show_explicit_profile_prints_that_profiles_union(tmp_path: Path) -> None:
+    config, _ = make_profile_config(tmp_path)
+
+    result = runner.invoke(app, ["-c", str(config), "show", "srt", "-p", "work"])
+
+    assert result.exit_code == 0, result.output
+    shown = json.loads(result.stdout)
+    assert shown["filesystem"]["denyRead"] == ["~/.ssh", "~/.aws"]
+
+
+def test_show_prints_exactly_what_generate_write_would_write(tmp_path: Path) -> None:
+    """show is the preview of the canonical file, byte for byte."""
+    config, _ = make_profile_config(tmp_path)
+    shown = runner.invoke(app, ["-c", str(config), "show", "srt", "-p", "work"])
+    generated = runner.invoke(
+        app, ["-c", str(config), "generate", "claude", "-p", "work", "--write"]
+    )
+    assert generated.exit_code == 0, generated.output
+
+    assert shown.stdout == (tmp_path / "compiled/srt.json").read_text()
+
+
+def test_show_unknown_kind_exits_1_and_names_the_available_kinds(
+    tmp_path: Path,
+) -> None:
+    config, _ = make_profile_config(tmp_path)
+
+    result = runner.invoke(app, ["-c", str(config), "show", "claude"])
+
+    assert result.exit_code == 1
+    assert "Unknown source kind 'claude'" in result.stderr
+    assert "bash, srt" in result.stderr
+
+
+def test_show_conflicting_fragments_exits_1(tmp_path: Path) -> None:
+    config, _ = make_profile_config(tmp_path, conflicting=True)
+
+    result = runner.invoke(app, ["-c", str(config), "show", "srt", "-p", "work"])
+
+    assert result.exit_code == 1
+    assert "conflict at /enabled" in result.stderr
+
+
+def test_generate_yolo_write_leaves_the_canonical_srt_document_unchanged(
+    tmp_path: Path,
+) -> None:
+    """Canonical config depends on the profile only; yolo overrides stay agent-side."""
+    config, claude_target = make_profile_config(tmp_path)
+    with config.open("a") as handle:
+        handle.write("\n[sandbox_overrides.yolo]\nenabled = false\n")
+
+    result = runner.invoke(
+        app, ["-c", str(config), "generate", "claude", "--yolo", "--write"]
+    )
+
+    assert result.exit_code == 0, result.output
+    yolo_target = claude_target.parent / "settings.yolo.json"
+    assert json.loads(yolo_target.read_text())["sandbox"]["enabled"] is False
+    assert json.loads((tmp_path / "compiled/srt.json").read_text()) == {
+        "enabled": True,
+        "filesystem": {"denyRead": ["~/.ssh"]},
+    }
+
+
+@pytest.mark.parametrize(
+    ("argv", "exit_code"),
+    [
+        (["generate", "claude"], 1),
+        (["generate", "claude", "--write"], 1),
+        (["show", "srt"], 1),
+        (["diff", "claude"], 1),
+        (["test"], 2),
+    ],
+)
+def test_unreadable_fragment_is_a_clean_error_not_a_traceback(
+    tmp_path: Path, argv: list[str], exit_code: int
+) -> None:
+    """A sandbox deny or chmod 000 on a fragment names the file and exits."""
+    config, _ = make_profile_config(tmp_path)
+    fragment = tmp_path / "fragments" / "srt-base.jsonc"
+    fragment.chmod(0)
+    try:
+        result = runner.invoke(app, ["-c", str(config), *argv])
+    finally:
+        fragment.chmod(0o644)
+
+    assert result.exit_code == exit_code, result.output
+    assert not isinstance(result.exception, PermissionError)
+    assert "Permission denied" in result.stderr
+    assert str(fragment) in result.stderr
+
+
+def test_edit_reports_unreadable_fragment_after_the_editor_closes(
+    tmp_path: Path,
+) -> None:
+    """The post-edit compile must also fail cleanly, e.g. after a chmod."""
+    config, _ = make_profile_config(tmp_path)
+    fragment = tmp_path / "fragments" / "srt-base.jsonc"
+    fragment.chmod(0)
+    try:
+        with patch("twsrt.bin.cli.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0)
+            result = runner.invoke(app, ["-c", str(config), "edit", "srt"])
+    finally:
+        fragment.chmod(0o644)
+
+    assert result.exit_code == 1, result.output
+    assert not isinstance(result.exception, PermissionError)
+    assert str(fragment) in result.stderr

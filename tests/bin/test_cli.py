@@ -4,12 +4,26 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import click
 import pytest
 from typer.testing import CliRunner
 
 from twsrt.bin.cli import __version__, _editor_argv, _resolve_editor, app
 
 runner = CliRunner()
+
+
+def _help_text(*argv: str) -> str:
+    """Rendered --help as plain words.
+
+    Typer forces Rich styling at import time under GITHUB_ACTIONS/FORCE_COLOR,
+    and NO_COLOR drops colour but not bold, so escape codes can split a phrase.
+    Rich also wraps at terminal width, and a narrow one splits option help
+    across table-cell borders: pin a wide terminal and compare words, not lines.
+    """
+    result = runner.invoke(app, [*argv, "--help"], env={"COLUMNS": "200"})
+    assert result.exit_code == 0, result.output
+    return " ".join(click.unstyle(result.output).split())
 
 
 class TestVersion:
@@ -30,6 +44,21 @@ class TestBareInvocation:
         # typer exits 2 for no_args_is_help, but help text is shown
         assert "Usage" in result.output
         assert "config" in result.output
+
+    def test_top_level_help_explains_canonical_config_feeds_agent_translations(
+        self,
+    ) -> None:
+        help_text = _help_text()
+
+        assert "canonical config" in help_text
+        assert "input for every agent translation" in help_text
+
+    def test_show_help_says_its_output_is_the_input_for_agent_translations(
+        self,
+    ) -> None:
+        help_text = _help_text("show")
+
+        assert "input for every agent translation" in help_text
 
 
 class TestDiagnosticOutput:
@@ -546,6 +575,25 @@ class TestGenerate:
 
         assert result.exit_code == 0, result.output
         assert "Nothing written" in result.stderr
+
+    def test_generate_help_says_preview_is_default_and_dry_run_needs_write(
+        self,
+    ) -> None:
+        """-n alone is a no-op; the help must not let users believe otherwise."""
+        help_text = _help_text("generate")
+
+        assert "Without -w nothing is written" in help_text
+        assert "Only with -w" in help_text
+        assert "alone it changes nothing" in help_text
+
+    def test_generate_help_says_write_also_rewrites_canonical_for_any_agent(
+        self,
+    ) -> None:
+        """`generate copilot -w` rewriting ~/.srt-settings.json must not surprise."""
+        help_text = _help_text("generate")
+
+        assert "whichever agent is named" in help_text
+        assert "translated from the canonical config" in help_text
 
     def test_generate_missing_source_exits_1(self, tmp_path: Path) -> None:
         config = tmp_path / "config.toml"

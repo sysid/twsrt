@@ -275,6 +275,12 @@ and Bash allow/ask/deny overlaps fail with profile, path, and fragment
 context. Compilation and target rendering complete before `--write` touches
 any file, so a conflict cannot leave partial output.
 
+The compiled documents are the input for every agent translation: generators
+consume the normalized rules parsed from them in memory, never the fragments
+and never the canonical files on disk. `--write` therefore rewrites every
+canonical output on each run, whichever agent is named, so a target can never
+disagree with the canonical file it was translated from.
+
 Profile inheritance is selection reuse, not override precedence: a child can
 add fragments but cannot silently replace a conflicting parent value. Model
 intentional variants as separate profiles sharing a non-conflicting base.
