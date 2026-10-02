@@ -8,6 +8,7 @@ import os
 import shlex
 import subprocess
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 import typer
@@ -49,6 +50,16 @@ def _info(message: str) -> None:
 
 def _success(message: str) -> None:
     typer.secho(message, fg=typer.colors.GREEN)
+
+
+def _note(message: str) -> None:
+    """Narrate a side effect on stderr; stdout carries only a command's result."""
+    typer.secho(message, fg=typer.colors.CYAN, err=True)
+
+
+def _wrote(message: str) -> None:
+    """Report a completed write on stderr, so -w leaves stdout capturable."""
+    typer.secho(message, fg=typer.colors.GREEN, err=True)
 
 
 def _drift(message: str) -> None:
@@ -425,6 +436,97 @@ def edit(
     raise typer.Exit(result.returncode)
 
 
+@app.command()
+def profiles(ctx: typer.Context) -> None:
+    """List the configured profiles and the fragments each one resolves to.
+
+    `*` marks default_profile. A profile that cannot be used on its own (e.g.
+    a mixin selecting no fragment for some source kind) is listed as invalid
+    instead of failing the whole listing.
+    """
+    from twsrt.lib.config import load_config
+    from twsrt.lib.profiles import resolve_profile
+
+    try:
+        config = load_config(ctx.obj["config_path"])
+    except (OSError, ValueError) as exc:
+        log.debug("Loading config failed", exc_info=True)
+        _error(str(exc))
+        raise typer.Exit(1)
+
+    names = sorted(config.profiles)
+    labels = {
+        name: f"{name} *" if name == config.default_profile else name for name in names
+    }
+    width = max(len(label) for label in labels.values())
+    for name in names:
+        try:
+            resolved = resolve_profile(config, name)
+        except ValueError as exc:
+            summary = f"invalid: {exc}"
+        else:
+            # config.sources order, so srt precedes bash as in config.toml.
+            summary = " | ".join(
+                f"{kind}: "
+                + ", ".join(fragment.name for fragment in resolved.fragments[kind])
+                for kind in config.sources
+            )
+            extends = config.profiles[name].extends
+            if extends:
+                summary += f"  (extends {', '.join(extends)})"
+        typer.echo(f"{labels[name].ljust(width)}  {summary}")
+
+
+@app.command()
+def doctor(ctx: typer.Context) -> None:
+    """Check every profile and fragment for errors, redundancy and pattern traps.
+
+    Errors: a fragment that does not parse, a profile that does not compile.
+    Warnings: rules covered by another rule, duplicates across fragments,
+    redundant extends/selections, unused fragments, globs that grant less
+    than they look. Info: harmless no-ops and platform caveats.
+    Exit 1 on any error. Writes nothing; drift is `diff`, enforcement `test`.
+    """
+    from twsrt.lib.config import load_config
+    from twsrt.lib.doctor import diagnose
+
+    config_path: Path = ctx.obj["config_path"]
+    try:
+        config = load_config(config_path)
+    except (OSError, ValueError) as exc:
+        log.debug("Loading config failed", exc_info=True)
+        _error(str(exc))
+        raise typer.Exit(1)
+
+    findings = diagnose(config, config_path.parent)
+    if not findings:
+        _success("doctor: no findings")
+        return
+
+    colors = {
+        "error": typer.colors.RED,
+        "warning": typer.colors.YELLOW,
+        "info": typer.colors.CYAN,
+    }
+    width = max(len(finding.code) for finding in findings)
+    for finding in findings:
+        typer.secho(
+            f"{finding.severity:<7}  {finding.code:<{width}}  {finding.message}",
+            fg=colors[finding.severity],
+        )
+    counts = {
+        severity: sum(finding.severity == severity for finding in findings)
+        for severity in colors
+    }
+    errors, warnings = counts["error"], counts["warning"]
+    typer.echo(
+        f"doctor: {errors} error{'' if errors == 1 else 's'}, "
+        f"{warnings} warning{'' if warnings == 1 else 's'}, {counts['info']} info"
+    )
+    if errors:
+        raise typer.Exit(1)
+
+
 def _report_stale_targets(config_path: Path, profile: str | None) -> None:
     """After editing, say whether the generated targets still match the sources.
 
@@ -472,6 +574,13 @@ def generate(
     profile: str | None = typer.Option(
         None, "--profile", "-p", help="Canonical-source profile"
     ),
+    project: bool = typer.Option(
+        False,
+        "--project",
+        help="Write the canonical outputs and the Claude target to ./.twsrt "
+        "(current directory) instead of the global paths; no symlink, global "
+        "files untouched. With -w, stdout is that directory",
+    ),
 ) -> None:
     """Compile canonical sources and generate agent-specific configuration.
 
@@ -487,9 +596,17 @@ def generate(
     also rewrites ~/.srt-settings.json; hand edits there are overwritten.
 
     -w -n: dry run of -w; list the paths it would write.
+
+    --project: same compile, but every output lands in ./.twsrt (current
+    directory) and that directory itself is added to denyWrite. Launch with
+    `claude --setting-sources project,local --settings .twsrt/claude-settings.json`
+    or `srt -s .twsrt/srt-settings.json`.
     """
     try:
-        config, compiled = _compile(ctx.obj["config_path"], profile, yolo)
+        twsrt_dir = Path.cwd().resolve() / ".twsrt" if project else None
+        if twsrt_dir is not None:
+            agent = _project_agent(agent)
+        config, compiled = _compile(ctx.obj["config_path"], profile, yolo, twsrt_dir)
         generators = _select_generators(agent, config, for_write=write)
         log.debug(
             "Generating agents=%s write=%s dry_run=%s",
@@ -501,9 +618,12 @@ def generate(
             generator.name: generator.generate(compiled.rules, config)
             for generator in generators
         }
-        staged = (
-            _stage_agent_files(generators, rendered, compiled, config) if write else {}
-        )
+        if not write:
+            staged = {}
+        elif twsrt_dir is not None:
+            staged = _stage_project_claude(rendered, config, twsrt_dir)
+        else:
+            staged = _stage_agent_files(generators, rendered, compiled, config)
     except (OSError, ValueError) as exc:
         log.debug("Generation failed", exc_info=True)
         _error(str(exc))
@@ -513,23 +633,35 @@ def generate(
     _print_generator_warnings(generators, compiled, config)
     if write and dry_run:
         for document in compiled.documents.values():
-            _info(f"Would write canonical: {document.output_path}")
+            _note(f"Would write canonical: {document.output_path}")
         for path in staged:
-            _info(f"Would write agent target: {path}")
+            _note(f"Would write agent target: {path}")
         for name, output in rendered.items():
             _info(f"--- Dry run: {name} ---")
             typer.echo(output)
         return
 
+    if write and twsrt_dir is not None:
+        for document in compiled.documents.values():
+            _atomic_write(document.output_path, _serialize(document.document))
+            _wrote(f"Wrote canonical: {document.output_path}")
+        for path, content in staged.items():
+            _atomic_write(path, content)
+            _wrote(f"Wrote: {path}")
+        # The files hold absolute paths and the user's hooks: never commit them.
+        _atomic_write(twsrt_dir / ".gitignore", "*\n")
+        typer.echo(str(twsrt_dir))
+        return
+
     if write:
         for document in compiled.documents.values():
             _atomic_write(document.output_path, _serialize(document.document))
-            _success(f"Wrote canonical: {document.output_path}")
+            _wrote(f"Wrote canonical: {document.output_path}")
         _write_agent_files(staged, config)
         for path in staged:
-            _success(f"Wrote: {path}")
+            _wrote(f"Wrote: {path}")
         if "codex" in rendered:
-            _info("Restart Codex to load the updated permission profile and rules.")
+            _note("Restart Codex to load the updated permission profile and rules.")
         for generator in generators:
             if generator.name == "copilot" and _resolve_copilot_target(config) is None:
                 typer.echo(rendered[generator.name])
@@ -903,15 +1035,28 @@ def _probe_report(
 
 
 def _compile(
-    config_path: Path, profile_name: str | None, yolo: bool
+    config_path: Path,
+    profile_name: str | None,
+    yolo: bool,
+    twsrt_dir: Path | None = None,
 ) -> tuple[AppConfig, CompilationResult]:
+    """Load, resolve and compile; with twsrt_dir, canonical outputs move there."""
     from twsrt.lib.config import load_config
     from twsrt.lib.profiles import resolve_profile
     from twsrt.lib.sources import compile_sources
 
     config = load_config(config_path)
+    extra_deny_write: list[str] = []
+    if twsrt_dir is not None:
+        for kind, name in _PROJECT_CANONICAL_NAMES.items():
+            config.sources[kind] = replace(
+                config.sources[kind], output_path=twsrt_dir / name
+            )
+        # Claude hot-reloads --settings: an agent able to write here could
+        # loosen its own policy mid-session.
+        extra_deny_write.append(str(twsrt_dir))
     resolved = resolve_profile(config, profile_name)
-    compiled = compile_sources(config, resolved)
+    compiled = compile_sources(config, resolved, extra_deny_write)
     log.debug(
         "Compiled profile %r: fragments=%d documents=%d rules=%d mode=%s",
         resolved.name,
@@ -970,7 +1115,7 @@ def _stage_agent_files(
             generated = json.loads(rendered[generator.name])
             donor = _resolve_sync_donor(config, target)
             if donor is not None:
-                _info(f"Synced invariant settings from {donor.name}")
+                _note(f"Synced invariant settings from {donor.name}")
             if existing.exists() or donor is not None:
                 document = selective_merge(
                     existing if existing.exists() else None,
@@ -991,6 +1136,44 @@ def _stage_agent_files(
             assert isinstance(generator, CodexGenerator)
             staged.update(generator.render_write_files(compiled.rules, config))
     return staged
+
+
+_PROJECT_CANONICAL_NAMES = {"srt": "srt-settings.json", "bash": "bash-rules.json"}
+
+
+def _project_agent(agent: str) -> str:
+    """Project mode serves agents that take a settings file per launch."""
+    if agent in ("codex", "copilot"):
+        raise ValueError(
+            f"agent {agent!r} is not supported with --project: only Claude "
+            "(--settings) and srt (-s) read a per-launch settings file"
+        )
+    return "claude" if agent == "all" else agent
+
+
+def _stage_project_claude(
+    rendered: dict[str, str], config: AppConfig, twsrt_dir: Path
+) -> dict[Path, str]:
+    """Merge the project policy onto the global Claude target of the same mode.
+
+    The project file is launched with --setting-sources project,local, which
+    skips ~/.claude/settings.json, so hooks, plugins and model must be carried
+    over from the global target. No symlink and no claude_sync donor: nothing
+    global changes. The premise and its failure modes are recorded in
+    doc/REFERENCE.md#claude-per-project-launch-premise.
+    """
+    from twsrt.lib.claude import selective_merge
+
+    base = _resolve_claude_target(config)
+    if not base.exists():
+        mode = " --yolo" if config.yolo else ""
+        raise FileNotFoundError(
+            f"{base} not found: --project copies hooks, plugins and model from "
+            f"it. Run `twsrt generate claude -w{mode}` first."
+        )
+    name = "claude-settings.yolo.json" if config.yolo else "claude-settings.json"
+    document = selective_merge(base, json.loads(rendered["claude"]))
+    return {twsrt_dir / name: json.dumps(document, indent=2) + "\n"}
 
 
 def _resolve_sync_donor(config: AppConfig, target: Path) -> Path | None:
@@ -1019,7 +1202,7 @@ def _write_agent_files(staged: dict[Path, str], config: AppConfig) -> None:
     if claude_target in staged:
         migration_message = prepare_claude_target(config.symlink_anchor, claude_target)
         if migration_message:
-            _info(migration_message)
+            _note(migration_message)
     for path, content in staged.items():
         _atomic_write(path, content)
     if claude_target in staged:

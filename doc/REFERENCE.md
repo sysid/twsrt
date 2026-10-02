@@ -10,7 +10,9 @@ before/after merge example, Codex translation rules, diagnostics, and roadmap.
 - [Claude sandbox key mapping](#claude-sandbox-key-mapping)
 - [Claude merge example](#claude-merge-example)
 - [Codex translation rules](#codex-translation-rules)
+- [Claude per-project launch premise](#claude-per-project-launch-premise)
 - [Compiler model](#compiler-model)
+- [Doctor checks](#doctor-checks)
 - [Sandbox probes](#sandbox-probes)
 - [Diagnostic output](#diagnostic-output)
 - [Invariants](#invariants)
@@ -257,6 +259,77 @@ WebSearch, apps, `shell_environment_policy`) is preserved. Preview and diff
 output contain only managed security data, so foreign credentials are never
 printed.
 
+## Claude per-project launch premise
+
+`generate --project` is only useful for Claude if Claude is launched as:
+
+```bash
+claude --setting-sources project,local --settings .twsrt/claude-settings.json
+```
+
+twsrt does not launch Claude and cannot check the flags; the launcher must
+pass them. This section records why the line works, what is documented
+versus observed, and what breaks if Claude Code changes.
+
+**Settings loaded per launch style:**
+
+```
+                         managed   --settings X   local    project   user (~/.claude/settings.json)
+plain `claude`             yes          -          yes       yes      yes
+claude --settings X        yes         yes         yes       yes      yes   ← dropped denies return
+claude --setting-sources
+  project,local
+  --settings X             yes         yes         yes       yes      NO    ← what --project needs
+```
+
+**Claude Code behaviour the premise depends on:**
+
+| # | Claim | Source |
+|---|---|---|
+| 1 | Precedence: managed > command line (`--settings`) > local > project > user | documented, settings.md "Settings precedence" |
+| 2 | List keys (`permissions.deny`, `sandbox.filesystem.*`, `sandbox.network.allowedDomains`, …) are combined across scopes; a scope can add entries but never remove another scope's | documented, settings.md and sandboxing.md |
+| 3 | No setting subtracts an entry defined in another scope | no such mechanism found in the settings, permissions or sandboxing docs (searched 2026-10-02) |
+| 4 | `--setting-sources` takes a comma list of `user`, `project`, `local`; managed settings always load | documented, cli-reference.md |
+| 5 | `--setting-sources project,local --settings X` in an interactive session skips the user file and applies `X` | the docs do not say whether the flag applies to interactive sessions; verified manually by Tom on 2026-10-02 |
+| 6 | Settings files are watched and reloaded mid-session | documented, settings.md "When edits take effect" |
+
+Claims 2 and 3 are why a project cannot drop a rule by layering a file on
+top: only not loading the global file works (claims 4 and 5). Claim 6 is why
+`./.twsrt` is added to `denyWrite`.
+
+**Consequences:**
+
+- `X` replaces the user scope completely, so it carries the user keys too.
+  It is built by `selective_merge` from the global Claude target of the same
+  mode (`settings.full.json` or `settings.yolo.json`). A hook or plugin added
+  to the global file appears in a project session on the next launch, since
+  every launch regenerates `X`.
+- The repository's `.claude/settings.json` and `.claude/settings.local.json`
+  still load. They can add rules and, once the folder is trusted, override
+  sandbox scalars such as `sandbox.enabled`. This is the same exposure as a
+  plain `claude` launch.
+- Managed settings cannot be skipped and still apply.
+- Starting `claude` without both flags in a project directory is not unsafe:
+  the global file loads and the union is *stricter* than the project policy.
+  The dropped rule is simply still in force.
+
+**If Claude Code changes:**
+
+| Change | Effect | Direction |
+|---|---|---|
+| `--setting-sources` stops excluding the user file | dropped denies return through the union | fails closed: stricter, the feature stops working |
+| `--settings` stops being honoured with `user` excluded | project session runs with no twsrt policy, only repo and managed settings | fails **open**: re-verify after Claude Code upgrades |
+| Lists replace instead of union across scopes | `--settings X` alone would suffice | harmless |
+
+**Re-verify** after a Claude Code upgrade, from a plain terminal:
+
+1. `twsrt generate claude -w -p <profile-without-rule-R> --project`
+2. `claude --setting-sources project,local --settings .twsrt/claude-settings.json`
+3. `/permissions`: rule R is absent and the other twsrt denies are present.
+4. A deny that exists only in `~/.claude/settings.json` (not in any
+   fragment) is absent from `/permissions`: proves the user file was skipped.
+5. Ask the agent to `echo x >> .twsrt/claude-settings.json`: refused.
+
 ## Compiler model
 
 | Concept | Responsibility |
@@ -294,6 +367,57 @@ Adding a source kind means registering its name, validating its compiled
 document, and translating it into normalized rules; profile resolution and
 composition are reused. Adding an agent consumes the normalized rules and
 does not touch fragments or profiles.
+
+## Doctor checks
+
+`twsrt doctor` reads `config.toml` and every registered fragment, writes
+nothing, and prints one line per finding on stdout followed by a count.
+Exit `1` on any error, else `0`. It complements the other read-only commands:
+
+| Command | Question |
+|---|---|
+| `doctor` | Is the policy well-formed and free of dead weight? (all profiles) |
+| `diff` | Do the files on disk match the policy? (one profile) |
+| `test` | Does the sandbox enforce the policy? (one profile) |
+
+Correctness runs the real pipeline (JSONC load, profile resolution,
+compilation) over every profile, so doctor and `generate` cannot disagree.
+Redundancy is checked within the rule union each profile compiles to;
+findings shared by several profiles are reported once. Per-entry findings
+are grouped: one line per fragment and list for `subsumed-rule` and the
+pattern traps, one line per list for `wildcard-apex`, each naming every
+affected entry:
+
+```
+warning  subsumed-rule      bash/base.jsonc: deny: 3 entries already covered: 'rm -fr' by 'rm', 'rm -r' by 'rm', 'rm -rf' by 'rm'
+warning  cwd-anchored-glob  srt/base.jsonc: filesystem.denyWrite: 24 entries anchored at the launch directory, not global: '**/.env', ...
+```
+
+The covering entry's fragment is shown only when it differs from the
+covered entry's.
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `fragment-load` | error | A registered fragment is missing or not valid JSONC, used or not |
+| `profile-compile` | error | A profile fails to compile: scalar conflict, opposing allow/deny, invalid shape. Profiles using a broken fragment are not reported again |
+| `profile-incomplete` | warning | A profile selects no fragment for some source kind, so `-p NAME` fails. Legitimate for mixins used only via `extends` |
+| `subsumed-rule` | warning | An entry is already covered by another entry in the same list: a path below a listed directory (`dir` and `dir/**` count as equal; `.` covers every relative path), a domain below a `*.` wildcard or `*`, a Bash command extending a listed command (`rm -rf` under `rm`; Claude emits `Bash(rm *)`) |
+| `duplicate-rule` | warning | The same entry appears in two fragments of one profile |
+| `inherited-fragment` | warning | A profile selects a fragment its `extends` chain already selects |
+| `redundant-extends` | warning | A profile extends a parent it already reaches through another parent |
+| `unused-fragment` | warning | A registered fragment no profile selects |
+| `read-deny-writable` | warning | A `denyRead` entry below an `allowWrite` root (relative entries count as below `.`) with no covering `denyWrite`. srt compiles `denyRead` to a read deny plus an unlink deny only, so the agent can still overwrite and create files there (`macos-sandbox-utils.js` `generateReadRules`, srt 0.0.78). Outside every write root the write allowlist already blocks writes |
+| `narrow-allow-glob` | warning | A glob in `allowWrite`/`allowRead`: on macOS `dir/*` grants direct children only and `a/*/b` only the directory `b` itself; Linux drops the rule |
+| `cwd-anchored-glob` | warning | A relative `**/x` entry protects or grants only below the directory the agent was launched in, not everywhere |
+| `linux-drops-write-glob` | info | A glob in `denyWrite` holds on macOS only; srt drops write globs on Linux |
+| `noop-glob-suffix` | info | A trailing `/**` is stripped by srt; the bare directory is the same rule |
+| `wildcard-apex` | info | `*.x.com` without `x.com` in the same list: the apex is not matched |
+
+Pattern semantics are from srt `117eb92` (v0.0.78), see
+`thoughts/research/2026-10-02-srt-wildcard-semantics.md`. Not modelled
+(deliberate simplifications): coverage by a glob entry and port-qualified
+domains. `~/x` and its absolute spelling compare as equal.
+Drift and the Claude settings symlink are out of scope; use `diff`.
 
 ## Sandbox probes
 
@@ -499,6 +623,12 @@ Derivation and verdict logic are covered by `tests/lib/test_probe.py` and
   from your own settings.
 - Only the SRT wrapper is exercised. Claude Code's native sandbox consumes
   the same deny paths but is not probed.
+- A `denyRead` rule gets a read probe only. srt compiles it to a read deny
+  plus an unlink deny, not a write deny, so inside an `allowWrite` root the
+  agent can still overwrite and create files on a path `test` reports as
+  `PASS`. That is intended srt behaviour, not an enforcement failure, so
+  `test` does not probe it; `twsrt doctor` reports it as
+  `read-deny-writable`. Protect such paths with a matching `denyWrite`.
 - `denyRead` globs, wildcard domains, and globs with wildcards in a
   non-final segment are reported as `SKIP`, never silently dropped.
 - Bash deny/ask rules are application-layer and out of scope.
@@ -508,14 +638,17 @@ Derivation and verdict logic are covered by `tests/lib/test_probe.py` and
 ## Diagnostic output
 
 Generated JSON, TOML, rules, and Copilot flags stay unstyled on stdout so they
-can be piped. Human diagnostics use fixed severities and streams:
+can be piped. stdout carries a command's result; narration about side effects
+goes to stderr, so `generate -w` leaves stdout capturable (`--project -w`
+prints only the `.twsrt` directory there). Fixed severities and streams:
 
 | Kind | Color | Stream |
 |---|---|---|
 | Error | red, bold | stderr |
 | Warning | yellow | stderr |
-| Info | cyan | stdout |
-| Successful write, clean diff | green | stdout |
+| Write narration: `Wrote …`, `Would write …`, sync and migration notes, restart hints | green (done) / cyan | stderr |
+| Report info: `test` header and summary, `edit -n` paths, preview section headers | cyan | stdout |
+| Clean diff | green | stdout |
 | Drift | yellow | stdout |
 | Unexpected extra entry | red | stdout |
 | Debug (`--verbose`) | dim cyan | stderr |
@@ -641,6 +774,11 @@ because `srt --version` reports a hardcoded `1.0.0`.
 4. **Fail-safe on ambiguity.** Disabled canonical sandbox, malformed paths,
    conflicting fragments, incomplete profiles, and legacy Codex
    `sandbox_mode` in the managed file abort generation instead of guessing.
+5. **Project mode writes nothing global.** `generate --project` sends
+   every canonical output and the Claude target to `./.twsrt/`, adds that
+   directory to the compiled `denyWrite`, reads the global Claude target only
+   as merge base, and never touches the symlink or the `[claude_sync]` donor.
+   Rules are dropped per project by profile choice, never by subtraction.
 
 ## Scope and roadmap
 

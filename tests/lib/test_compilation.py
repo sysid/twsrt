@@ -204,3 +204,49 @@ def test_serialize_document_is_strict_canonical_json() -> None:
 
     assert serialized == '{\n  "enabled": true,\n  "items": [\n    "one"\n  ]\n}\n'
     assert json.loads(serialized) == {"enabled": True, "items": ["one"]}
+
+
+def test_compile_sources_adds_extra_deny_write_to_document_and_rules(
+    tmp_path: Path,
+) -> None:
+    config = load_config(
+        configured_profile(
+            tmp_path,
+            '{"filesystem": {"denyWrite": ["/z/existing"]}}',
+            "{}",
+        )
+    )
+
+    compiled = compile_sources(
+        config, resolve_profile(config), extra_deny_write=["/a/repo/.twsrt"]
+    )
+
+    assert compiled.documents["srt"].document["filesystem"]["denyWrite"] == [
+        "/a/repo/.twsrt",
+        "/z/existing",
+    ]
+    assert any(
+        rule.scope == Scope.WRITE
+        and rule.action == Action.DENY
+        and rule.pattern == "/a/repo/.twsrt"
+        for rule in compiled.rules
+    )
+
+
+def test_compile_sources_extra_deny_write_creates_missing_filesystem_section(
+    tmp_path: Path,
+) -> None:
+    config = load_config(
+        configured_profile(tmp_path, '{"network": {"allowedDomains": []}}', "{}")
+    )
+    (tmp_path / "fragments/srt-base.jsonc").write_text(
+        '{"enabled": true, "network": {"allowedDomains": ["x.io"]}}'
+    )
+
+    compiled = compile_sources(
+        config, resolve_profile(config), extra_deny_write=["/a/repo/.twsrt"]
+    )
+
+    assert compiled.documents["srt"].document["filesystem"] == {
+        "denyWrite": ["/a/repo/.twsrt"]
+    }

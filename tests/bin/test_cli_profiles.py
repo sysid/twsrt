@@ -143,6 +143,35 @@ def test_generate_write_compiles_canonical_outputs_and_agent_target(
     assert claude_target.exists()
 
 
+def test_generate_write_reports_written_files_on_stderr_not_stdout(
+    tmp_path: Path,
+) -> None:
+    config, claude_target = make_profile_config(tmp_path)
+
+    result = runner.invoke(app, ["-c", str(config), "generate", "claude", "--write"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == ""
+    assert f"Wrote canonical: {tmp_path / 'compiled/srt.json'}" in result.stderr
+    assert f"Wrote: {claude_target}" in result.stderr
+
+
+def test_generate_dry_run_lists_planned_writes_on_stderr_and_config_on_stdout(
+    tmp_path: Path,
+) -> None:
+    config, claude_target = make_profile_config(tmp_path)
+
+    result = runner.invoke(
+        app, ["-c", str(config), "generate", "claude", "--write", "--dry-run"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert f"Would write agent target: {claude_target}" in result.stderr
+    assert "Would write" not in result.stdout
+    assert '"permissions"' in result.stdout
+    assert not claude_target.exists()
+
+
 def test_generate_explicit_profile_changes_compiled_union(tmp_path: Path) -> None:
     config, _ = make_profile_config(tmp_path)
 
@@ -181,6 +210,51 @@ def test_diff_reports_canonical_output_drift(tmp_path: Path) -> None:
 
     assert result.exit_code == 1
     assert "srt canonical: drift" in result.output
+
+
+def test_profiles_lists_every_profile_with_its_resolved_fragments(
+    tmp_path: Path,
+) -> None:
+    config, _ = make_profile_config(tmp_path)
+
+    result = runner.invoke(app, ["-c", str(config), "profiles"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines() == [
+        "base *  srt: base | bash: base",
+        "work    srt: base, work | bash: base  (extends base)",
+    ]
+
+
+def test_profiles_reports_an_unresolvable_profile_without_hiding_the_others(
+    tmp_path: Path,
+) -> None:
+    config, _ = make_profile_config(tmp_path)
+    # A mixin profile that selects no bash fragment cannot be used on its own.
+    config.write_text(
+        config.read_text().replace(
+            "[targets]", '[profiles.mixin]\nsrt = ["work"]\n\n[targets]'
+        )
+    )
+
+    result = runner.invoke(app, ["-c", str(config), "profiles"])
+
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    assert lines[0] == "base *  srt: base | bash: base"
+    assert lines[1].startswith("mixin   invalid: ")
+    assert "selects no fragments for source kind 'bash'" in lines[1]
+    assert lines[2] == "work    srt: base, work | bash: base  (extends base)"
+
+
+def test_profiles_fails_on_a_broken_config(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text("schema_version = 99\n")
+
+    result = runner.invoke(app, ["-c", str(config), "profiles"])
+
+    assert result.exit_code == 1
+    assert "schema_version" in result.stderr
 
 
 def test_edit_opens_the_fragments_the_profile_inherits(tmp_path: Path) -> None:

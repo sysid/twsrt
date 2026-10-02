@@ -467,6 +467,27 @@ For example, a child fragment cannot change `enabled = true` from its parent to
 `false`. That scalar disagreement fails compilation. This prevents a broad or
 later profile from silently weakening a security property.
 
+**Per-project policy.** `generate --project` compiles a chosen profile
+into `./.twsrt/` for a per-launch `claude --setting-sources project,local
+--settings …` or `srt -s …`. A project weakens the global policy only by
+selecting a profile that omits a fragment; there is no subtraction, so the
+no-override property above still holds and every relaxation is visible as a
+profile in `config.toml`, never in the repository. Properties:
+
+- The profile is named by the user at launch; a repository cannot choose it.
+  Omitting `-p` yields `default_profile`, the full global policy.
+- Claude Code unions list settings across scopes, so the global file must be
+  skipped (`--setting-sources project,local`) for a dropped deny to stay
+  dropped. The repository's own `.claude/settings*.json` still loads and can
+  still add rules or override sandbox scalars once the folder is trusted.
+- `./.twsrt` is added to the compiled `denyWrite`: Claude hot-reloads
+  settings, and an agent able to write the file could loosen its own policy
+  mid-session. Each launch regenerates the files, overwriting anything a
+  repository ships there.
+- Residual gap: a session running under the global policy in the same
+  directory lacks that deny. Closing it requires `.twsrt` in a global
+  fragment's `denyWrite`.
+
 ### 5.3 JSONC and Composition Semantics
 
 twsrt implements JSONC locally without a parser dependency. It recognizes
@@ -843,6 +864,84 @@ the sole control for critical assets. Verify the result with `twsrt test`
 after every srt, agent, or OS upgrade: a control that is not probed is a
 control that is assumed.
 
+
+#### `denyRead` is not a write deny
+
+**Gotcha.** A `denyRead` entry stops the agent *reading* a path. It does
+**not** stop the agent *writing* to it. Whether a read-denied file can be
+overwritten depends only on whether it sits below an `allowWrite` root.
+
+**What actually protects credential files from writes: the write
+allowlist.** srt's macOS profile denies everything by default and then
+allows writes only where the configuration says so:
+
+```
+(deny default)                          ← every operation not allowed below is denied, writes included
+(allow file-write* <allowOnly>)         ← allowOnly = srt's own paths + filesystem.allowWrite
+(deny  file-write* <denyWithinAllow>)   ← denyWithinAllow = filesystem.denyWrite, and nothing else
+```
+
+`~/.ssh`, `~/.aws/credentials`, `~/.kube` and similar are unwritable because
+no `allowWrite` entry covers them, so `(deny default)` applies. Their
+`denyRead` entries play no part in that. srt's own writable paths are
+`/dev/{stdout,stderr,null,tty,dtracehelper,autofs_nowait}`, `/tmp/claude`,
+`/private/tmp/claude`, and `~/.npm/_logs` and `~/.claude/debug` (each
+dropped when a `denyRead` covers it).
+
+**What `denyRead` compiles to:**
+
+| Rule emitted for a `denyRead` path P | Effect |
+|---|---|
+| `(deny file-read* P)` | P cannot be read |
+| `(deny file-write-unlink file-write-create P + ancestors)` | Blocks moving P (or a parent) away to read it under another name |
+| `(allow file-write-unlink file-write-create <each write root>)` | Re-opens create and delete inside write roots so `rm` works in the project |
+| `(deny file-write-unlink P)`, only when P is inside a write root | Takes delete and rename back for P; create stays open |
+
+No `file-write*` or `file-write-data` deny is emitted. So:
+
+| Where the read-denied path P is | Read | Delete or rename | Overwrite or append existing file | Create new file |
+|---|---|---|---|---|
+| Outside every `allowWrite` root (`~/.ssh`, …) | blocked | blocked | blocked by the **allowlist** | blocked by the **allowlist** |
+| Inside an `allowWrite` root (`./.env`, `**/.twsrt`, `~/dev/x/secrets`) | blocked | blocked | **allowed** | **allowed** |
+| Covered by a matching `denyWrite` as well | blocked | blocked | blocked | blocked |
+
+Relative entries such as `**/.env` always fall in the second row whenever
+`.` is write-allowed, because they resolve below the launch directory.
+
+**When the protection silently disappears.** Adding an `allowWrite` entry
+that covers a credential path (`~`, `~/.config` covering `~/.config/gh`,
+`~/dev` covering a repository's `.env`) moves it from the first row to the
+second. Its `denyRead` keeps reads blocked and `twsrt test` stays green, but
+the agent can now replace the file's contents.
+
+**Rule.** A path that must not be written needs a `denyWrite` entry unless
+you are certain no `allowWrite` entry covers it now or later. `twsrt
+doctor` reports every `denyRead` entry below an `allowWrite` root without a
+covering `denyWrite` as `read-deny-writable`. `twsrt test` cannot catch
+this: it probes `denyRead` with a read only, and a successful write there is
+srt working as designed.
+
+**Per agent:**
+
+| Agent | Writes to a read-denied path inside a write root |
+|---|---|
+| srt wrapper (`srt -s`, Copilot, pi) | allowed, as above |
+| Claude Code | Edit and Write tools blocked: twsrt translates each `denyRead` path to `Read(...)` and `Edit(...)` deny rules ([rule mapping](doc/REFERENCE.md#rule-mapping-per-agent)). Bash under Claude's native sandbox: not verified whether the `Edit` deny reaches the sandbox's write rules |
+| Codex | not verified |
+
+**Evidence.** srt 0.0.78 as installed:
+
+- `sandbox-manager.js:1032-1052` (`getFsWriteConfig`): `denyWithinAllow` is
+  `filesystem.denyWrite` only.
+- `macos-sandbox-utils.js:564-622` (`generateReadRules`), `626-670`
+  (`generateWriteRules`) and `294-341` (`generateReadDenyUnlinkRules`): the
+  rules above.
+- `sandbox-utils.js:459-477`: the default writable paths.
+- Profiles generated with `wrapCommandWithSandboxMacOS` on 2026-10-02, for
+  `allowWrite W` with (a) `denyRead W/secret`: no `file-write*` deny for
+  `W/secret`; (b) `denyWrite W/secret`: `(deny file-write* (subpath W/secret))`.
+- Linux (bubblewrap) is not analysed.
+- A runtime check with `srt -s` is still pending.
 
 ## 8. Operational Model
 

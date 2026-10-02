@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any
 
 from twsrt.lib.composition import compose_documents
@@ -52,8 +53,16 @@ _SET_PATHS = {
 }
 
 
-def compile_sources(config: AppConfig, profile: ResolvedProfile) -> CompilationResult:
-    """Compile all source kinds selected by a resolved profile."""
+def compile_sources(
+    config: AppConfig,
+    profile: ResolvedProfile,
+    extra_deny_write: Sequence[str] = (),
+) -> CompilationResult:
+    """Compile all source kinds selected by a resolved profile.
+
+    extra_deny_write adds paths no fragment names, e.g. a project's own
+    .twsrt directory, which must be protected wherever that profile runs.
+    """
     documents: dict[str, CompiledDocument] = {}
     loaded_by_kind: dict[str, list[tuple[SourceFragment, dict[str, Any]]]] = {}
 
@@ -63,6 +72,11 @@ def compile_sources(config: AppConfig, profile: ResolvedProfile) -> CompilationR
         document = compose_documents(
             profile.name, kind, loaded, set_paths=_SET_PATHS.get(kind, ())
         )
+        if kind == "srt" and extra_deny_write:
+            filesystem = document.setdefault("filesystem", {})
+            filesystem["denyWrite"] = sorted(
+                {*filesystem.get("denyWrite", []), *extra_deny_write}
+            )
         loaded_by_kind[kind] = loaded
         documents[kind] = CompiledDocument(
             source_kind=kind,

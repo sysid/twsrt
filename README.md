@@ -15,10 +15,11 @@ configuration of every AI coding agent you run.
 4. [Configuration](#configuration)
 5. [Commands](#commands)
 6. [Claude Code target](#claude-code-target)
-7. [Codex target](#codex-target)
-8. [Copilot CLI target](#copilot-cli-target)
-9. [Security model](#security-model)
-10. [Development](#development)
+7. [Per-project policy](#per-project-policy)
+8. [Codex target](#codex-target)
+9. [Copilot CLI target](#copilot-cli-target)
+10. [Security model](#security-model)
+11. [Development](#development)
 
 Deep-dive tables and examples live in [doc/REFERENCE.md](doc/REFERENCE.md).
 The threat model is in [SECURITY_CONCEPT.md](SECURITY_CONCEPT.md).
@@ -253,14 +254,17 @@ Full example: [example/bash-rules.jsonc](example/bash-rules.jsonc).
 | `twsrt config` | Open `config.toml` in `$EDITOR` |
 | `twsrt edit [srt\|bash]` | Open the fragments the profile selects in `$EDITOR`, then report whether the targets are now stale |
 | `twsrt edit -p work -n` | Name the fragments profile `work` is made of, open nothing |
+| `twsrt profiles` | List every profile with the fragments it resolves to; `*` marks `default_profile`, a profile unusable on its own shows as `invalid` |
 | `twsrt generate [claude\|codex\|copilot]` | Print the generated config for one agent, or all. Writes nothing — a red stderr reminder says so. Canonical outputs are not printed; see `show` |
 | `twsrt generate <agent> -w` | Write the canonical outputs (always, whichever agent) and the agent target (selective merge) |
 | `twsrt generate <agent> -w -n` | Dry run of `-w`: list the paths it would write. `-n` without `-w` changes nothing |
 | `twsrt generate --yolo <agent>` | Yolo mode: no ask rules, `*.yolo.*` targets, yolo sandbox overrides |
 | `twsrt generate -p work <agent>` | Use profile `work` instead of `default_profile` |
+| `twsrt generate claude -w -p slim --project` | Write profile `slim` to `./.twsrt/` for a per-launch `claude --settings` / `srt -s`; nothing global is written. See [Per-project policy](#per-project-policy) |
 | `twsrt show [srt\|bash] [-p profile]` | Print the compiled canonical document (default `srt`, i.e. `~/.srt-settings.json`) exactly as `-w` would write it. Writes nothing. Agent-independent |
 | `twsrt diff [agent] [--yolo]` | Compare fragments against canonical outputs and targets on disk |
 | `twsrt test [-k TEXT] [--json]` | Prove the compiled SRT settings are enforced by probing the sandbox |
+| `twsrt doctor` | Lint every profile and fragment: errors (unparseable fragment, profile that does not compile), redundancy, pattern traps. Exit 1 on errors. See [Doctor checks](doc/REFERENCE.md#doctor-checks) |
 
 `edit` opens every selected fragment in one editor invocation. A bare `vim`,
 `nvim`, `gvim` or `mvim` gets `-p`, so each fragment lands in its own tab; every
@@ -295,8 +299,10 @@ enforced, not that you wrote the right rules. Probe
 catalogue, verdict table, maintenance, and safety properties:
 [Sandbox probes](doc/REFERENCE.md#sandbox-probes).
 
-Generated content goes to stdout unstyled; diagnostics go to stderr with
-color. `--verbose` before the subcommand adds debug output that never prints
+stdout carries a command's result: generated config, the `diff` and `test`
+reports, the `edit -n` paths, and with `--project -w` the `.twsrt` directory.
+Errors, warnings and write narration (`Wrote …`, `Would write …`) go to
+stderr, so `-w` output can be captured. `--verbose` before the subcommand adds debug output that never prints
 policy contents; the one exception is `test`, where `-v` traces the whole run:
 every executed command as a copyable line (`exec: sh -c ...`,
 `exec: srt -s ... -c ...`) with exit code, duration, and stderr, plus each
@@ -360,6 +366,74 @@ every mode switch.
 managed from settings
 ([claude-code#10377](https://github.com/anthropics/claude-code/issues/10377#issuecomment-3468689124)),
 so SRT `allowWrite` produces no Claude output.
+
+## Per-project policy
+
+A project gets its own policy by choosing a profile. Compile it into the
+repository and launch the agent with that file instead of the global one:
+
+```
+twsrt generate claude -w -p slim --project
+  → ./.twsrt/srt-settings.json            canonical srt  (instead of ~/.srt-settings.json)
+  → ./.twsrt/bash-rules.json              canonical bash
+  → ./.twsrt/claude-settings[.yolo].json  Claude target  (instead of ~/.claude/settings.full.json)
+  → ./.twsrt/.gitignore                   "*"
+  stdout: the absolute .twsrt directory
+```
+
+```bash
+# usage: claude-p <profile> [claude args]   — run from the project root
+claude-p() { local p=$1 d; shift; d=$(twsrt generate claude -w -p "$p" --project) || return
+             claude --setting-sources project,local --settings "$d/claude-settings.json" "$@"; }
+srt-p()    { local p=$1 d; shift; d=$(twsrt generate claude -w -p "$p" --project) || return
+             srt -s "$d/srt-settings.json" "$@"; }
+```
+
+Pick the profile with `twsrt profiles`.
+
+**Dropping a global rule.** Composition only adds, so a project never
+subtracts. Put a rule you may want to drop into its own fragment and give the
+project a profile that leaves that fragment out:
+
+```toml
+[profiles.default]
+srt = ["base", "cloud-creds"]
+
+[profiles.slim]            # same as default, without cloud-creds
+srt = ["base"]
+```
+
+**Premise: `claude --setting-sources project,local --settings X`.** The
+Claude half of this feature rests on that exact launch line; both flags are
+required:
+
+| Flag | Effect | Without it |
+|---|---|---|
+| `--settings X` | Loads `X` as the command-line scope (above project and user) | the project policy is never loaded |
+| `--setting-sources project,local` | Loads only the repository's `.claude/settings.json` and `.claude/settings.local.json`; `~/.claude/settings.json` is **not** read | Claude unions lists across scopes, so every deny the project profile dropped comes back from the global file, silently |
+
+Because the global file is skipped, `X` must carry your user settings
+(hooks, plugins, model) as well: it is the selective merge of the project
+policy onto the global Claude target of the same mode, which must exist
+(`twsrt generate claude -w [--yolo]` once). Evidence, consequences and how to
+re-verify: [Claude per-project launch premise](doc/REFERENCE.md#claude-per-project-launch-premise).
+
+**What `--project` changes.** Only the output location: every canonical
+output and the Claude target land in `.twsrt/` of the current directory
+(the flag takes no argument; `cd` first). No symlink flip, no
+`[claude_sync]` donor, no global file touched. Preview (no `-w`) and dry run
+(`-w -n`) work as usual. `all` means `claude`; Codex and Copilot are rejected
+because they read no per-launch settings file. Omitting `-p` compiles
+`default_profile`, the full global policy.
+
+**Protecting `.twsrt/`.** Claude reloads settings files mid-session, so an
+agent that could write `.twsrt/` could loosen its own policy. `--project`
+adds `./.twsrt` to the compiled `denyWrite`, which becomes an `Edit(...)`
+deny for Claude's file tools and a sandbox write deny for Bash and `srt`.
+Every launch regenerates the files, so anything a repository ships in
+`.twsrt/` is overwritten. A session started under the global policy lacks
+that deny; add `.twsrt` to `denyWrite` in a global fragment to close the gap
+and confirm the spelling with `twsrt test`.
 
 ## Codex target
 
@@ -436,6 +510,16 @@ symlink. The `(realpath)` probe row turns that silent gap into a `FAIL`; the
 fix is to deny the real directory as well. Run it after every srt or agent
 upgrade. It exercises srt only; Claude Code's native sandbox and Codex are
 not probed. Mechanics: [Sandbox probes](doc/REFERENCE.md#sandbox-probes).
+
+**`denyRead` does not deny writes.** What keeps the agent from writing to
+`~/.ssh` and other credential files is the write allowlist: srt denies every
+write outside `allowWrite`, whatever `denyRead` says. A read-denied path
+*inside* an `allowWrite` root (`./.env`, `**/.twsrt`, a secrets directory in
+a repository) cannot be read, deleted or renamed, but it can be overwritten
+and new files can be created in it. Protect such paths with `denyWrite`.
+`twsrt doctor` flags them as `read-deny-writable`; `twsrt test` cannot,
+because it only probes reads for `denyRead`. Mechanism and evidence:
+[`denyRead` is not a write deny](SECURITY_CONCEPT.md#denyread-is-not-a-write-deny).
 
 Rule-by-rule translation: [Rule mapping per agent](doc/REFERENCE.md#rule-mapping-per-agent).
 Guarantees twsrt upholds: [Invariants](doc/REFERENCE.md#invariants).

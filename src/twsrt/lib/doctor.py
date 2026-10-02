@@ -1,0 +1,445 @@
+"""Configuration diagnostics: correctness, redundancy, and pattern traps.
+
+Correctness reuses the real pipeline (JSONC loading, profile resolution,
+compilation) over every profile, so doctor never disagrees with `generate`.
+Redundancy and trap checks are lint: they flag rules that work but do less
+than they look, or nothing at all. Pattern semantics follow
+thoughts/research/2026-10-02-srt-wildcard-semantics.md.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from twsrt.lib.jsonc import load as load_jsonc
+from twsrt.lib.models import AppConfig, ResolvedProfile
+from twsrt.lib.profiles import resolve_profile
+from twsrt.lib.sources import compile_sources
+
+SEVERITIES = ("error", "warning", "info")
+
+# Lists whose entries are compared for duplicates and subsumption.
+_PATH_LISTS = ("allowWrite", "denyWrite", "denyRead", "allowRead")
+_DOMAIN_LISTS = ("allowedDomains", "deniedDomains")
+_BASH_LISTS = ("allow", "ask", "deny")
+_ALLOW_PATH_LISTS = ("allowWrite", "allowRead")
+
+
+@dataclass(frozen=True)
+class Finding:
+    severity: str
+    code: str
+    message: str
+
+
+def diagnose(config: AppConfig, base_dir: Path) -> list[Finding]:
+    """Run every check; findings are deduplicated and ordered by severity."""
+    findings: list[Finding] = []
+    loaded, broken = _load_fragments(config, base_dir, findings)
+    resolved = _resolve_profiles(config, findings)
+    _compile_profiles(config, resolved, broken, findings)
+    _check_profile_structure(config, findings)
+    _check_unused_fragments(config, findings)
+    for profile in resolved.values():
+        _check_profile_lists(profile, loaded, base_dir, findings)
+    _check_patterns(config, loaded, base_dir, findings)
+
+    unique = list(dict.fromkeys(findings))
+    return sorted(unique, key=lambda finding: SEVERITIES.index(finding.severity))
+
+
+# --- A. correctness -------------------------------------------------------
+
+
+def _load_fragments(
+    config: AppConfig, base_dir: Path, findings: list[Finding]
+) -> tuple[dict[Path, dict[str, Any]], set[Path]]:
+    """Parse every registered fragment once, used or not."""
+    loaded: dict[Path, dict[str, Any]] = {}
+    broken: set[Path] = set()
+    for source in config.sources.values():
+        for fragment in source.fragments.values():
+            try:
+                loaded[fragment.path] = load_jsonc(fragment.path)
+            except (OSError, ValueError) as exc:
+                broken.add(fragment.path)
+                findings.append(
+                    Finding(
+                        "error",
+                        "fragment-load",
+                        f"{_show(fragment.path, base_dir)}: {exc}",
+                    )
+                )
+    return loaded, broken
+
+
+def _resolve_profiles(
+    config: AppConfig, findings: list[Finding]
+) -> dict[str, ResolvedProfile]:
+    resolved: dict[str, ResolvedProfile] = {}
+    for name in sorted(config.profiles):
+        try:
+            resolved[name] = resolve_profile(config, name)
+        except ValueError as exc:
+            # A mixin meant only for `extends` is legitimate, but -p NAME fails.
+            findings.append(
+                Finding(
+                    "warning",
+                    "profile-incomplete",
+                    f"profile {name!r} cannot be used on its own: {exc}",
+                )
+            )
+    return resolved
+
+
+def _compile_profiles(
+    config: AppConfig,
+    resolved: dict[str, ResolvedProfile],
+    broken: set[Path],
+    findings: list[Finding],
+) -> None:
+    for name, profile in resolved.items():
+        if any(
+            fragment.path in broken
+            for fragments in profile.fragments.values()
+            for fragment in fragments
+        ):
+            continue  # already reported as fragment-load
+        try:
+            compile_sources(config, profile)
+        except (OSError, ValueError) as exc:
+            findings.append(
+                Finding("error", "profile-compile", f"profile {name!r}: {exc}")
+            )
+
+
+# --- B. redundancy --------------------------------------------------------
+
+
+def _check_profile_structure(config: AppConfig, findings: list[Finding]) -> None:
+    for name in sorted(config.profiles):
+        profile = config.profiles[name]
+        for parent in profile.extends:
+            via = [
+                other
+                for other in profile.extends
+                if other != parent and parent in _ancestors(config, other)
+            ]
+            if via:
+                findings.append(
+                    Finding(
+                        "warning",
+                        "redundant-extends",
+                        f"profile {name!r}: extends {parent!r} is already "
+                        f"inherited via {via[0]!r}",
+                    )
+                )
+        inherited = _inherited_selections(config, name)
+        for kind, selected in profile.selections.items():
+            for fragment in selected:
+                owner = inherited.get((kind, fragment))
+                if owner is not None:
+                    findings.append(
+                        Finding(
+                            "warning",
+                            "inherited-fragment",
+                            f"profile {name!r}: {kind} fragment {fragment!r} is "
+                            f"already inherited from {owner!r}",
+                        )
+                    )
+
+
+def _ancestors(config: AppConfig, name: str) -> set[str]:
+    found: set[str] = set()
+    for parent in config.profiles[name].extends:
+        found |= {parent, *_ancestors(config, parent)}
+    return found
+
+
+def _inherited_selections(config: AppConfig, name: str) -> dict[tuple[str, str], str]:
+    """(kind, fragment) -> the ancestor profile that selects it."""
+    owners: dict[tuple[str, str], str] = {}
+    for ancestor in sorted(_ancestors(config, name)):
+        for kind, selected in config.profiles[ancestor].selections.items():
+            for fragment in selected:
+                owners.setdefault((kind, fragment), ancestor)
+    return owners
+
+
+def _check_unused_fragments(config: AppConfig, findings: list[Finding]) -> None:
+    used = {
+        (kind, fragment)
+        for profile in config.profiles.values()
+        for kind, selected in profile.selections.items()
+        for fragment in selected
+    }
+    for kind, source in config.sources.items():
+        for fragment in source.fragments:
+            if (kind, fragment) not in used:
+                findings.append(
+                    Finding(
+                        "warning",
+                        "unused-fragment",
+                        f"{kind} fragment {fragment!r} is selected by no profile",
+                    )
+                )
+
+
+def _check_profile_lists(
+    profile: ResolvedProfile,
+    loaded: dict[Path, dict[str, Any]],
+    base_dir: Path,
+    findings: list[Finding],
+) -> None:
+    """Duplicates and subsumption within the union a profile compiles to."""
+    for kind, fragments in profile.fragments.items():
+        lists = _profile_lists(kind, fragments, loaded)
+        if kind == "srt":
+            _check_read_deny_writable(lists, base_dir, findings)
+        for list_name, values in lists.items():
+            key = list_name.rsplit(".", 1)[-1]
+            # Grouped per contributing fragment: one finding per file and list.
+            covered: dict[Path, list[str]] = {}
+            for value, origins in values.items():
+                if len(origins) > 1:
+                    shown = ", ".join(_show(path, base_dir) for path in origins)
+                    findings.append(
+                        Finding(
+                            "warning",
+                            "duplicate-rule",
+                            f"{list_name}: {value!r} appears in {shown}",
+                        )
+                    )
+                for other, other_origins in values.items():
+                    if _covers(key, other, value):
+                        where = (
+                            ""
+                            if other_origins[0] == origins[0]
+                            else f" ({_show(other_origins[0], base_dir)})"
+                        )
+                        covered.setdefault(origins[0], []).append(
+                            f"{value!r} by {other!r}{where}"
+                        )
+                        break
+            for origin, items in covered.items():
+                findings.append(
+                    Finding(
+                        "warning",
+                        "subsumed-rule",
+                        f"{_show(origin, base_dir)}: {list_name}: "
+                        f"{_count(items, 'entry', 'entries')} already covered: "
+                        + ", ".join(items),
+                    )
+                )
+            if key == "allowedDomains":
+                _check_wildcard_apex(list_name, values, findings)
+
+
+def _check_read_deny_writable(
+    lists: dict[str, dict[str, list[Path]]],
+    base_dir: Path,
+    findings: list[Finding],
+) -> None:
+    """A denyRead entry below an allowWrite root needs its own denyWrite.
+
+    srt compiles denyRead to a read deny plus an unlink deny; the write
+    root's (allow file-write*) still lets the agent overwrite and create
+    files there (macos-sandbox-utils.js generateReadRules, srt 0.0.78).
+    Outside every write root the write allowlist already blocks writes.
+    """
+    roots = lists.get("filesystem.allowWrite", {})
+    write_denies = lists.get("filesystem.denyWrite", {})
+    exposed: dict[Path, list[str]] = {}
+    for entry, origins in lists.get("filesystem.denyRead", {}).items():
+        root = next((r for r in roots if _path_covers(r, entry)), None)
+        if root is None:
+            continue
+        if any(
+            _normalize_path(deny) == _normalize_path(entry) or _path_covers(deny, entry)
+            for deny in write_denies
+        ):
+            continue
+        exposed.setdefault(origins[0], []).append(f"{entry!r} (under {root!r})")
+    for origin, items in exposed.items():
+        findings.append(
+            Finding(
+                "warning",
+                "read-deny-writable",
+                f"{_show(origin, base_dir)}: filesystem.denyRead: "
+                f"{_count(items, 'entry', 'entries')} inside a write root without "
+                "denyWrite (srt blocks reading, not overwriting or creating files "
+                "there): " + ", ".join(items),
+            )
+        )
+
+
+def _profile_lists(
+    kind: str, fragments: list, loaded: dict[Path, dict[str, Any]]
+) -> dict[str, dict[str, list[Path]]]:
+    """list name -> value -> fragments contributing it, in profile order."""
+    if kind == "srt":
+        locations = [("filesystem", key) for key in _PATH_LISTS] + [
+            ("network", key) for key in _DOMAIN_LISTS
+        ]
+    else:
+        locations = [("", key) for key in _BASH_LISTS]
+    lists: dict[str, dict[str, list[Path]]] = {}
+    for fragment in fragments:
+        document = loaded.get(fragment.path, {})
+        for section, key in locations:
+            container = document.get(section, {}) if section else document
+            entries = container.get(key, []) if isinstance(container, dict) else []
+            if not isinstance(entries, list):
+                continue
+            list_name = f"{section}.{key}" if section else key
+            for entry in entries:
+                if isinstance(entry, str):
+                    origins = lists.setdefault(list_name, {}).setdefault(entry, [])
+                    if fragment.path not in origins:
+                        origins.append(fragment.path)
+    return lists
+
+
+def _covers(key: str, parent: str, child: str) -> bool:
+    if parent == child:
+        return False
+    if key in _PATH_LISTS:
+        return _path_covers(parent, child)
+    if key in _DOMAIN_LISTS:
+        return _domain_covers(parent, child)
+    # Claude emits Bash(cmd) and Bash(cmd *): a rule covers longer commands.
+    return child.startswith(parent + " ")
+
+
+def _path_covers(parent: str, child: str) -> bool:
+    parent, child = _normalize_path(parent), _normalize_path(child)
+    if "*" in parent:
+        return False  # ponytail: glob coverage is not modelled
+    if parent == child:
+        return True  # `dir` and `dir/**` compile to the same rule
+    if parent == ".":
+        return not child.startswith(("/", "~"))
+    return child.startswith(parent.rstrip("/") + "/")
+
+
+def _normalize_path(value: str) -> str:
+    """srt strips one trailing /**; compare ~ and absolute forms alike."""
+    value = value.removesuffix("/**").removeprefix("./") or "."
+    return os.path.expanduser(value) if value.startswith("~") else value
+
+
+def _domain_covers(parent: str, child: str) -> bool:
+    if ":" in parent or ":" in child:
+        return False  # ponytail: port-qualified entries are not compared
+    if parent == "*":
+        return True
+    # *.x.com matches subdomains at any depth, never the apex x.com.
+    return parent.startswith("*.") and child.endswith(parent[1:])
+
+
+def _check_wildcard_apex(
+    list_name: str, values: dict[str, list[Path]], findings: list[Finding]
+) -> None:
+    missing = [
+        f"{value!r} ({value[2:]})"
+        for value in values
+        if value.startswith("*.") and ":" not in value and value[2:] not in values
+    ]
+    if missing:
+        findings.append(
+            Finding(
+                "info",
+                "wildcard-apex",
+                f"{list_name}: {_count(missing, 'wildcard', 'wildcards')} "
+                "not matching the bare apex domain (add it where needed): "
+                + ", ".join(missing),
+            )
+        )
+
+
+# --- C. pattern traps -----------------------------------------------------
+
+
+# code -> (severity, description after "<n> entries ..."), in check order.
+_PATTERN_TRAPS = {
+    "cwd-anchored-glob": (
+        "warning",
+        "anchored at the launch directory, not global",
+    ),
+    "narrow-allow-glob": (
+        "warning",
+        "granting only exact matches on macOS (dir/* = direct children, "
+        "a/*/b = the directory b itself) and dropped on Linux; list "
+        "directories instead",
+    ),
+    "linux-drops-write-glob": (
+        "info",
+        "dropped by srt on Linux, so the deny holds on macOS only",
+    ),
+    "noop-glob-suffix": (
+        "info",
+        "ending in /**, which srt strips; the bare directory is the same rule",
+    ),
+}
+
+
+def _check_patterns(
+    config: AppConfig,
+    loaded: dict[Path, dict[str, Any]],
+    base_dir: Path,
+    findings: list[Finding],
+) -> None:
+    """One finding per fragment, list and trap, naming every affected entry."""
+    for fragment in config.sources["srt"].fragments.values():
+        filesystem = loaded.get(fragment.path, {}).get("filesystem", {})
+        if not isinstance(filesystem, dict):
+            continue
+        where = _show(fragment.path, base_dir)
+        for key in _PATH_LISTS:
+            entries = filesystem.get(key, [])
+            if not isinstance(entries, list):
+                continue
+            hits: dict[str, list[str]] = {}
+            for entry in entries:
+                if isinstance(entry, str):
+                    code = _path_trap(key, entry)
+                    if code is not None:
+                        hits.setdefault(code, []).append(repr(entry))
+            for code, (severity, description) in _PATTERN_TRAPS.items():
+                if code in hits:
+                    findings.append(
+                        Finding(
+                            severity,
+                            code,
+                            f"{where}: filesystem.{key}: "
+                            f"{_count(hits[code], 'entry', 'entries')} "
+                            f"{description}: " + ", ".join(hits[code]),
+                        )
+                    )
+
+
+def _path_trap(key: str, entry: str) -> str | None:
+    stem = entry.removesuffix("/**")
+    if entry.startswith("**/"):
+        return "cwd-anchored-glob"
+    if "*" in stem and key in _ALLOW_PATH_LISTS:
+        return "narrow-allow-glob"
+    if "*" in stem and key == "denyWrite":
+        return "linux-drops-write-glob"
+    if entry.endswith("/**"):
+        return "noop-glob-suffix"
+    return None
+
+
+def _count(items: list[str], singular: str, plural: str) -> str:
+    return f"{len(items)} {singular if len(items) == 1 else plural}"
+
+
+def _show(path: Path, base_dir: Path) -> str:
+    try:
+        return str(path.relative_to(base_dir))
+    except ValueError:
+        return str(path)
