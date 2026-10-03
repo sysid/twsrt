@@ -643,6 +643,19 @@ Probes run sequentially in a fixed order: read-deny, write-deny,
 write-allow, net-allow, net-deny, then the allowlist canary. Each row is
 printed as soon as its verdict is known.
 
+Section options named after the settings keys run only that section's
+probes and combine; without any, all run. `-k` narrows further.
+
+| Option | Probes |
+|---|---|
+| `--denyRead` | read-deny, including `(realpath)` twins |
+| `--denyWrite` | write-deny, including the denies implied by `denyRead` |
+| `--allowWrite` | write-allow |
+| `--allowedDomains` | net-allow and the allowlist canary, which proves the allowlist |
+| `--deniedDomains` | net-deny |
+
+`--json` reports each probe's `section`.
+
 ### Probe catalogue
 
 | Rule | Host condition | Command | Expect | Leaves behind | `SKIP` when |

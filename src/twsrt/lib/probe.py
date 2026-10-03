@@ -69,6 +69,23 @@ class Probe:
     artifact: Path | None = None
     # Set when no concrete command can be derived; reported, never executed.
     skip_reason: str | None = None
+    # The .srt-settings.json key this probe verifies; derived from kind unless
+    # given (the allowlist canary is a net-deny probe of allowedDomains).
+    section: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.section:
+            object.__setattr__(self, "section", _KIND_SECTIONS[self.kind])
+
+
+_KIND_SECTIONS = {
+    "read-deny": "denyRead",
+    "write-deny": "denyWrite",
+    "write-allow": "allowWrite",
+    "net-allow": "allowedDomains",
+    "net-deny": "deniedDomains",
+}
+SECTIONS = tuple(_KIND_SECTIONS.values())
 
 
 @dataclass
@@ -389,7 +406,11 @@ def _allowlist_canary(allowed: list[str]) -> Probe:
         _CANARY_DOMAINS[-1],
     )
     return Probe(
-        "net-deny", f"{host} (not allowlisted)", _CURL.format(host=host), Expect.DENY
+        "net-deny",
+        f"{host} (not allowlisted)",
+        _CURL.format(host=host),
+        Expect.DENY,
+        section="allowedDomains",
     )
 
 

@@ -495,3 +495,77 @@ class TestScratchDirectory:
         assert command.startswith(f": >> {other}/.twsrt-test-")
         assert list(other.iterdir()) == []
         assert list(cwd.iterdir()) == []
+
+
+class TestSectionOptions:
+    """--denyRead, --denyWrite, ... run only the probes of that config key."""
+
+    def _config(self, tmp_path: Path) -> Path:
+        secret = tmp_path / "secret.txt"
+        secret.write_text("hunter2\n")
+        return _make_config(
+            tmp_path,
+            {
+                "filesystem": {
+                    "denyRead": [str(secret)],
+                    "allowWrite": [str(tmp_path)],
+                    "denyWrite": ["**/*.pem"],
+                },
+                "network": {
+                    "allowedDomains": ["pypi.org"],
+                    "deniedDomains": ["evil.example"],
+                },
+            },
+        )
+
+    def _sections(self, tmp_path: Path, *options: str) -> list[str]:
+        fake = FakeRunner(blocked=("secret", ".pem", "example.com", "evil"))
+        with patch(RUN, fake):
+            result = runner.invoke(
+                app, ["-c", str(self._config(tmp_path)), "test", "--json", *options]
+            )
+        assert result.exit_code == 0, result.output
+        return sorted({r["section"] for r in json.loads(result.stdout)["results"]})
+
+    def test_without_section_options_every_section_runs(self, tmp_path: Path) -> None:
+        assert self._sections(tmp_path) == [
+            "allowWrite",
+            "allowedDomains",
+            "deniedDomains",
+            "denyRead",
+            "denyWrite",
+        ]
+
+    @pytest.mark.parametrize(
+        "section",
+        ["denyRead", "denyWrite", "allowWrite", "allowedDomains", "deniedDomains"],
+    )
+    def test_one_section_option_runs_only_that_section(
+        self, tmp_path: Path, section: str
+    ) -> None:
+        assert self._sections(tmp_path, f"--{section}") == [section]
+
+    def test_section_options_combine(self, tmp_path: Path) -> None:
+        assert self._sections(tmp_path, "--denyRead", "--deniedDomains") == [
+            "deniedDomains",
+            "denyRead",
+        ]
+
+    def test_allowed_domains_includes_the_allowlist_canary(
+        self, tmp_path: Path
+    ) -> None:
+        fake = FakeRunner(blocked=("example.com",))
+        with patch(RUN, fake):
+            result = runner.invoke(
+                app,
+                [
+                    "-c",
+                    str(self._config(tmp_path)),
+                    "test",
+                    "--json",
+                    "--allowedDomains",
+                ],
+            )
+
+        rules = [r["rule"] for r in json.loads(result.stdout)["results"]]
+        assert rules == ["pypi.org", "example.com (not allowlisted)"]

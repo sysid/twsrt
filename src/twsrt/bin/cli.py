@@ -830,9 +830,23 @@ def test_command(
         False, "--json", help="Print a JSON report instead of the table"
     ),
     timeout: float = typer.Option(30.0, "--timeout", help="Seconds per command"),
+    deny_read: bool = typer.Option(False, "--denyRead", help="Probe denyRead"),
+    deny_write: bool = typer.Option(False, "--denyWrite", help="Probe denyWrite"),
+    allow_write: bool = typer.Option(False, "--allowWrite", help="Probe allowWrite"),
+    allowed_domains: bool = typer.Option(
+        False, "--allowedDomains", help="Probe allowedDomains and the allowlist canary"
+    ),
+    denied_domains: bool = typer.Option(
+        False, "--deniedDomains", help="Probe deniedDomains"
+    ),
 ) -> None:
-    """Prove the effective SRT settings are enforced by probing the sandbox."""
+    """Prove the effective SRT settings are enforced by probing the sandbox.
+
+    Section options (named after the .srt-settings.json keys) combine; without
+    any, every section is probed.
+    """
     from twsrt.lib.probe import (
+        SECTIONS,
         ProbeError,
         derive_probes,
         preflight,
@@ -886,6 +900,17 @@ def test_command(
 
         probes = derive_probes(srt, cwd, home, Path(scratch), scratch_in=scratch_in)
         log.debug("derived %d probes", len(probes))
+        sections = {
+            section
+            for section, wanted in zip(
+                SECTIONS,
+                (deny_read, deny_write, allow_write, allowed_domains, denied_domains),
+            )
+            if wanted
+        }
+        if sections:
+            probes = [p for p in probes if p.section in sections]
+            log.debug("sections %s kept %d probes", sorted(sections), len(probes))
         if keyword:
             derived = len(probes)
             probes = [p for p in probes if keyword in p.kind or keyword in p.rule]
@@ -1066,6 +1091,7 @@ def _probe_report(
         "results": [
             {
                 "kind": result.probe.kind,
+                "section": result.probe.section,
                 "rule": result.probe.rule,
                 "command": result.probe.command,
                 "expect": result.probe.expect.value,

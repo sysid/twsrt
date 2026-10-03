@@ -1055,3 +1055,41 @@ class TestPreflight:
 
         with pytest.raises(ProbeError, match="Could not load settings"):
             preflight(SETTINGS, run=runner)
+
+
+class TestProbeSection:
+    def test_every_probe_names_the_config_key_it_verifies(self, tmp_path: Path) -> None:
+        secret = tmp_path / "secret.txt"
+        secret.write_text("x")
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+
+        probes = derive_probes(
+            _srt(
+                {
+                    "denyRead": [str(secret)],
+                    "denyWrite": ["**/.env"],
+                    "allowWrite": [str(scratch)],
+                },
+                {"allowedDomains": ["pypi.org"], "deniedDomains": ["evil.example"]},
+            ),
+            tmp_path,
+            tmp_path,
+            scratch,
+        )
+
+        sections = {(probe.kind, probe.rule): probe.section for probe in probes}
+        assert sections[("read-deny", str(secret))] == "denyRead"
+        assert sections[("write-deny", "**/.env")] == "denyWrite"
+        assert sections[("write-allow", str(scratch))] == "allowWrite"
+        assert sections[("net-allow", "pypi.org")] == "allowedDomains"
+        assert sections[("net-deny", "evil.example")] == "deniedDomains"
+
+    def test_allowlist_canary_belongs_to_allowed_domains(self, tmp_path: Path) -> None:
+        # A net-deny probe, but what it proves is that allowedDomains is an
+        # allowlist: a host outside it is blocked.
+        probes = derive_probes(_srt(), tmp_path, tmp_path, tmp_path / "s")
+
+        [canary] = [p for p in probes if "not allowlisted" in p.rule]
+        assert canary.kind == "net-deny"
+        assert canary.section == "allowedDomains"
