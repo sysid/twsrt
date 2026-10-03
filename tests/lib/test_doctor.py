@@ -505,17 +505,33 @@ def test_subsumed_rules_are_grouped_per_fragment_and_list(tmp_path: Path) -> Non
     assert "'static.crates.io' by '*.crates.io'" in message
 
 
-def test_read_deny_inside_a_write_root_without_write_deny_is_flagged(
+def test_read_deny_inside_a_write_root_is_not_flagged_since_compile_implies_write_deny(
     tmp_path: Path,
 ) -> None:
-    # srt turns denyRead into a read deny plus an unlink deny only: inside an
-    # allowWrite root the agent can still overwrite and create files there.
+    # The compiler adds every denyRead path to denyWrite, so a read deny below
+    # an allowWrite root is no longer overwritable and needs no finding.
     config = write_config(
         tmp_path,
         srt={
             "base": (
                 '{"enabled": true, "filesystem": {"allowWrite": [".", "~/xxx"], '
-                '"denyRead": ["**/.twsrt", "~/xxx/secret", "~/.ssh"]}}'
+                '"denyRead": ["./secrets", "~/xxx/secret"]}}'
+            )
+        },
+        bash={"base": BASH_BASE},
+        profiles='[profiles.default]\nsrt = ["base"]\nbash = ["base"]\n',
+    )
+
+    assert run(config) == []
+
+
+def test_write_only_path_surfaces_as_a_compile_error(tmp_path: Path) -> None:
+    config = write_config(
+        tmp_path,
+        srt={
+            "base": (
+                '{"enabled": true, "filesystem": '
+                '{"allowWrite": ["~/logs"], "denyRead": ["~/logs"]}}'
             )
         },
         bash={"base": BASH_BASE},
@@ -524,41 +540,42 @@ def test_read_deny_inside_a_write_root_without_write_deny_is_flagged(
 
     findings = run(config)
 
-    flagged = [f for f in findings if f.code == "read-deny-writable"]
-    assert len(flagged) == 1
-    assert flagged[0].severity == "warning"
-    message = flagged[0].message
-    assert message.startswith("srt/base.jsonc: filesystem.denyRead: 2 ")
-    assert "'**/.twsrt' (under '.')" in message
-    assert "'~/xxx/secret' (under '~/xxx')" in message
-    assert "~/.ssh" not in message
+    assert codes(findings) == ["profile-compile"]
+    assert "~/logs" in findings[0].message
+    assert "denyRead implies denyWrite" in findings[0].message
 
 
-def test_read_deny_also_listed_in_deny_write_is_not_flagged(tmp_path: Path) -> None:
+def test_equivalent_spellings_of_one_directory_are_reported_once(
+    tmp_path: Path,
+) -> None:
     config = write_config(
         tmp_path,
         srt={
             "base": (
-                '{"enabled": true, "filesystem": {"allowWrite": ["~/xxx"], '
-                '"denyRead": ["~/xxx/secret", "~/xxx/vault/keys"], '
-                '"denyWrite": ["~/xxx/secret", "~/xxx/vault"]}}'
+                '{"enabled": true, "filesystem": '
+                '{"allowWrite": ["~/.copilot/ide", "~/.copilot/ide/**"]}}'
             )
         },
         bash={"base": BASH_BASE},
         profiles='[profiles.default]\nsrt = ["base"]\nbash = ["base"]\n',
     )
 
-    assert "read-deny-writable" not in codes(run(config))
+    subsumed = [f for f in run(config) if f.code == "subsumed-rule"]
+
+    assert len(subsumed) == 1
+    assert subsumed[0].message.endswith(
+        "1 entry already covered: '~/.copilot/ide/**' by '~/.copilot/ide'"
+    )
 
 
-def test_read_deny_write_check_sees_rules_from_other_fragments_of_the_profile(
+def test_wildcard_apex_is_reported_once_per_fragment_across_profiles(
     tmp_path: Path,
 ) -> None:
     config = write_config(
         tmp_path,
         srt={
-            "base": '{"enabled": true, "filesystem": {"denyRead": ["~/xxx/secret"]}}',
-            "work": '{"filesystem": {"allowWrite": ["~/xxx"]}}',
+            "base": '{"enabled": true, "network": {"allowedDomains": ["*.npmjs.org"]}}',
+            "work": '{"network": {"allowedDomains": ["*.corp.example"]}}',
         },
         bash={"base": BASH_BASE},
         profiles=(
@@ -567,9 +584,10 @@ def test_read_deny_write_check_sees_rules_from_other_fragments_of_the_profile(
         ),
     )
 
-    flagged = [f for f in run(config) if f.code == "read-deny-writable"]
+    apex = [f.message for f in run(config) if f.code == "wildcard-apex"]
 
-    # Only profile `work` grants the write root; the finding names the fragment
-    # holding the read deny.
-    assert len(flagged) == 1
-    assert flagged[0].message.startswith("srt/base.jsonc: filesystem.denyRead: 1 ")
+    assert len(apex) == 2
+    assert apex[0].startswith("srt/base.jsonc: network.allowedDomains: 1 ")
+    assert "'*.npmjs.org' (npmjs.org)" in apex[0]
+    assert apex[1].startswith("srt/work.jsonc: network.allowedDomains: 1 ")
+    assert "'*.corp.example' (corp.example)" in apex[1]

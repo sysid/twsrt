@@ -72,11 +72,8 @@ def compile_sources(
         document = compose_documents(
             profile.name, kind, loaded, set_paths=_SET_PATHS.get(kind, ())
         )
-        if kind == "srt" and extra_deny_write:
-            filesystem = document.setdefault("filesystem", {})
-            filesystem["denyWrite"] = sorted(
-                {*filesystem.get("denyWrite", []), *extra_deny_write}
-            )
+        if kind == "srt":
+            _imply_write_denies(profile.name, document, extra_deny_write)
         loaded_by_kind[kind] = loaded
         documents[kind] = CompiledDocument(
             source_kind=kind,
@@ -92,6 +89,34 @@ def compile_sources(
         rules=[*srt_result.rules, *bash_rules],
         srt_result=srt_result,
     )
+
+
+def _imply_write_denies(
+    profile_name: str, document: dict[str, Any], extra: Sequence[str]
+) -> None:
+    """Add every denyRead path, plus *extra*, to denyWrite.
+
+    srt compiles denyRead to a read and unlink deny only, never a write deny:
+    inside an allowWrite root a read-denied file stays overwritable. A path
+    secret enough to hide is never meant to be rewritten, so the write deny
+    is implied rather than left to the fragment author. A path that is both
+    read-denied and write-allowed would silently lose that guarantee, so it
+    fails instead.
+    """
+    filesystem = document.get("filesystem", {})
+    read_denies = filesystem.get("denyRead", [])
+    implied = {*read_denies, *extra}
+    if not implied:
+        return
+    write_only = sorted(set(read_denies) & set(filesystem.get("allowWrite", [])))
+    if write_only:
+        raise ValueError(
+            f"profile {profile_name!r}: {', '.join(write_only)} is in both "
+            "filesystem.denyRead and filesystem.allowWrite; denyRead implies "
+            "denyWrite, so a write-only path cannot be expressed"
+        )
+    filesystem = document.setdefault("filesystem", {})
+    filesystem["denyWrite"] = sorted({*filesystem.get("denyWrite", []), *implied})
 
 
 def serialize_document(document: dict[str, Any]) -> str:

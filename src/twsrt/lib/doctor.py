@@ -197,8 +197,6 @@ def _check_profile_lists(
     """Duplicates and subsumption within the union a profile compiles to."""
     for kind, fragments in profile.fragments.items():
         lists = _profile_lists(kind, fragments, loaded)
-        if kind == "srt":
-            _check_read_deny_writable(lists, base_dir, findings)
         for list_name, values in lists.items():
             key = list_name.rsplit(".", 1)[-1]
             # Grouped per contributing fragment: one finding per file and list.
@@ -235,45 +233,7 @@ def _check_profile_lists(
                     )
                 )
             if key == "allowedDomains":
-                _check_wildcard_apex(list_name, values, findings)
-
-
-def _check_read_deny_writable(
-    lists: dict[str, dict[str, list[Path]]],
-    base_dir: Path,
-    findings: list[Finding],
-) -> None:
-    """A denyRead entry below an allowWrite root needs its own denyWrite.
-
-    srt compiles denyRead to a read deny plus an unlink deny; the write
-    root's (allow file-write*) still lets the agent overwrite and create
-    files there (macos-sandbox-utils.js generateReadRules, srt 0.0.78).
-    Outside every write root the write allowlist already blocks writes.
-    """
-    roots = lists.get("filesystem.allowWrite", {})
-    write_denies = lists.get("filesystem.denyWrite", {})
-    exposed: dict[Path, list[str]] = {}
-    for entry, origins in lists.get("filesystem.denyRead", {}).items():
-        root = next((r for r in roots if _path_covers(r, entry)), None)
-        if root is None:
-            continue
-        if any(
-            _normalize_path(deny) == _normalize_path(entry) or _path_covers(deny, entry)
-            for deny in write_denies
-        ):
-            continue
-        exposed.setdefault(origins[0], []).append(f"{entry!r} (under {root!r})")
-    for origin, items in exposed.items():
-        findings.append(
-            Finding(
-                "warning",
-                "read-deny-writable",
-                f"{_show(origin, base_dir)}: filesystem.denyRead: "
-                f"{_count(items, 'entry', 'entries')} inside a write root without "
-                "denyWrite (srt blocks reading, not overwriting or creating files "
-                "there): " + ", ".join(items),
-            )
-        )
+                _check_wildcard_apex(list_name, values, base_dir, findings)
 
 
 def _profile_lists(
@@ -315,14 +275,16 @@ def _covers(key: str, parent: str, child: str) -> bool:
 
 
 def _path_covers(parent: str, child: str) -> bool:
-    parent, child = _normalize_path(parent), _normalize_path(child)
-    if "*" in parent:
+    normal_parent, normal_child = _normalize_path(parent), _normalize_path(child)
+    if "*" in normal_parent:
         return False  # ponytail: glob coverage is not modelled
-    if parent == child:
-        return True  # `dir` and `dir/**` compile to the same rule
-    if parent == ".":
-        return not child.startswith(("/", "~"))
-    return child.startswith(parent.rstrip("/") + "/")
+    if normal_parent == normal_child:
+        # `dir` and `dir/**` compile to the same rule: flag only the longer
+        # spelling, so an equivalent pair yields one finding, not two.
+        return (len(child), child) > (len(parent), parent)
+    if normal_parent == ".":
+        return not normal_child.startswith(("/", "~"))
+    return normal_child.startswith(normal_parent.rstrip("/") + "/")
 
 
 def _normalize_path(value: str) -> str:
@@ -341,21 +303,24 @@ def _domain_covers(parent: str, child: str) -> bool:
 
 
 def _check_wildcard_apex(
-    list_name: str, values: dict[str, list[Path]], findings: list[Finding]
+    list_name: str,
+    values: dict[str, list[Path]],
+    base_dir: Path,
+    findings: list[Finding],
 ) -> None:
-    missing = [
-        f"{value!r} ({value[2:]})"
-        for value in values
-        if value.startswith("*.") and ":" not in value and value[2:] not in values
-    ]
-    if missing:
+    """Grouped by the wildcard's fragment, so profiles sharing it dedup."""
+    missing: dict[Path, list[str]] = {}
+    for value, origins in values.items():
+        if value.startswith("*.") and ":" not in value and value[2:] not in values:
+            missing.setdefault(origins[0], []).append(f"{value!r} ({value[2:]})")
+    for origin, items in missing.items():
         findings.append(
             Finding(
                 "info",
                 "wildcard-apex",
-                f"{list_name}: {_count(missing, 'wildcard', 'wildcards')} "
-                "not matching the bare apex domain (add it where needed): "
-                + ", ".join(missing),
+                f"{_show(origin, base_dir)}: {list_name}: "
+                f"{_count(items, 'wildcard', 'wildcards')} not matching the bare "
+                "apex domain (add it where needed): " + ", ".join(items),
             )
         )
 

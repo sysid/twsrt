@@ -1229,3 +1229,19 @@ class TestSyncInvariants:
         assert result["permissions"]["allow"] == ["Read"]
         assert result["permissions"]["deny"] == ["Bash(rm)"]
         assert "skipDangerousModePermissionPrompt" not in result
+
+
+def test_read_and_write_deny_on_one_path_emit_each_rule_once(
+    gen: ClaudeGenerator, config: AppConfig
+) -> None:
+    # The compiler implies denyWrite for every denyRead, so both rules arrive
+    # for the same path; the Edit deny must not be duplicated.
+    rules = [
+        SecurityRule(Scope.READ, Action.DENY, "**/.env", Source.SRT_FILESYSTEM),
+        SecurityRule(Scope.WRITE, Action.DENY, "**/.env", Source.SRT_FILESYSTEM),
+    ]
+
+    deny = json.loads(gen.generate(rules, config))["permissions"]["deny"]
+
+    assert deny.count("Edit(**/.env)") == 1
+    assert deny.count("Read(**/.env)") == 1

@@ -221,9 +221,11 @@ def test_compile_sources_adds_extra_deny_write_to_document_and_rules(
         config, resolve_profile(config), extra_deny_write=["/a/repo/.twsrt"]
     )
 
+    # ~/.ssh is the base fragment's denyRead, implied as a write deny too.
     assert compiled.documents["srt"].document["filesystem"]["denyWrite"] == [
         "/a/repo/.twsrt",
         "/z/existing",
+        "~/.ssh",
     ]
     assert any(
         rule.scope == Scope.WRITE
@@ -250,3 +252,46 @@ def test_compile_sources_extra_deny_write_creates_missing_filesystem_section(
     assert compiled.documents["srt"].document["filesystem"] == {
         "denyWrite": ["/a/repo/.twsrt"]
     }
+
+
+def test_every_read_deny_is_also_compiled_as_a_write_deny(tmp_path: Path) -> None:
+    # srt compiles denyRead to a read deny only; inside an allowWrite root the
+    # file would stay overwritable. A secret must not be writable either.
+    config = load_config(
+        configured_profile(
+            tmp_path,
+            '{"filesystem": {"denyRead": ["**/.env", "~/.aws"], '
+            '"denyWrite": ["/z/existing"]}}',
+            "{}",
+        )
+    )
+
+    compiled = compile_sources(config, resolve_profile(config))
+
+    assert compiled.documents["srt"].document["filesystem"]["denyWrite"] == [
+        "**/.env",
+        "/z/existing",
+        "~/.aws",
+        "~/.ssh",
+    ]
+    write_denies = {
+        rule.pattern
+        for rule in compiled.rules
+        if rule.scope == Scope.WRITE and rule.action == Action.DENY
+    }
+    assert {"**/.env", "~/.aws", "~/.ssh"} <= write_denies
+
+
+def test_read_deny_on_a_write_allowed_path_is_a_conflict(tmp_path: Path) -> None:
+    # Write-only (denyRead + allowWrite of the same path) contradicts the
+    # implied write deny; it must be a loud error, never a silent hole.
+    config = load_config(
+        configured_profile(
+            tmp_path,
+            '{"filesystem": {"denyRead": ["~/logs"], "allowWrite": ["~/logs"]}}',
+            "{}",
+        )
+    )
+
+    with pytest.raises(ValueError, match=r"~/logs.*denyRead.*allowWrite"):
+        compile_sources(config, resolve_profile(config))

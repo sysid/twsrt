@@ -61,8 +61,6 @@ def _make_config(tmp_path: Path, srt: dict, write_settings: bool = True) -> Path
     bash_file = twsrt_dir / "bash-rules.jsonc"
     bash_file.write_text(json.dumps({"deny": [], "ask": []}))
     settings = tmp_path / ".srt-settings.json"
-    if write_settings:
-        settings.write_text(json.dumps(srt, indent=2) + "\n")
     config = twsrt_dir / "config.toml"
     config.write_text(
         "schema_version = 1\n"
@@ -79,6 +77,13 @@ def _make_config(tmp_path: Path, srt: dict, write_settings: bool = True) -> Path
         'srt = ["base"]\n'
         'bash = ["base"]\n'
     )
+    if write_settings:
+        # The compiled document, not the fragment verbatim: compilation adds
+        # rules (e.g. denyWrite implied by denyRead), and a stale copy would
+        # trip the drift warning.
+        shown = runner.invoke(app, ["-c", str(config), "show", "srt"])
+        assert shown.exit_code == 0, shown.output
+        settings.write_text(shown.stdout)
     return config
 
 
@@ -165,10 +170,16 @@ class TestHumanOutput:
         assert any(line.startswith("STATUS") and "PROBE" in line for line in lines)
         assert any("read-deny" in line and "PASS" in line for line in lines)
         assert any("net-deny" in line and "PASS" in line for line in lines)
-        assert "passed=2 failed=0 invalid=0 error=0 skipped=0" in result.stdout
+        # read-deny + implied write-deny for the secret, plus the canary.
+        assert "passed=3 failed=0 invalid=0 error=0 skipped=0" in result.stdout
         assert "srt 0.0.75" in result.stdout
 
-    def test_skipped_rules_show_the_reason(self, tmp_path: Path) -> None:
+    def test_skipped_rules_show_the_reason(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No allowWrite: the implied write-deny probe for **/.env falls back to
+        # a scratch directory in cwd, which must not be the repository.
+        monkeypatch.chdir(tmp_path)
         config, _ = (
             _make_config(
                 tmp_path,
@@ -179,7 +190,7 @@ class TestHumanOutput:
             ),
             None,
         )
-        fake = FakeRunner(blocked=("example.com",))
+        fake = FakeRunner(blocked=("example.com", "/.env"))
 
         with patch(RUN, fake):
             result = runner.invoke(app, ["-c", str(config), "test"])
@@ -231,7 +242,8 @@ class TestHumanOutput:
             for line in summary
         )
         assert not any(line.startswith("PASS") for line in summary)
-        assert summary[-1] == "passed=1 failed=1 invalid=0 error=0 skipped=1"
+        # The secret and **/.env each fail their implied write-deny probe too.
+        assert summary[-1] == "passed=1 failed=3 invalid=0 error=0 skipped=1"
         # Details (with the command) come before the short summary.
         assert lines.index(f"  command: head -c 1 -- {secret}") < header
 
@@ -245,7 +257,7 @@ class TestHumanOutput:
         assert result.exit_code == 0, result.output
         assert "--- summary ---" not in result.stdout
         assert result.stdout.splitlines()[-1] == (
-            "passed=2 failed=0 invalid=0 error=0 skipped=0"
+            "passed=3 failed=0 invalid=0 error=0 skipped=0"
         )
 
     def test_statuses_are_colored_on_a_terminal(self, tmp_path: Path) -> None:
@@ -297,7 +309,7 @@ class TestHumanOutput:
         assert any(line.startswith("preflight ok: srt 0.0.75") for line in debug)
         # Derivation and filtering.
         assert any("scratch" in line and ".twsrt-test-" in line for line in debug)
-        assert any("keyword 'read' kept 1 of 2 probes" in line for line in debug)
+        assert any("keyword 'read' kept 1 of 3 probes" in line for line in debug)
         # Per probe: control and sandbox argv, exit codes, verdict with duration.
         assert f"exec: sh -c 'head -c 1 -- {secret}'" in debug
         assert f"exec: srt -s {settings} -c 'head -c 1 -- {secret}'" in debug
@@ -339,16 +351,15 @@ class TestJsonOutput:
         assert document["srt_version"] == "0.0.75"
         assert document["settings"] == str(tmp_path / ".srt-settings.json")
         assert document["summary"] == {
-            "total": 2,
+            "total": 3,
             "passed": 1,
-            "failed": 1,
+            "failed": 2,
             "invalid": 0,
             "error": 0,
             "skipped": 0,
         }
         failed = [r for r in document["results"] if r["status"] == "FAIL"]
-        assert len(failed) == 1
-        assert failed[0]["kind"] == "read-deny"
+        assert [r["kind"] for r in failed] == ["read-deny", "write-deny"]
         assert failed[0]["rule"] == str(secret)
         assert failed[0]["expect"] == "deny"
         assert failed[0]["control_exit"] == 0

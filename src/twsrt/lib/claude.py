@@ -90,7 +90,9 @@ class ClaudeGenerator:
         sandbox["filesystem"]["denyRead"] = []
         sandbox["filesystem"]["denyWrite"] = []
 
-        permissions: dict = {"deny": deny, "allow": allow}
+        # denyRead also arrives as an implied denyWrite, so Edit(path) is
+        # emitted twice; keep the first occurrence.
+        permissions: dict = {"deny": list(dict.fromkeys(deny)), "allow": allow}
         if not config.yolo:
             permissions["ask"] = ask
 
