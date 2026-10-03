@@ -649,7 +649,8 @@ printed as soon as its verdict is known.
 | `denyRead` path | directory with a file inside | `head -c 1 -- <first regular file>` | deny | nothing | as above |
 | `denyRead` path | directory without files | `ls -- <dir>` | deny | nothing | as above |
 | `denyRead` path | symlink anywhere in the probed path | second probe on the realpath, rule shown as `<pattern> (realpath)` | deny | nothing | never |
-| `denyWrite` `**/`-glob | — | `: >> <scratch>/<name>` | deny | file removed after each run | mid-path wildcard, `[...]`, absolute or `~` glob |
+| `denyWrite` `**/`-glob | — | `: >> <scratch>/<name>` | deny | file removed after each run | mid-path wildcard, `[...]`, single-segment glob (`~/keys/*.pem`) |
+| `denyWrite` `<abs or ~>/**/`-glob | a writable directory below the prefix | `: >> <witness dir>/<name>` | deny | file removed after each run; witness dir after the whole run | no `allowWrite` directory below or around the prefix |
 | `denyWrite` path (incl. every implied one from `denyRead`) | directory | `: >> <dir>/.twsrt-probe-<pid>` | deny | file removed after each run | path absent |
 | `denyWrite` path | existing file | `: >> <file>` | deny | nothing | path absent |
 | `allowWrite` path | directory (`.` = cwd) | `: >> <dir>/.twsrt-probe-<pid>` | allow | file removed after each run | glob; path absent |
@@ -698,10 +699,18 @@ printed as soon as its verdict is known.
   | `**/secrets/**` | `secrets/probe` |
   | `**/.github/workflows/**` | `.github/workflows/probe` |
 
-  Only `**/`-anchored globs are convertible: they match anywhere, so a file
-  in the scratch directory is a valid witness. Parent directories are
-  created on the host beforehand so a sandboxed failure can only come from
-  the deny rule. The scratch directory is removed when the run ends.
+  Convertible globs are `**/x` and `<prefix>/**/x` with a literal absolute
+  or `~` prefix (`/**/.env`, `~/dev/los/**/.env`). A relative `**/x` matches
+  below the launch cwd, so the scratch directory serves. An anchored glob
+  needs its witness below the prefix (compared as real paths, like srt) and
+  inside a writable root: the scratch directory if the prefix covers it
+  (always for `/**/x`), else a temporary `.twsrt-test-*` directory in the
+  first `allowWrite` directory below the prefix, or in the prefix itself
+  when an `allowWrite` directory contains it. With neither, the probe is
+  skipped: outside every write root the allowlist blocks the write anyway,
+  so a block would prove nothing. Parent directories are created on the
+  host beforehand so a sandboxed failure can only come from the deny rule.
+  All scratch and witness directories are removed when the run ends.
 - **Directory rules** create `.twsrt-probe-<pid>` inside the directory;
   existing files are never opened. **File rules** open the named file
   itself; a file that does not exist is skipped rather than created.

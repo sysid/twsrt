@@ -463,3 +463,35 @@ class TestScratchDirectory:
         assert "write-deny" in result.stdout
         assert "write-allow" in result.stdout
         assert [p for p in cwd.iterdir()] == []
+
+    def test_anchored_glob_is_probed_in_its_own_root_and_cleaned_up(
+        self, tmp_path: Path
+    ) -> None:
+        # Launched in project/, the deny glob guards another writable tree:
+        # its witness must live there, and nothing may remain afterwards.
+        cwd = tmp_path / "project"
+        cwd.mkdir()
+        other = tmp_path / "other"
+        other.mkdir()
+        config = _make_config(
+            tmp_path,
+            {
+                "filesystem": {
+                    "allowWrite": [".", str(other)],
+                    "denyWrite": [f"{other}/**/.env"],
+                },
+                "network": {"allowedDomains": [], "deniedDomains": []},
+            },
+        )
+        fake = FakeRunner(blocked=(".env", "example.com"))
+
+        with patch(RUN, fake), patch("twsrt.bin.cli.Path.cwd", return_value=cwd):
+            result = runner.invoke(app, ["-c", str(config), "test"])
+
+        assert result.exit_code == 0, result.output
+        [command] = [
+            c[-1] for c in fake.calls if c[0] == "srt" and c[-1].endswith(".env")
+        ]
+        assert command.startswith(f": >> {other}/.twsrt-test-")
+        assert list(other.iterdir()) == []
+        assert list(cwd.iterdir()) == []

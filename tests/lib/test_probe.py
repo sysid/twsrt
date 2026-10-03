@@ -290,6 +290,176 @@ class TestDeriveWriteDeny:
         assert probe.artifact is None
 
 
+def _scratch_factory(created: list[Path]):
+    """scratch_in stand-in: a fresh directory under base, recorded for asserts."""
+
+    def scratch_in(base: Path) -> Path:
+        directory = base / f".twsrt-test-{len(created)}"
+        directory.mkdir()
+        created.append(directory)
+        return directory
+
+    return scratch_in
+
+
+class TestDeriveAnchoredWriteDenyGlob:
+    def test_root_anchored_glob_is_witnessed_in_the_scratch_dir(
+        self, tmp_path: Path
+    ) -> None:
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+
+        probes = derive_probes(
+            _srt({"denyWrite": ["/**/.env"]}),
+            tmp_path,
+            tmp_path,
+            scratch,
+            scratch_in=_scratch_factory([]),
+        )
+
+        [probe] = _by_kind(probes, "write-deny")
+        assert probe.skip_reason is None
+        assert probe.artifact == scratch / ".env"
+        assert probe.command == f": >> {scratch / '.env'}"
+
+    def test_absolute_glob_over_the_scratch_dir_reuses_it(self, tmp_path: Path) -> None:
+        scratch = tmp_path / "proj" / "scratch"
+        scratch.mkdir(parents=True)
+
+        probes = derive_probes(
+            _srt({"denyWrite": [f"{tmp_path}/proj/**/*.pem"]}),
+            tmp_path,
+            tmp_path,
+            scratch,
+            scratch_in=_scratch_factory([]),
+        )
+
+        [probe] = _by_kind(probes, "write-deny")
+        assert probe.artifact == scratch / "probe.pem"
+
+    def test_home_glob_is_witnessed_below_an_allow_write_dir_inside_it(
+        self, tmp_path: Path
+    ) -> None:
+        # Launched elsewhere: the scratch dir is outside ~/dev/los, so the
+        # witness needs its own directory in the writable ~/dev/los.
+        (tmp_path / "dev" / "los").mkdir(parents=True)
+        scratch = tmp_path / "elsewhere"
+        scratch.mkdir()
+        created: list[Path] = []
+
+        probes = derive_probes(
+            _srt({"allowWrite": ["~/dev/los"], "denyWrite": ["~/dev/los/**/.env"]}),
+            tmp_path,
+            tmp_path,
+            scratch,
+            scratch_in=_scratch_factory(created),
+        )
+
+        [probe] = _by_kind(probes, "write-deny")
+        assert created == [tmp_path / "dev" / "los" / ".twsrt-test-0"]
+        assert probe.artifact == created[0] / ".env"
+        assert probe.expect is Expect.DENY
+
+    def test_glob_prefix_inside_a_writable_root_is_witnessed_there(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "dev" / "los").mkdir(parents=True)
+        scratch = tmp_path / "elsewhere"
+        scratch.mkdir()
+        created: list[Path] = []
+
+        probes = derive_probes(
+            _srt({"allowWrite": ["~/dev"], "denyWrite": ["~/dev/los/**/.env"]}),
+            tmp_path,
+            tmp_path,
+            scratch,
+            scratch_in=_scratch_factory(created),
+        )
+
+        [probe] = _by_kind(probes, "write-deny")
+        assert created == [tmp_path / "dev" / "los" / ".twsrt-test-0"]
+        assert probe.artifact == created[0] / ".env"
+
+    def test_glob_prefix_reached_through_a_symlink_counts_as_inside(
+        self, tmp_path: Path
+    ) -> None:
+        # srt realpaths a glob's static prefix; so must the containment check.
+        real = tmp_path / "real"
+        scratch = real / "scratch"
+        scratch.mkdir(parents=True)
+        (tmp_path / "link").symlink_to(real)
+
+        probes = derive_probes(
+            _srt({"denyWrite": [f"{tmp_path}/link/**/.env"]}),
+            tmp_path,
+            tmp_path,
+            scratch,
+            scratch_in=_scratch_factory([]),
+        )
+
+        [probe] = _by_kind(probes, "write-deny")
+        assert probe.artifact == scratch / ".env"
+
+    def test_glob_without_a_writable_directory_below_it_is_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        # Outside every allowWrite root the allowlist blocks the write anyway:
+        # a blocked witness there would prove nothing about the deny glob.
+        (tmp_path / "locked").mkdir()
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        created: list[Path] = []
+
+        probes = derive_probes(
+            _srt({"denyWrite": ["~/locked/**/.env"]}),
+            tmp_path,
+            tmp_path,
+            scratch,
+            scratch_in=_scratch_factory(created),
+        )
+
+        [probe] = _by_kind(probes, "write-deny")
+        assert probe.skip_reason is not None
+        assert "no writable directory" in probe.skip_reason
+        assert created == []
+
+    @pytest.mark.parametrize("pattern", ["~/dev/*/x/**/.env", "/**/[ab].env"])
+    def test_wildcard_in_the_prefix_or_unconvertible_tail_is_skipped(
+        self, tmp_path: Path, pattern: str
+    ) -> None:
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+
+        probes = derive_probes(
+            _srt({"denyWrite": [pattern]}),
+            tmp_path,
+            tmp_path,
+            scratch,
+            scratch_in=_scratch_factory([]),
+        )
+
+        [probe] = _by_kind(probes, "write-deny")
+        assert probe.skip_reason is not None
+
+    def test_without_a_scratch_factory_a_new_directory_is_never_created(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "dev" / "los").mkdir(parents=True)
+        scratch = tmp_path / "elsewhere"
+        scratch.mkdir()
+
+        probes = derive_probes(
+            _srt({"allowWrite": ["~/dev/los"], "denyWrite": ["~/dev/los/**/.env"]}),
+            tmp_path,
+            tmp_path,
+            scratch,
+        )
+
+        [probe] = _by_kind(probes, "write-deny")
+        assert probe.skip_reason is not None
+        assert list((tmp_path / "dev" / "los").iterdir()) == []
+
+
 class TestDeriveWriteAllow:
     def test_dot_probes_the_working_directory(self, tmp_path: Path) -> None:
         cwd = tmp_path / "project"

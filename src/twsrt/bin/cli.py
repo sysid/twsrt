@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -841,11 +842,28 @@ def test_command(
         raise typer.Exit(2)
 
     cwd, home = Path.cwd(), Path.home()
-    with tempfile.TemporaryDirectory(
-        dir=scratch_root(srt, cwd, home), prefix=".twsrt-test-"
-    ) as scratch:
+    with (
+        tempfile.TemporaryDirectory(
+            dir=scratch_root(srt, cwd, home), prefix=".twsrt-test-"
+        ) as scratch,
+        contextlib.ExitStack() as witness_dirs,
+    ):
         log.debug("scratch dir %s (cwd %s, home %s)", scratch, cwd, home)
-        probes = derive_probes(srt, cwd, home, Path(scratch))
+        # Absolute and ~ deny globs need a witness below their own root; one
+        # temp dir per root, all removed when the run ends.
+        created: dict[Path, Path] = {}
+
+        def scratch_in(base: Path) -> Path:
+            if base not in created:
+                created[base] = Path(
+                    witness_dirs.enter_context(
+                        tempfile.TemporaryDirectory(dir=base, prefix=".twsrt-test-")
+                    )
+                )
+                log.debug("witness dir %s", created[base])
+            return created[base]
+
+        probes = derive_probes(srt, cwd, home, Path(scratch), scratch_in=scratch_in)
         log.debug("derived %d probes", len(probes))
         if keyword:
             derived = len(probes)

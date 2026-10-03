@@ -27,6 +27,7 @@ from twsrt.lib.models import Action, Scope, SrtResult
 log = logging.getLogger("twsrt.probe")
 
 Runner = Callable[..., subprocess.CompletedProcess]
+ScratchFactory = Callable[[Path], Path]
 
 _CURL = "curl -sS -m 10 -o /dev/null -I https://{host}/"
 _CANARY_DOMAINS = ("example.com", "example.org", "example.net")
@@ -86,8 +87,20 @@ class ProbeResult:
 # --- derivation -------------------------------------------------------------
 
 
-def derive_probes(srt: SrtResult, cwd: Path, home: Path, scratch: Path) -> list[Probe]:
-    """Turn the effective SRT rules into concrete probes, grouped by kind."""
+def derive_probes(
+    srt: SrtResult,
+    cwd: Path,
+    home: Path,
+    scratch: Path,
+    *,
+    scratch_in: ScratchFactory | None = None,
+) -> list[Probe]:
+    """Turn the effective SRT rules into concrete probes, grouped by kind.
+
+    scratch_in(base) creates a fresh witness directory below base, owned and
+    cleaned up by the caller; it is needed when an absolute or ~ deny glob
+    does not cover the scratch dir. Without it such globs are skipped.
+    """
     read_deny = _patterns(srt, Scope.READ, Action.DENY)
     write_deny = _patterns(srt, Scope.WRITE, Action.DENY)
     write_allow = _patterns(srt, Scope.WRITE, Action.ALLOW)
@@ -106,7 +119,11 @@ def derive_probes(srt: SrtResult, cwd: Path, home: Path, scratch: Path) -> list[
     probes: list[Probe] = []
     for pattern in read_deny:
         probes.extend(_read_deny(pattern, cwd, home))
-    probes.extend(_write_deny(pattern, cwd, home, scratch) for pattern in write_deny)
+    writable = _writable_dirs(write_allow, cwd, home)
+    probes.extend(
+        _write_deny(pattern, cwd, home, scratch, writable, scratch_in)
+        for pattern in write_deny
+    )
     probes.extend(_write_allow(pattern, cwd, home) for pattern in write_allow)
     probes.extend(_network(host, "net-allow", Expect.ALLOW) for host in net_allow)
     probes.extend(_network(host, "net-deny", Expect.DENY) for host in net_deny)
@@ -120,13 +137,10 @@ def scratch_root(srt: SrtResult, cwd: Path, home: Path) -> Path:
     A deny glob can only be witnessed where writing is otherwise allowed;
     falling back to cwd keeps the run going when no allowWrite entry exists.
     """
-    for pattern in _patterns(srt, Scope.WRITE, Action.ALLOW):
-        if _is_glob(pattern):
-            continue
-        directory = _expand(pattern, cwd, home)
-        if directory.is_dir():
-            log.debug("scratch root: %s (allowWrite %r)", directory, pattern)
-            return directory
+    writable = _writable_dirs(_patterns(srt, Scope.WRITE, Action.ALLOW), cwd, home)
+    if writable:
+        log.debug("scratch root: %s (first allowWrite directory)", writable[0])
+        return writable[0]
     log.debug("scratch root: %s (no concrete allowWrite directory, using cwd)", cwd)
     return cwd
 
@@ -194,10 +208,18 @@ def _first_file(directory: Path) -> Path | None:
     return None
 
 
-def _write_deny(pattern: str, cwd: Path, home: Path, scratch: Path) -> Probe:
+def _write_deny(
+    pattern: str,
+    cwd: Path,
+    home: Path,
+    scratch: Path,
+    writable: list[Path],
+    scratch_in: ScratchFactory | None,
+) -> Probe:
     if not _is_glob(pattern):
         return _concrete_write_probe("write-deny", pattern, cwd, home, Expect.DENY)
-    relative = _glob_probe_name(pattern)
+    prefix, tail = _split_anchored_glob(pattern, home)
+    relative = _glob_probe_name(tail)
     if relative is None:
         return _skip(
             "write-deny",
@@ -205,7 +227,14 @@ def _write_deny(pattern: str, cwd: Path, home: Path, scratch: Path) -> Probe:
             Expect.DENY,
             "pattern cannot be turned into a probe file",
         )
-    target = scratch / relative
+    witness_dir = (
+        scratch
+        if prefix is None
+        else _witness_dir(pattern, prefix, scratch, writable, scratch_in)
+    )
+    if isinstance(witness_dir, str):
+        return _skip("write-deny", pattern, Expect.DENY, witness_dir)
+    target = witness_dir / relative
     # Parents are created on the host so the sandboxed write fails only because
     # of the deny glob, not because of a missing directory.
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -218,13 +247,74 @@ def _write_deny(pattern: str, cwd: Path, home: Path, scratch: Path) -> Probe:
     )
 
 
+def _split_anchored_glob(pattern: str, home: Path) -> tuple[Path | None, str]:
+    """Split ``<prefix>/**/<tail>`` into (expanded prefix, ``**/<tail>``).
+
+    A relative ``**/x`` has no prefix. Any other shape is returned unsplit, so
+    _glob_probe_name rejects it.
+    """
+    if pattern.startswith("**/"):
+        return None, pattern
+    if pattern.startswith("/**/"):
+        return Path("/"), pattern[1:]
+    head, sep, rest = pattern.partition("/**/")
+    if not sep or _is_glob(head) or not head.startswith(("/", "~")):
+        return None, pattern
+    return _expand(head, home, home), f"**/{rest}"
+
+
+def _witness_dir(
+    pattern: str,
+    prefix: Path,
+    scratch: Path,
+    writable: list[Path],
+    scratch_in: ScratchFactory | None,
+) -> Path | str:
+    """Directory below *prefix* where writing is otherwise allowed, or a skip reason.
+
+    Outside every allowWrite root the allowlist blocks the write by itself, so
+    a blocked witness there would prove nothing about the deny glob. srt
+    realpaths a glob's static prefix, so containment compares real paths.
+    ponytail: a denyWrite covering the witness dir itself is not detected.
+    """
+    real_prefix = Path(os.path.realpath(prefix))
+    if _is_within(Path(os.path.realpath(scratch)), real_prefix):
+        return scratch
+    base = next(
+        (d for d in writable if _is_within(Path(os.path.realpath(d)), real_prefix)),
+        None,
+    )
+    if base is None and prefix.is_dir():
+        if any(_is_within(real_prefix, Path(os.path.realpath(d))) for d in writable):
+            base = prefix
+    if base is None:
+        return f"no writable directory under {prefix}: a blocked write proves nothing"
+    if scratch_in is None:
+        return f"needs a scratch directory under {base}"
+    log.debug("write-deny %s: witness directory below %s", pattern, base)
+    return scratch_in(base)
+
+
+def _writable_dirs(write_allow: list[str], cwd: Path, home: Path) -> list[Path]:
+    return [
+        path
+        for pattern in write_allow
+        if not _is_glob(pattern) and (path := _expand(pattern, cwd, home)).is_dir()
+    ]
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
 def _glob_probe_name(pattern: str) -> Path | None:
     """Relative file name that matches a ``**/``-anchored deny glob.
 
-    ponytail: only patterns anchored with ``**/`` are convertible — those match
-    anywhere, so a file inside the scratch directory is a valid witness. Absolute,
-    home-relative, and mid-path wildcards are reported as skipped; a matcher that
-    understands SRT's anchoring would be the upgrade path.
+    ``**/`` matches anywhere below its anchor, so a file inside a witness
+    directory under that anchor is a valid witness. ponytail: mid-path
+    wildcards (``~/dev/*/x``) and single-segment globs (``~/keys/*.pem``) are
+    reported as skipped; a matcher that understands SRT's regexes would be
+    the upgrade path.
     """
     if not pattern.startswith("**/"):
         return None
