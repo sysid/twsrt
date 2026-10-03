@@ -9,50 +9,43 @@ configuration of every AI coding agent you run.
 
 ## Contents
 
-1. [What twsrt does](#what-twsrt-does)
-2. [Install and quickstart](#install-and-quickstart)
-3. [Concepts](#concepts)
-4. [Configuration](#configuration)
-5. [Commands](#commands)
-6. [Claude Code target](#claude-code-target)
-7. [Per-project policy](#per-project-policy)
-8. [Codex target](#codex-target)
-9. [Copilot CLI target](#copilot-cli-target)
-10. [Security model](#security-model)
-11. [Development](#development)
+1. [Why twsrt](#why-twsrt)
+2. [How it works](#how-it-works) — three pictures
+3. [Use cases at a glance](#use-cases-at-a-glance)
+4. [Install and quickstart](#install-and-quickstart)
+5. [Configuration](#configuration)
+6. [Per-project policy](#per-project-policy)
+7. [Agents](#agents)
+8. [Verifying the policy](#verifying-the-policy)
+9. [Security at a glance](#security-at-a-glance)
+10. [Commands](#commands)
+11. [Documentation map](#documentation-map) · [Development](#development)
 
-Deep-dive tables and examples live in [doc/REFERENCE.md](doc/REFERENCE.md).
-The threat model is in [SECURITY_CONCEPT.md](SECURITY_CONCEPT.md).
+## Why twsrt
 
-## What twsrt does
-
-Claude Code, Codex, and Copilot CLI each have their own permission model and
+Claude Code, Codex and Copilot CLI each have their own permission model and
 config format. Maintaining "never read `~/.aws`, never run `sudo`, only reach
-`github.com`" three times by hand drifts and leaves gaps.
-
-twsrt keeps that policy in small JSONC fragments, composes them per profile
-into strict canonical JSON, and derives each agent's native configuration
-from the result:
+`github.com`" three times by hand drifts and leaves gaps. twsrt keeps that
+policy once and compiles it into every agent:
 
 ```
- config.toml ──► resolve profile ──► parse JSONC ──► compose ──► validate
-                                                                    │
-                        ┌───────────────────────────────────────────┤
-                        ▼                                           ▼
-             compiled canonical JSON                     normalized rules
-             ~/.srt-settings.json                                   │
-             bash-rules.json                                        ▼
-                                                     Claude settings.json
-                                                     Codex config.toml + .rules
-                                                     Copilot CLI flags
+                 ┌───────────────────────────┐
+   you edit ───► │  policy fragments (JSONC) │   never read ~/.aws · never run sudo
+                 │  + profiles (config.toml) │   only reach github.com · ask before git push
+                 └─────────────┬─────────────┘
+                               │ twsrt generate -w
+          ┌──────────────┬─────┴────────┬────────────────┐
+          ▼              ▼              ▼                ▼
+   ~/.srt-settings   Claude Code      Codex          Copilot CLI
+   (SRT sandbox)     settings.json    config.toml    launch flags
+                                      + .rules
 ```
 
-### Canonical config vs agent configs
+## How it works
 
-> **The canonical config is the input for every agent translation.**
-> `~/.srt-settings.json` and `bash-rules.json` are the compiled policy of one
-> profile: the single source of truth. SRT reads `~/.srt-settings.json`
-> directly; every agent config is translated from the same compile.
+Three ideas explain the whole tool.
+
+### 1. One policy, compiled in two stages
 
 ```
  stage 1: compile — depends on the profile only
@@ -75,6 +68,11 @@ from the result:
  generate <agent> -w   writes stage 1 (all of it) + stage 2 (that agent)
 ```
 
+> **The canonical config is the input for every agent translation.**
+> `~/.srt-settings.json` and `bash-rules.json` are the compiled policy of one
+> profile: the single source of truth. SRT reads `~/.srt-settings.json`
+> directly; every agent config is translated from the same compile.
+
 | | Canonical config | Agent configs |
 |---|---|---|
 | Files | `~/.srt-settings.json`, `bash-rules.json` | Claude `settings.full.json`, Codex `config.toml` + `.rules`, Copilot flags |
@@ -88,31 +86,84 @@ Consequences:
 - **`twsrt generate copilot -w` also rewrites `~/.srt-settings.json`.** The
   agent argument only selects which translations run; the canonical outputs
   are always rewritten so every target matches the policy it came from.
-- **Never hand-edit the canonical files.** Agent configs are translated from
-  the in-memory compile of the fragments, not from the files on disk, and the
-  next `generate -w` overwrites any hand edit. `twsrt diff` reports such an
-  edit as `srt canonical: drift`. Edit the fragments (`twsrt edit`) instead.
-- **One profile is in force at a time.** Output paths are per source kind, not
-  per profile: `generate -w -p work` and `generate -w` write the same files,
-  and the last run wins.
+- **Never hand-edit generated files.** Agent configs are translated from the
+  in-memory compile of the fragments, not from the files on disk; the next
+  `generate -w` overwrites a hand edit, and `twsrt diff` reports it as drift.
+  Edit the fragments (`twsrt edit`) instead.
+- **Nothing is written unless everything compiles.** A conflict between
+  fragments aborts before the first file is touched.
 
-Two enforcement layers come out of it:
+### 2. Two enforcement layers
 
-| Layer | Enforced by | Covers | Does not cover |
-|---|---|---|---|
-| Kernel sandbox | Claude native sandbox, Codex sandbox, or the [SRT](https://github.com/anthropic-experimental/sandbox-runtime) wrapper | Every command an agent spawns | Built-in tools (Read, Edit, WebFetch) that run inside the agent process |
-| Agent permissions | Each agent's own rule engine | All tools, including built-in ones | Best-effort only; semantics differ per agent |
+The same policy is enforced twice, by two very different mechanisms:
 
-The kernel layer (deny paths and allowed domains) is the durable core and
-translates with high fidelity everywhere. The bash deny/ask rules are a
-per-agent supplement. Example:
+```
+  agent process (Node, Rust, …)
+  ┌───────────────────────────────────────────────────────────────┐
+  │  built-in tools: Read · Edit · WebFetch      ◄── layer 2 only │
+  │        │                                                      │
+  │  layer 2: agent permissions (deny / ask / allow, all tools)   │
+  │        │                                                      │
+  │        └─► Bash tool ──spawns──┐                              │
+  └────────────────────────────────┼──────────────────────────────┘
+                                   ▼
+  ┌───────────────────────────────────────────────────────────────┐
+  │  layer 1: kernel sandbox (Seatbelt / bubblewrap + net proxy)  │
+  │  every spawned command: deny paths, write allowlist, domains  │
+  └───────────────────────────────────────────────────────────────┘
+```
 
-| Access path | Kernel sandbox | Agent permissions |
+| Access | Layer 1: kernel sandbox | Layer 2: agent permissions |
 |---|---|---|
 | `Bash(cat ~/.aws/credentials)` | denied | denied |
 | `Read(~/.aws/credentials)` | not covered (in-process) | denied |
 | `Bash(curl evil.com)` | proxy blocks | denied |
 | `WebFetch(evil.com)` | not covered (in-process) | allow check |
+| `Bash(git push)` vs `Bash(ls)` | cannot tell them apart | deny / ask per command |
+
+The kernel layer (deny paths, write allowlist, allowed domains) is the
+durable core and translates with high fidelity into every agent. The Bash
+deny/ask rules are a per-agent supplement. Why both are needed:
+[SECURITY_CONCEPT.md](SECURITY_CONCEPT.md#3-security-principles).
+
+### 3. Profiles choose which fragments are in force
+
+A fragment is one slice of policy. A profile is a selection of fragments;
+it holds no policy itself. Profiles extend each other but only ever *add*:
+
+```
+                     fragment pool (the policy)
+ profile  │ srt/base  srt/cloud-creds  srt/work  bash/base │ typical use
+ ─────────┼────────────────────────────────────────────────┼───────────────────────────
+ default  │    ●             ●                       ●     │ the global files
+ work     │    ●             ●            ●          ●     │ extends default, adds work
+ slim     │    ●                                     ●     │ one repo, via --project
+```
+
+- **Children add, they never override.** A scalar the parent sets cannot be
+  changed by a child; that is a compile error, so no profile can silently
+  weaken another.
+- **One profile is in force at a time** for the global files: output paths
+  are per source kind, not per profile, so `generate -w -p work` and
+  `generate -w` write the same files and the last run wins.
+- **A project drops a rule by choosing a profile without that fragment**,
+  compiled into the repository instead of the global files — see
+  [Per-project policy](#per-project-policy).
+
+## Use cases at a glance
+
+| I want to … | Run | More |
+|---|---|---|
+| Start from scratch | `twsrt config --init` | [Quickstart](#install-and-quickstart) |
+| Change the policy | `twsrt edit` → `twsrt generate -w <agent>` | [Configuration](#configuration) |
+| See what an agent would get, without writing | `twsrt generate <agent>` | [Agents](#agents) |
+| See the compiled sandbox file | `twsrt show` | [How it works](#1-one-policy-compiled-in-two-stages) |
+| Run an agent without permission prompts, sandbox as safety net | `twsrt generate --yolo -w <agent>` | [Modes](#claude-code) |
+| Use a different policy set on this machine | `twsrt generate -w -p work <agent>` | [Profiles](#3-profiles-choose-which-fragments-are-in-force) |
+| Relax one rule for one repository only | `twsrt generate claude -w -p slim --project` | [Per-project policy](#per-project-policy) |
+| Check nobody edited generated files | `twsrt diff` | [Verifying](#verifying-the-policy) |
+| Prove the sandbox actually blocks what the policy says | `twsrt test` | [Verifying](#verifying-the-policy) |
+| Find redundant rules and pattern traps | `twsrt doctor` | [Verifying](#verifying-the-policy) |
 
 ## Install and quickstart
 
@@ -120,13 +171,13 @@ per-agent supplement. Example:
 uv tool install twsrt        # or: pip install twsrt
 
 twsrt config --init          # writes ~/.config/twsrt/config.toml + starter fragments
-twsrt config                 # opens config.toml in $EDITOR
 twsrt edit                   # opens the profile's fragments: deny paths, domains, command rules
 
 twsrt show                   # print the compiled canonical ~/.srt-settings.json
 twsrt generate claude        # preview the Claude translation; writes nothing
 twsrt generate claude -w     # write the canonical outputs + ~/.claude/settings.full.json
 twsrt diff                   # exit 0 when every target matches the fragments
+twsrt test                   # prove the sandbox enforces the policy (plain terminal)
 ```
 
 A common launch pattern regenerates the active mode on every start:
@@ -136,30 +187,19 @@ claude-full() { twsrt generate -w claude; claude "$@"; }
 claude-yolo() { twsrt generate --yolo -w claude; claude --allow-dangerously-skip-permissions "$@"; }
 ```
 
-## Concepts
-
-| Term | Meaning |
-|---|---|
-| Source kind | A canonical document type. Two exist: `srt` (filesystem and network policy) and `bash` (command allow/ask/deny lists). |
-| Fragment | One named `.jsonc` file holding a slice of policy for one source kind. Fragments never include each other. |
-| Profile | Picks an ordered list of fragments per source kind and may extend other profiles. `default_profile` applies when `--profile` is omitted. |
-| Canonical output | The strict JSON each source kind compiles to: `~/.srt-settings.json` (read by SRT) and `bash-rules.json`. The input for every agent translation. Rewritten by every `generate -w`; never hand-edited. See [Canonical config vs agent configs](#canonical-config-vs-agent-configs). |
-| Target | An agent config file translated from the canonical output: Claude settings, Codex config and rules, Copilot flags. |
-| Mode | `full` (default) keeps ask rules and interactive approval. `--yolo` drops ask rules and writes to separate `*.yolo.*` targets, for launches that skip permission prompts. |
-
-Composition merges objects recursively and unions arrays. Rule arrays (paths,
-domains, sockets, commands) are sorted, so generated artifacts do not depend on
-fragment order; every other array, including unknown pass-through keys, keeps
-fragment order. Conflicting scalars or opposing allow/deny rules fail with the
-path and the fragments involved.
-Nothing is written until every target rendered cleanly. Details in
-[Compiler model](doc/REFERENCE.md#compiler-model).
-
 ## Configuration
 
 Only `config.toml` and the `.jsonc` fragments are edited by hand. Relative
 paths resolve from the directory containing `config.toml`; `~` and absolute
-paths also work.
+paths also work. `twsrt config --init` writes a fully commented version.
+
+| Term | Meaning |
+|---|---|
+| Source kind | A canonical document type: `srt` (filesystem and network policy) and `bash` (command allow/ask/deny lists) |
+| Fragment | One named `.jsonc` file holding a slice of policy for one source kind. Fragments never include each other |
+| Profile | An ordered selection of fragments per source kind; may `extend` other profiles. `default_profile` applies when `-p` is omitted |
+| Target | An agent config file translated from the canonical output |
+| Mode | `full` (default) keeps ask rules and interactive approval. `--yolo` drops ask rules and writes separate `*.yolo.*` targets, for launches that skip permission prompts |
 
 ### config.toml
 
@@ -211,166 +251,53 @@ allowUnsandboxedCommands = false
 enabled = false
 ```
 
-`twsrt config --init` writes a fully commented version of this file.
+### Fragments
 
-### SRT fragment (`srt/*.jsonc`)
-
-Follows the [SRT configuration schema](https://github.com/anthropic-experimental/sandbox-runtime?tab=readme-ov-file#configuration).
-Comments are allowed; trailing commas, duplicate keys, and non-finite numbers
-are rejected.
+SRT fragments follow the
+[SRT configuration schema](https://github.com/anthropic-experimental/sandbox-runtime?tab=readme-ov-file#configuration);
+Bash fragments hold three command lists. JSONC comments are allowed;
+trailing commas, duplicate keys and non-finite numbers are rejected.
 
 ```jsonc
-{
-  "filesystem": {
-    "denyRead":  ["~/.aws", "~/.ssh", "~/.gnupg", "~/.netrc"],
-    "denyWrite": ["**/.env", "**/*.pem", "**/*.key", "**/secrets/**"],
-    "allowWrite": [".", "/tmp", "~/dev"]
+// srt/base.jsonc                                   // bash/base.jsonc
+{                                                   {
+  "filesystem": {                                     "allow": ["gh pr view"],
+    "denyRead":  ["~/.aws", "~/.ssh", "~/.gnupg"],    "deny":  ["rm", "sudo", "git push --force"],
+    "denyWrite": ["**/.env", "**/*.pem"],             "ask":   ["git push", "git commit"]
+    "allowWrite": [".", "/tmp", "~/dev"]            }
   },
   "network": {
-    "allowedDomains": ["github.com", "*.github.com", "pypi.org", "*.pypi.org"]
+    "allowedDomains": ["github.com", "*.github.com", "pypi.org"]
   }
 }
 ```
 
-Full example: [example/srt-settings.jsonc](example/srt-settings.jsonc).
-
-### Bash fragment (`bash/*.jsonc`)
-
-```jsonc
-{
-  "allow": ["gh pr view"],
-  "deny":  ["rm", "sudo", "git push --force"],
-  "ask":   ["git push", "git commit", "pip install"]
-}
-```
-
-Full example: [example/bash-rules.jsonc](example/bash-rules.jsonc).
-
-## Commands
-
-| Command | Effect |
+| SRT key | Meaning |
 |---|---|
-| `twsrt config --init` | Create starter `config.toml` and fragments |
-| `twsrt config` | Open `config.toml` in `$EDITOR` |
-| `twsrt edit [srt\|bash]` | Open the fragments the profile selects in `$EDITOR`, then report whether the targets are now stale |
-| `twsrt edit -p work -n` | Name the fragments profile `work` is made of, open nothing |
-| `twsrt profiles` | List every profile with the fragments it resolves to; `*` marks `default_profile`, a profile unusable on its own shows as `invalid` |
-| `twsrt generate [claude\|codex\|copilot]` | Print the generated config for one agent, or all. Writes nothing — a red stderr reminder says so. Canonical outputs are not printed; see `show` |
-| `twsrt generate <agent> -w` | Write the canonical outputs (always, whichever agent) and the agent target (selective merge) |
-| `twsrt generate <agent> -w -n` | Dry run of `-w`: list the paths it would write. `-n` without `-w` changes nothing |
-| `twsrt generate --yolo <agent>` | Yolo mode: no ask rules, `*.yolo.*` targets, yolo sandbox overrides |
-| `twsrt generate -p work <agent>` | Use profile `work` instead of `default_profile` |
-| `twsrt generate claude -w -p slim --project` | Write profile `slim` to `./.twsrt/` for a per-launch `claude --settings` / `srt -s`; nothing global is written. See [Per-project policy](#per-project-policy) |
-| `twsrt show [srt\|bash] [-p profile]` | Print the compiled canonical document (default `srt`, i.e. `~/.srt-settings.json`) exactly as `-w` would write it. Writes nothing. Agent-independent |
-| `twsrt diff [agent] [--yolo]` | Compare fragments against canonical outputs and targets on disk |
-| `twsrt test [-k TEXT] [--json]` | Prove the compiled SRT settings are enforced by probing the sandbox |
-| `twsrt doctor` | Lint every profile and fragment: errors (unparseable fragment, profile that does not compile), redundancy, pattern traps. Exit 1 on errors. See [Doctor checks](doc/REFERENCE.md#doctor-checks) |
+| `denyRead` | Paths the agent cannot read. **Also compiled into `denyWrite`**: a path secret enough to hide is never meant to be rewritten ([ADR 0001](doc/adr/0001-deny-read-implies-deny-write.md)) |
+| `denyWrite` | Paths or globs the agent cannot write, even inside a write root |
+| `allowWrite` | The write allowlist: every write outside it is denied |
+| `allowedDomains` | The network allowlist: every other host is blocked |
 
-`edit` opens every selected fragment in one editor invocation. A bare `vim`,
-`nvim`, `gvim` or `mvim` gets `-p`, so each fragment lands in its own tab; every
-other editor just receives the files. An `$EDITOR` that already carries
-arguments (`EDITOR="nvim -O"`, `EDITOR="code -w"`) is passed through untouched.
-`twsrt -v edit -n` prints the exact command line without running it.
-
-`diff` exit codes: `0` no drift, `1` drift, `2` target missing. It compiles
-the profile in memory and catches both unapplied fragment edits and
-out-of-band changes to generated files.
-
-`test` derives one probe command per effective SRT rule from the compiled
-`~/.srt-settings.json` (a `head` on a file inside every `denyRead` path, an
-append-open that writes nothing for every `denyWrite` glob, directory, or
-file and every `allowWrite` directory or file, a `curl` per concrete domain,
-plus a canary for a host outside the allowlist) and runs each probe twice:
-plainly as
-a control, then under `srt -s <settings> -c`. A deny rule passes if the
-control succeeds and the sandboxed run fails, or if the OS itself refuses the
-control run (a root-owned directory), so a missing file can never count as
-protected while an already-protected path still does. Symlinked deny paths get a second probe on their real
-path, which exposes the macOS symlink no-op (see
-[Security model](#security-model)). Exit codes: `0` all probes passed, `1` any
-`FAIL`, `INVALID`, or `ERROR`, `2` settings missing or srt unable to sandbox.
-`--json` replaces the table with a machine-readable report. It must run from a
-plain terminal: inside another sandbox (Claude Code's Bash tool, Codex) srt
-cannot apply its profile and the preflight aborts with exit `2`. The probe set
-is derived, never authored: there is no test list to maintain, you change what
-is tested by changing the fragments and re-running `twsrt generate -w`. That
-also bounds what a green run means — `test` proves the rules you wrote are
-enforced, not that you wrote the right rules. Probe
-catalogue, verdict table, maintenance, and safety properties:
-[Sandbox probes](doc/REFERENCE.md#sandbox-probes).
-
-stdout carries a command's result: generated config, the `diff` and `test`
-reports, the `edit -n` paths, and with `--project -w` the `.twsrt` directory.
-Errors, warnings and write narration (`Wrote …`, `Would write …`) go to
-stderr, so `-w` output can be captured. `--verbose` before the subcommand adds debug output that never prints
-policy contents; the one exception is `test`, where `-v` traces the whole run:
-every executed command as a copyable line (`exec: sh -c ...`,
-`exec: srt -s ... -c ...`) with exit code, duration, and stderr, plus each
-derivation decision, so the deny paths under test do appear. Details in
-[Diagnostic output](doc/REFERENCE.md#diagnostic-output).
-
-## Claude Code target
-
-**Files.** twsrt writes `~/.claude/settings.full.json` (or `settings.yolo.json`
-with `--yolo`) and points the symlink `~/.claude/settings.json` at it. A
-regular `settings.json` found on first run is moved to the target. Both
-regular file and target existing at once is an error.
-
-**What Claude enforces.** The native sandbox (Seatbelt or bwrap, configured
-under `sandbox`) covers Bash commands. Read, Edit, and WebFetch run inside
-the agent process and are guarded only by the generated `permissions` rules.
-Claude folds `Read`/`Edit` deny rules into the sandbox profile, so twsrt
-emits deny paths as permission rules only and leaves
-`sandbox.filesystem.denyRead/denyWrite` empty. Duplicating them once pushed
-the profile past macOS `ARG_MAX`.
-
-**Selective merge.** `-w` rewrites only what twsrt owns:
-
-| Section | Handling |
+| Bash key | Meaning |
 |---|---|
-| `permissions.deny`, `permissions.ask` | replaced |
-| `permissions.allow` | only `WebFetch(domain:...)` entries replaced; other allows kept |
-| `sandbox.network`, `sandbox.filesystem`, `sandbox.*` | merged key by key; Claude-only keys kept; deny lists reset to `[]` |
-| everything else (hooks, plugins, model, theme, ...) | kept, or synced from the other mode's file with `[claude_sync]` |
+| `deny` | Block the command (and its subcommands) |
+| `ask` | Prompt before running it; agents without an ask tier get a deny |
+| `allow` | Validated against `ask`/`deny`, but compiled into no agent today: Codex would read it as "run outside the sandbox", so it is skipped with a warning |
 
-Worked example with before and after JSON:
-[Claude merge example](doc/REFERENCE.md#claude-merge-example). Key-by-key
-table: [Claude sandbox key mapping](doc/REFERENCE.md#claude-sandbox-key-mapping).
-
-**Sandbox posture per mode.** `[sandbox_overrides.yolo]` and
-`[sandbox_overrides.full]` set top-level `sandbox` keys after SRT values. A
-nested `network` or `filesystem` table replaces that whole section. Typical
-use: yolo keeps the kernel sandbox on as the safety net for skipped prompts;
-full turns it off because every action is approved interactively.
-
-**Keeping full and yolo in sync (`[claude_sync]`).** Claude Code writes
-runtime settings (`model`, `theme`, `editorMode`, hooks added in the UI) into
-whatever `settings.json` points to, so with two files and a symlink flip per
-launch those keys would land in one file only. With the table present,
-`generate -w claude` first copies every unmanaged key from the file the
-symlink currently points to (the donor, the one Claude has been writing to)
-into the target, then applies the merge above. The two files converge on
-every mode switch.
-
-- Donor values replace target values wholesale; deletions propagate. Last
-  writer wins.
-- Dotted paths in `mode_specific` (for example `hooks.PostToolUse`) keep the
-  target's value and are never synced.
-- Managed sections and the whole `sandbox` subtree are never synced.
-- No donor, no sync: fresh install, migration, dangling symlink, or symlink
-  already pointing at the target. A missing target is bootstrapped from the
-  donor.
-- `twsrt diff` does not report full/yolo drift; it is transient by design.
-
-**Gotcha.** Claude's sandbox write allowlist is hardcoded and cannot be
-managed from settings
-([claude-code#10377](https://github.com/anthropics/claude-code/issues/10377#issuecomment-3468689124)),
-so SRT `allowWrite` produces no Claude output.
+**Composition.** Fragments of a profile merge into one document: objects
+merge recursively, arrays form a union, equal scalars agree. Unequal
+scalars and a value in opposing buckets (`allowWrite` and `denyWrite`,
+`ask` and `deny`, `denyRead` and `allowWrite`) fail with the path and both
+fragments. Rule arrays are sorted, so the output does not depend on
+fragment order. Full rules: [Compiler model](doc/REFERENCE.md#compiler-model).
+Complete examples: [example/srt-settings.jsonc](example/srt-settings.jsonc),
+[example/bash-rules.jsonc](example/bash-rules.jsonc).
 
 ## Per-project policy
 
-A project gets its own policy by choosing a profile. Compile it into the
-repository and launch the agent with that file instead of the global one:
+A repository gets its own policy by choosing a profile, compiled into the
+repository and loaded per launch instead of the global files:
 
 ```
 twsrt generate claude -w -p slim --project
@@ -389,11 +316,9 @@ srt-p()    { local p=$1 d; shift; d=$(twsrt generate claude -w -p "$p" --project
              srt -s "$d/srt-settings.json" "$@"; }
 ```
 
-Pick the profile with `twsrt profiles`.
-
 **Dropping a global rule.** Composition only adds, so a project never
-subtracts. Put a rule you may want to drop into its own fragment and give the
-project a profile that leaves that fragment out:
+subtracts. Put a rule you may want to drop into its own fragment and give
+the project a profile that leaves it out (`twsrt profiles` lists them):
 
 ```toml
 [profiles.default]
@@ -401,130 +326,207 @@ srt = ["base", "cloud-creds"]
 
 [profiles.slim]            # same as default, without cloud-creds
 srt = ["base"]
+bash = ["base"]            # every profile selects fragments for every source kind
 ```
 
-**Premise: `claude --setting-sources project,local --settings X`.** The
-Claude half of this feature rests on that exact launch line; both flags are
-required:
+**Why the launch line needs both flags.** `--settings X` loads the project
+policy; `--setting-sources project,local` skips `~/.claude/settings.json`.
+Claude unions list settings across scopes, so without the second flag every
+deny the project profile dropped silently comes back from the global file.
+Because the global file is skipped, `X` also carries your user settings
+(hooks, plugins, model): it is the selective merge of the project policy
+onto the global Claude target of the same mode, which must exist
+(`twsrt generate claude -w [--yolo]` once).
 
-| Flag | Effect | Without it |
-|---|---|---|
-| `--settings X` | Loads `X` as the command-line scope (above project and user) | the project policy is never loaded |
-| `--setting-sources project,local` | Loads only the repository's `.claude/settings.json` and `.claude/settings.local.json`; `~/.claude/settings.json` is **not** read | Claude unions lists across scopes, so every deny the project profile dropped comes back from the global file, silently |
+**What `--project` changes.** Only where outputs land: `./.twsrt/` of the
+current directory (`cd` first). No symlink flip, no `[claude_sync]` donor,
+no global file touched; preview and `-w -n` work as usual. `all` means
+`claude`; Codex and Copilot are rejected because they read no per-launch
+settings file. Omitting `-p` compiles `default_profile`, the full policy.
+`--project` also adds `./.twsrt` to the compiled `denyWrite`, because Claude
+reloads settings mid-session and an agent able to write them could loosen
+its own policy.
 
-Because the global file is skipped, `X` must carry your user settings
-(hooks, plugins, model) as well: it is the selective merge of the project
-policy onto the global Claude target of the same mode, which must exist
-(`twsrt generate claude -w [--yolo]` once). Evidence, consequences and how to
-re-verify: [Claude per-project launch premise](doc/REFERENCE.md#claude-per-project-launch-premise).
+Evidence, failure directions and how to re-verify after a Claude upgrade:
+[Claude per-project launch premise](doc/REFERENCE.md#claude-per-project-launch-premise).
+Security properties and the residual gap:
+[SECURITY_CONCEPT.md](SECURITY_CONCEPT.md#5-per-project-policy).
 
-**What `--project` changes.** Only the output location: every canonical
-output and the Claude target land in `.twsrt/` of the current directory
-(the flag takes no argument; `cd` first). No symlink flip, no
-`[claude_sync]` donor, no global file touched. Preview (no `-w`) and dry run
-(`-w -n`) work as usual. `all` means `claude`; Codex and Copilot are rejected
-because they read no per-launch settings file. Omitting `-p` compiles
-`default_profile`, the full global policy.
+## Agents
 
-**Protecting `.twsrt/`.** Claude reloads settings files mid-session, so an
-agent that could write `.twsrt/` could loosen its own policy. `--project`
-adds `./.twsrt` to the compiled `denyWrite`, which becomes an `Edit(...)`
-deny for Claude's file tools and a sandbox write deny for Bash and `srt`.
-Every launch regenerates the files, so anything a repository ships in
-`.twsrt/` is overwritten. A session started under the global policy lacks
-that deny; add `.twsrt` to `denyWrite` in a global fragment to close the gap
-and confirm the spelling with `twsrt test`.
+| | Claude Code | Codex | Copilot CLI |
+|---|---|---|---|
+| twsrt writes | `~/.claude/settings.full.json` (+ symlink) | `~/.codex/config.toml` profile + `.rules` | flag snippet |
+| Kernel layer | native sandbox, opt-in | native sandbox, always on | none: run it under `srt` |
+| App layer | permission rules | escalation rules | CLI flags per launch |
+| Built-in tools | in-process, app rules only | sandboxed subprocesses | in-process, flags only |
+| `ask` tier | native | Codex default, not restated | absent: mapped to deny (warned) |
+| Full vs yolo output | differs | identical | differs |
+| Known trap | sandbox write allowlist hardcoded upstream | `sandbox_mode` in any layer disables the profile | ask → deny fidelity loss |
 
-## Codex target
+Rule-by-rule translation for all three:
+[Rule mapping per agent](doc/REFERENCE.md#rule-mapping-per-agent).
 
-Codex runs all work through its always-on kernel sandbox, so the compiled
-policy becomes a native permission profile named `twsrt` in
-`~/.codex/config.toml`, plus optional escalation rules in
-`~/.codex/rules/twsrt.rules`. Output is identical in full and yolo mode.
+### Claude Code
 
-| Canonical rule | Codex |
-|---|---|
-| `denyRead` | filesystem `deny` |
-| `denyWrite` exact path / glob | `read` / `deny` (stricter; warned) |
-| `allowWrite` | workspace roots and `write` rules on top of the `:workspace` base |
-| `allowedDomains`, `deniedDomains` | `domains` allowlist (always emitted; empty blocks everything) |
-| bash `deny` | `forbidden` prefix rules, consulted only for requests to run outside the sandbox |
-| bash `allow`, bash `ask` | not compiled: `allow` would auto-approve unsandboxed execution, `ask` restates the default prompt |
+- **Files.** twsrt writes `settings.full.json` (or `settings.yolo.json` with
+  `--yolo`) and points the symlink `~/.claude/settings.json` at it. A
+  regular `settings.json` found on first run is moved to the target; both
+  existing at once is an error.
+- **Selective merge.** `-w` replaces only what twsrt owns:
+  `permissions.deny`/`ask`, the `WebFetch(domain:…)` allows, and the
+  `sandbox` keys SRT defines. Hooks, plugins, model, other allows and
+  Claude-only sandbox keys are kept.
+  [Merge example](doc/REFERENCE.md#claude-merge-example),
+  [key mapping](doc/REFERENCE.md#claude-sandbox-key-mapping).
+- **Deny paths go through permission rules.** Claude folds `Read`/`Edit`
+  deny rules into its sandbox profile, so twsrt emits each deny path as
+  permission rules only and leaves `sandbox.filesystem.denyRead/denyWrite`
+  empty; duplicating them once pushed the profile past macOS `ARG_MAX`.
+- **Modes.** `[sandbox_overrides.yolo]`/`[sandbox_overrides.full]` set
+  `sandbox` keys per mode, after the SRT values. Typical: yolo keeps the
+  kernel sandbox on as the safety net for skipped prompts; full turns it off
+  because every action is approved interactively.
+- **Full ↔ yolo sync.** Claude writes runtime settings (model, theme, hooks
+  added in the UI) into whichever file the symlink points to. With
+  `[claude_sync]`, every mode switch first copies those unmanaged keys from
+  the current file into the target, so both converge.
+  [Sync rules](doc/REFERENCE.md#claude-full-and-yolo-sync).
+- **Gotcha.** twsrt passes `allowWrite` through to `sandbox.filesystem`, but
+  Claude's sandbox write allowlist has been reported as hardcoded
+  ([claude-code#10377](https://github.com/anthropics/claude-code/issues/10377#issuecomment-3468689124)).
 
-twsrt owns `default_permissions`, `approval_policy`, `approvals_reviewer`,
-`allow_login_shell`, and `[permissions.twsrt]`; everything else in the file is
-preserved. Omit `codex_rules` in config.toml to skip escalation rules and rely
-on Codex's prompt-on-escalation default. Restart Codex after generation.
+### Codex
+
+The compiled policy becomes a native permission profile `twsrt` in
+`~/.codex/config.toml`, plus optional `forbidden` escalation rules in
+`~/.codex/rules/twsrt.rules` (omit `codex_rules` to skip them). twsrt owns
+`default_permissions`, `approval_policy`, `approvals_reviewer`,
+`allow_login_shell` and `[permissions.twsrt]`; everything else in the file
+is preserved. Restart Codex after generation.
 
 > **Trap.** A legacy `sandbox_mode` or `sandbox_workspace_write` in *any*
 > loaded Codex config layer, or `--sandbox` on the CLI, makes Codex silently
 > ignore `default_permissions`. twsrt fails fast only for the file it owns and
-> prints a reminder on every run. Run `codex doctor` after changing other
+> prints a reminder on every run; run `codex doctor` after changing other
 > layers. Permission profiles are Beta and `.rules` Experimental upstream.
 
-Full translation rules, skipped SRT fields, and the workspace-roots example:
 [Codex translation rules](doc/REFERENCE.md#codex-translation-rules).
 
-## Copilot CLI target
+### Copilot CLI
 
 Copilot has no settings file, so twsrt emits a flag snippet for the launch
-command (to stdout, or to `copilot_output` if set):
-
-```
---allow-tool 'shell(*)' \
---allow-tool 'read' \
---allow-tool 'edit' \
---allow-tool 'write' \
---deny-tool 'shell(rm)' \
---deny-tool 'shell(sudo)' \
---allow-url 'github.com' \
---allow-url '*.github.com' \
-```
-
-Copilot has no ask tier, so ask rules become `--deny-tool` with a warning.
-With `--yolo` the snippet starts with `--yolo` and keeps only `--deny-tool`
-and `--deny-url`; deny flags still take precedence over `--yolo`.
-
-Nothing kernel-guards Copilot's tools, so run it under the SRT wrapper:
+command (to stdout, or to `copilot_output`). Nothing kernel-guards Copilot's
+tools, so run it under the SRT wrapper, which enforces the paths and domains:
 
 ```bash
-srt -c "copilot --allow-tool 'shell(*)' --deny-tool 'shell(rm)' ..."
+srt -c "copilot --allow-tool 'shell' --deny-tool 'shell(rm)' --allow-url 'github.com' ..."
 ```
 
-## Security model
+Ask rules become `--deny-tool` with a warning. With `--yolo` the snippet
+starts with `--yolo` and keeps only `--deny-tool` and `--deny-url`; deny
+flags still take precedence over `--yolo`.
+[Copilot flags](doc/REFERENCE.md#copilot-flags).
 
-| | Claude Code | Copilot CLI | Codex |
-|---|---|---|---|
-| Kernel layer | native sandbox, opt-in | none (use SRT wrapper) | native sandbox, always on |
-| App layer | permission rules | CLI flags per invocation | profile + escalation rules |
-| Built-in tools | in-process, app rules only | in-process, flags only | run as sandboxed subprocesses |
-| ask tier | native | absent, mapped to deny | native default, not restated |
-| Known trap | `allowWrite` hardcoded | ask to deny fidelity loss | `sandbox_mode` anywhere disables the profile |
+## Verifying the policy
 
-**Verifying enforcement.** Configuration says what should be blocked; only a
-probe shows what is. `twsrt test` runs derived probes under the SRT wrapper
-and fails when a rule is not enforced. The case it was built for: on macOS,
-srt keeps a symlinked `denyRead` path unresolved while Seatbelt matches the
-real path, so `denyRead: ["~/.aws"]` blocks nothing when `~/.aws` is a
-symlink. The `(realpath)` probe row turns that silent gap into a `FAIL`; the
-fix is to deny the real directory as well. Run it after every srt or agent
-upgrade. It exercises srt only; Claude Code's native sandbox and Codex are
-not probed. Mechanics: [Sandbox probes](doc/REFERENCE.md#sandbox-probes).
+Three read-only commands answer three different questions:
 
-**`denyRead` does not deny writes.** What keeps the agent from writing to
-`~/.ssh` and other credential files is the write allowlist: srt denies every
-write outside `allowWrite`, whatever `denyRead` says. A read-denied path
-*inside* an `allowWrite` root (`./.env`, `**/.twsrt`, a secrets directory in
-a repository) cannot be read, deleted or renamed, but it can be overwritten
-and new files can be created in it. Protect such paths with `denyWrite`.
-`twsrt doctor` flags them as `read-deny-writable`; `twsrt test` cannot,
-because it only probes reads for `denyRead`. Mechanism and evidence:
-[`denyRead` is not a write deny](SECURITY_CONCEPT.md#denyread-is-not-a-write-deny).
+```
+ fragments ──doctor──► "is the policy well-formed, free of dead weight?"   all profiles
+     │
+     │ generate -w
+     ▼
+ files on disk ──diff──► "do the files still match the fragments?"         one profile
+     │
+     ▼
+ kernel sandbox ──test──► "does the sandbox enforce what the file says?"   one profile
+```
 
-Rule-by-rule translation: [Rule mapping per agent](doc/REFERENCE.md#rule-mapping-per-agent).
-Guarantees twsrt upholds: [Invariants](doc/REFERENCE.md#invariants).
-Threat model: [SECURITY_CONCEPT.md](SECURITY_CONCEPT.md).
-pi-mono integration: [pi-extensions/sandbox](https://github.com/sysid/pi-extensions/tree/main/packages/sandbox).
+| Command | Exit codes | Notes |
+|---|---|---|
+| `twsrt doctor` | `0` ok, `1` errors | Unparseable fragments, profiles that do not compile, redundant rules, glob traps. [Checks](doc/REFERENCE.md#doctor-checks) |
+| `twsrt diff [agent]` | `0` no drift, `1` drift, `2` target missing | Catches unapplied fragment edits and out-of-band edits to generated files |
+| `twsrt test [-k TEXT] [--json]` | `0` passed, `1` any `FAIL`, `INVALID` or `ERROR`, `2` settings missing or srt cannot sandbox here | Run from a plain terminal, after every srt, agent or OS upgrade |
+
+`diff` and `test` check one profile: pass the same `-p` you generated with,
+otherwise `default_profile` is compared and reports drift.
+
+**How `test` works.** Each effective SRT rule becomes a probe command
+(`head -c 1` on a denied file, an append-open that writes nothing on a
+write rule, `curl -I` per domain, plus a canary host outside the
+allowlist). Each probe runs twice: plainly as a control, then under
+`srt -s <settings> -c`. A deny rule passes when the control succeeds and the
+sandboxed run fails, so a missing file can never count as protected. The
+probe set is derived from the compiled file, never authored: change the
+fragments and the tests follow. A green run proves the rules you wrote are
+enforced, not that you wrote the right rules. It exercises srt only, not
+Claude's or Codex's native sandbox.
+[Sandbox probes](doc/REFERENCE.md#sandbox-probes).
+
+## Security at a glance
+
+What twsrt guarantees ([full list](doc/REFERENCE.md#invariants)):
+
+- **One source of truth.** Every target is translated from the same compile;
+  `diff` detects drift in canonical and agent files.
+- **No silent weakening.** Fragments and profiles only add; conflicts fail
+  instead of "last one wins". Lossy translations narrow, never widen, and
+  warn.
+- **Fail-safe on ambiguity.** A disabled sandbox, malformed path, conflicting
+  fragment or legacy Codex `sandbox_mode` aborts generation.
+- **Selective merge.** Only the declared sections of a target file are
+  rewritten; your hooks, MCP servers and credentials are left alone.
+
+What to know:
+
+| Gotcha | Consequence | Mitigation |
+|---|---|---|
+| Built-in tools (Read, Edit, WebFetch) run inside the agent process | Only the agent's own permission engine guards them, best-effort | Kernel-protect the highest-value secrets via `denyRead` |
+| macOS: srt keeps a symlinked deny path unresolved | `denyRead: ["~/.aws"]` blocks nothing when `~/.aws` is a symlink | Deny the real path too; `twsrt test` reports it as a `(realpath)` `FAIL` |
+| srt's `denyRead` is no write deny | A read-denied file inside a write root could be overwritten | twsrt compiles every `denyRead` into `denyWrite` ([ADR 0001](doc/adr/0001-deny-read-implies-deny-write.md)) |
+| Codex `sandbox_mode` in another config layer | The twsrt profile is silently ignored | `codex doctor` after changing Codex config |
+
+Threat model, rationale and every known gap:
+[SECURITY_CONCEPT.md](SECURITY_CONCEPT.md).
+
+## Commands
+
+| Command | Effect |
+|---|---|
+| `twsrt config [--init]` | Open `config.toml` in `$EDITOR` (fallback `vi`); `--init` first creates it and starter fragments, never overwriting an existing file |
+| `twsrt edit [srt\|bash] [-p P] [-n]` | Open the profile's fragments in `$EDITOR`, then report whether targets are stale; `-n` only names them |
+| `twsrt profiles` | List every profile with its resolved fragments; `*` marks `default_profile`, `invalid` one that cannot compile on its own |
+| `twsrt show [srt\|bash] [-p P]` | Print the compiled canonical document exactly as `-w` would write it. Writes nothing |
+| `twsrt generate [agent] [-p P]` | Print the agent translation (`claude`, `codex`, `copilot`, default `all`). Writes nothing |
+| `twsrt generate [agent] -w` | Write the canonical outputs (always, whichever agent) and the agent target |
+| `twsrt generate [agent] -w -n` | Dry run of `-w`: list the paths it would write. `-n` without `-w` changes nothing |
+| `twsrt generate [agent] --yolo` | Yolo mode: no ask rules, `*.yolo.*` targets, yolo sandbox overrides |
+| `twsrt generate claude -w -p P --project` | Write profile `P` to `./.twsrt/`; nothing global is written |
+| `twsrt diff [agent] [--yolo] [-p P]` | Compare compiled policy against the files on disk |
+| `twsrt test [-p P] [-k TEXT] [--json] [--timeout S]` | Probe the sandbox for every effective SRT rule |
+| `twsrt doctor` | Lint every profile and fragment |
+
+- `edit` opens all selected fragments in one editor call; a bare `vim`,
+  `nvim`, `gvim` or `mvim` gets `-p` (one tab each). An `$EDITOR` with
+  arguments (`nvim -O`, `code -w`) is passed through. `twsrt -v edit -n`
+  prints the command line.
+- **Output streams.** stdout carries the result (generated config, reports,
+  the `.twsrt` path for `--project -w`); errors, warnings and write
+  narration go to stderr, so `-w` output can be captured. `-v` before the
+  subcommand adds debug output that never prints policy contents, except
+  under `test`, where it traces every executed command.
+  [Diagnostic output](doc/REFERENCE.md#diagnostic-output).
+
+## Documentation map
+
+| Document | Read it for |
+|---|---|
+| This README | Concepts, use cases, configuration, day-to-day use |
+| [doc/REFERENCE.md](doc/REFERENCE.md) | Exact translation tables, merge behaviour, compiler rules, doctor checks, probe mechanics, invariants, extending twsrt |
+| [SECURITY_CONCEPT.md](SECURITY_CONCEPT.md) | Threat model, why two layers, risk analysis, known enforcement gaps |
+| [doc/adr/](doc/adr/) | Architecture decision records |
+| [pi-extensions/sandbox](https://github.com/sysid/pi-extensions/tree/main/packages/sandbox) | pi-mono integration |
 
 ## Development
 
