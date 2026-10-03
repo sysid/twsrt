@@ -66,6 +66,9 @@ filename = "src/twsrt/bin/cli.py"
 
 [tool.pytest.ini_options]
 python_files = "*.py"
+# python_files matches every module: without this, bare `pytest` collects src/
+# and mistakes cli.py's `test_command` (the `twsrt test` command) for a test.
+testpaths = ["tests"]
 norecursedirs = ["wip"]
 markers = [
     "integration: marks tests as integration tests",

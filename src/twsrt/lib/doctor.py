@@ -308,6 +308,10 @@ def _normalize_path(value: str) -> str:
 def _domain_covers(parent: str, child: str) -> bool:
     if ":" in parent or ":" in child:
         return False  # ponytail: port-qualified entries are not compared
+    if not child.startswith("*"):
+        # `twsrt test` cannot dial a wildcard: a concrete host below one is
+        # that rule's only live probe, so it is never dead weight.
+        return False
     if parent == "*":
         return True
     # *.x.com matches subdomains at any depth, never the apex x.com.

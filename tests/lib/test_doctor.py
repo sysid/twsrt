@@ -197,7 +197,7 @@ def test_relative_path_is_covered_by_the_working_directory_entry(
     assert "'./build'" in findings[0].message
 
 
-def test_domain_covered_by_a_wildcard_is_redundant_but_the_apex_is_not(
+def test_wildcard_covered_by_a_broader_wildcard_is_redundant(
     tmp_path: Path,
 ) -> None:
     config = write_config(
@@ -205,7 +205,8 @@ def test_domain_covered_by_a_wildcard_is_redundant_but_the_apex_is_not(
         srt={
             "base": (
                 '{"enabled": true, "network": {"allowedDomains": '
-                '["*.github.com", "api.github.com", "github.com"]}}'
+                '["*.github.com", "*.api.github.com", "api.github.com", '
+                '"github.com"]}}'
             )
         },
         bash={"base": BASH_BASE},
@@ -215,8 +216,28 @@ def test_domain_covered_by_a_wildcard_is_redundant_but_the_apex_is_not(
     findings = run(config)
 
     assert codes(findings) == ["subsumed-rule"]
-    assert "'api.github.com'" in findings[0].message
-    assert "'*.github.com'" in findings[0].message
+    assert "'*.api.github.com' by '*.github.com'" in findings[0].message
+
+
+def test_concrete_host_under_a_wildcard_is_kept_as_a_probe_target(
+    tmp_path: Path,
+) -> None:
+    # `twsrt test` cannot dial a wildcard: a concrete host below it is the
+    # only live probe of that rule, so it is not dead weight.
+    config = write_config(
+        tmp_path,
+        srt={
+            "base": (
+                '{"enabled": true, "network": {'
+                '"allowedDomains": ["*.github.com", "api.github.com", "github.com"], '
+                '"deniedDomains": ["*", "evil.example"]}}'
+            )
+        },
+        bash={"base": BASH_BASE},
+        profiles='[profiles.default]\nsrt = ["base"]\nbash = ["base"]\n',
+    )
+
+    assert run(config) == []
 
 
 def test_bash_command_covered_by_a_shorter_prefix_is_redundant(
@@ -499,8 +520,9 @@ def test_subsumed_rules_are_grouped_per_fragment_and_list(tmp_path: Path) -> Non
         srt={
             "base": (
                 '{"enabled": true, "network": {"allowedDomains": '
-                '["*.npmjs.org", "registry.npmjs.org", "*.crates.io", '
-                '"static.crates.io", "crates.io", "npmjs.org"]}}'
+                '["*.npmjs.org", "*.registry.npmjs.org", "*.crates.io", '
+                '"*.static.crates.io", "crates.io", "npmjs.org", '
+                '"registry.npmjs.org", "static.crates.io"]}}'
             )
         },
         bash={"base": BASH_BASE},
@@ -512,8 +534,8 @@ def test_subsumed_rules_are_grouped_per_fragment_and_list(tmp_path: Path) -> Non
     assert codes(findings) == ["subsumed-rule"]
     message = findings[0].message
     assert message.startswith("srt/base.jsonc: network.allowedDomains: 2 ")
-    assert "'registry.npmjs.org' by '*.npmjs.org'" in message
-    assert "'static.crates.io' by '*.crates.io'" in message
+    assert "'*.registry.npmjs.org' by '*.npmjs.org'" in message
+    assert "'*.static.crates.io' by '*.crates.io'" in message
 
 
 def test_read_deny_inside_a_write_root_is_not_flagged_since_compile_implies_write_deny(

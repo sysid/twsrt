@@ -538,7 +538,7 @@ covered entry's.
 | `fragment-load` | error | A registered fragment is missing or not valid JSONC, used or not |
 | `profile-compile` | error | A profile fails to compile: scalar conflict, opposing allow/deny, a write-only path, invalid shape. Profiles using a broken fragment are not reported again |
 | `profile-incomplete` | warning | A profile selects no fragment for some source kind, so `-p NAME` fails. Legitimate for mixins used only via `extends` |
-| `subsumed-rule` | warning | An entry is already covered by another entry in the same list: a path below a listed directory (`dir` and `dir/**` count as equal; `.` covers every relative path), a domain below a `*.` wildcard or `*`, a Bash command extending a listed command (`rm -rf` under `rm`; Claude emits `Bash(rm *)`) |
+| `subsumed-rule` | warning | An entry is already covered by another entry in the same list: a path below a listed directory (`dir` and `dir/**` count as equal; `.` covers every relative path), a wildcard domain below a broader `*.` wildcard or `*` (a concrete host is never flagged: it is the only host `twsrt test` can probe for that wildcard), a Bash command extending a listed command (`rm -rf` under `rm`; Claude emits `Bash(rm *)`) |
 | `duplicate-rule` | warning | The same entry appears in two fragments of one profile |
 | `inherited-fragment` | warning | A profile selects a fragment its `extends` chain already selects |
 | `redundant-extends` | warning | A profile extends a parent it already reaches through another parent |
