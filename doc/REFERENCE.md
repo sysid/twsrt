@@ -516,7 +516,9 @@ Warning: Bash ask rule 'git push' mapped to --deny-tool for copilot (no ask equi
 settings files that can carry sandbox paths (the twsrt Claude targets, full
 and yolo, and `./.claude/settings.json` / `settings.local.json` of the current
 directory). It writes nothing, and prints one line per finding on stdout followed by a count.
-Exit `1` on any error, else `0`.
+Without options it shows errors and warnings; `--error`, `--warn` and `--info` show exactly
+those levels and combine, `--all` shows every level. The filter is display only: the count
+covers every level, and exit is `1` on any error, shown or not, else `0`.
 
 Correctness runs the real pipeline (JSONC load, profile resolution,
 compilation) over every profile, so doctor and `generate` cannot disagree.

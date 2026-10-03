@@ -479,14 +479,22 @@ def profiles(ctx: typer.Context) -> None:
 
 
 @app.command()
-def doctor(ctx: typer.Context) -> None:
+def doctor(
+    ctx: typer.Context,
+    show_error: bool = typer.Option(False, "--error", help="Show errors"),
+    show_warn: bool = typer.Option(False, "--warn", help="Show warnings"),
+    show_info: bool = typer.Option(False, "--info", help="Show info"),
+    show_all: bool = typer.Option(False, "--all", help="Show every level"),
+) -> None:
     """Check every profile and fragment for errors, redundancy and pattern traps.
 
     Errors: a fragment that does not parse, a profile that does not compile.
     Warnings: rules covered by another rule, duplicates across fragments,
     redundant extends/selections, unused fragments, globs that grant less
     than they look. Info: harmless no-ops and platform caveats.
-    Exit 1 on any error. Writes nothing; drift is `diff`, enforcement `test`.
+    Shows errors and warnings unless level options are given; they combine.
+    The summary counts every level, shown or not. Exit 1 on any error.
+    Writes nothing; drift is `diff`, enforcement `test`.
     """
     from twsrt.lib.config import load_config
     from twsrt.lib.doctor import diagnose
@@ -518,8 +526,21 @@ def doctor(ctx: typer.Context) -> None:
         "warning": typer.colors.YELLOW,
         "info": typer.colors.CYAN,
     }
-    width = max(len(finding.code) for finding in findings)
-    for finding in findings:
+    levels = {
+        "error": show_error,
+        "warning": show_warn,
+        "info": show_info,
+    }
+    if show_all:
+        shown = set(levels)
+    elif any(levels.values()):
+        shown = {severity for severity, wanted in levels.items() if wanted}
+    else:
+        shown = {"error", "warning"}
+    # The filter is display only: counts and the exit code see every finding.
+    visible = [finding for finding in findings if finding.severity in shown]
+    width = max((len(finding.code) for finding in visible), default=0)
+    for finding in visible:
         typer.secho(
             f"{finding.severity:<7}  {finding.code:<{width}}  {finding.message}",
             fg=colors[finding.severity],

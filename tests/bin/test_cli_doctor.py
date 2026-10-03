@@ -120,3 +120,79 @@ def test_doctor_scans_the_repo_claude_settings_for_relative_sandbox_paths(
     assert result.exit_code == 0, result.output
     assert "claude-relative-sandbox-path" in result.stdout
     assert "'./build'" in result.stdout
+
+
+# One finding per severity: profile `off` conflicts with `enabled: true`
+# (error), ~/.aws/sso sits below ~/.aws (warning), ~/x/** is a no-op suffix
+# (info).
+ALL_SEVERITIES = (
+    '{"enabled": true, "filesystem": {"denyRead": ["~/.aws", "~/.aws/sso"], '
+    '"allowWrite": ["~/x/**"]}}'
+)
+
+
+def severities(stdout: str) -> list[str]:
+    """Severity column of every finding line; the summary line is excluded."""
+    return [line.split()[0] for line in stdout.splitlines()[:-1]]
+
+
+def test_doctor_without_a_level_option_hides_info_but_still_counts_it(
+    tmp_path: Path,
+) -> None:
+    config = write_config(tmp_path, ALL_SEVERITIES)
+
+    result = runner.invoke(app, ["-c", str(config), "doctor"])
+
+    assert result.exit_code == 1
+    assert severities(result.stdout) == ["error", "warning"]
+    assert result.stdout.splitlines()[-1] == "doctor: 1 error, 1 warning, 1 info"
+
+
+def test_doctor_all_shows_every_level(tmp_path: Path) -> None:
+    config = write_config(tmp_path, ALL_SEVERITIES)
+
+    result = runner.invoke(app, ["-c", str(config), "doctor", "--all"])
+
+    assert severities(result.stdout) == ["error", "warning", "info"]
+
+
+@pytest.mark.parametrize(
+    ("options", "shown"),
+    [
+        (["--error"], ["error"]),
+        (["--warn"], ["warning"]),
+        (["--info"], ["info"]),
+        (["--error", "--info"], ["error", "info"]),
+    ],
+)
+def test_doctor_level_options_show_exactly_those_levels(
+    tmp_path: Path, options: list[str], shown: list[str]
+) -> None:
+    config = write_config(tmp_path, ALL_SEVERITIES)
+
+    result = runner.invoke(app, ["-c", str(config), "doctor", *options])
+
+    assert severities(result.stdout) == shown
+
+
+def test_doctor_exits_one_on_errors_even_when_they_are_not_shown(
+    tmp_path: Path,
+) -> None:
+    config = write_config(tmp_path, ALL_SEVERITIES)
+
+    result = runner.invoke(app, ["-c", str(config), "doctor", "--info"])
+
+    assert result.exit_code == 1
+    assert "error" not in severities(result.stdout)
+
+
+def test_doctor_with_only_hidden_info_prints_just_the_summary(tmp_path: Path) -> None:
+    config = write_config(
+        tmp_path, '{"enabled": true, "filesystem": {"allowWrite": ["~/x/**"]}}'
+    )
+    (tmp_path / "off.jsonc").write_text("{}")
+
+    result = runner.invoke(app, ["-c", str(config), "doctor"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "doctor: 0 errors, 0 warnings, 1 info\n"
