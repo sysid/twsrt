@@ -132,8 +132,8 @@ Enforced at construction: `NETWORK` takes only `ALLOW` or `DENY`;
 | `denyRead` glob | `Read(g)`, `Edit(g)` deny | — | filesystem `deny` |
 | `denyWrite` exact path | `Edit(p)` deny | — | filesystem `read` |
 | `denyWrite` glob | `Edit(g)` deny | — | filesystem `deny` (stricter; warned) |
-| `allowWrite` absolute or home path | `sandbox.filesystem.allowWrite` (pass-through) | `--allow-tool 'shell'`, `'read'`, `'edit'`, `'write'` (once) | profile workspace root |
-| `allowWrite` relative path | as above | as above | named path → filesystem `write`; `.` omitted |
+| `allowWrite` absolute or home path | `Edit(//p)` / `Edit(~/p)` allow (+ `/**` for directories); see [ADR 0002](adr/0002-claude-file-rules-as-permission-rules.md) | `--allow-tool 'shell'`, `'read'`, `'edit'`, `'write'` (once) | profile workspace root |
+| `allowWrite` relative path | `Edit(p)` allow, left relative so it anchors at the launch cwd (+ `/**`) | as above | named path → filesystem `write`; `.` omitted |
 | `allowedDomains` | `WebFetch(domain:X)` allow + `sandbox.network.allowedDomains` | `--allow-url 'X'` | domain `allow` |
 | `deniedDomains` | `WebFetch(domain:X)` deny | `--deny-url 'X'` | domain `deny` |
 | Bash `allow` | — | — | not compiled (would auto-approve unsandboxed execution; warned) |
@@ -174,7 +174,7 @@ the Claude-only keys per mode.
 | `sandbox.network.allowAllUnixSockets` | `network.allowAllUnixSockets` | Managed (pass-through) |
 | `sandbox.network.httpProxyPort` | `network.httpProxyPort` | Managed (pass-through) |
 | `sandbox.network.socksProxyPort` | `network.socksProxyPort` | Managed (pass-through) |
-| `sandbox.filesystem.allowWrite` | `filesystem.allowWrite` | Managed (pass-through) |
+| `sandbox.filesystem.allowWrite` | `filesystem.allowWrite` | Managed-empty; emitted as `Edit` allow rules instead (a raw entry anchors relative paths at the settings-file root, ADR 0002) |
 | `sandbox.filesystem.denyWrite` | `filesystem.denyWrite` | Managed-empty; emitted as `Edit` deny rules instead |
 | `sandbox.filesystem.denyRead` | `filesystem.denyRead` | Managed-empty; emitted as `Read`/`Edit` deny rules instead |
 | `sandbox.enabled` | `enabled` | Managed (pass-through) |
@@ -214,8 +214,8 @@ A nested `network` or `filesystem` table replaces that whole section.
 | Section | Handling |
 |---|---|
 | `permissions.deny`, `permissions.ask` | replaced |
-| `permissions.allow` | only `WebFetch(domain:…)` entries replaced; other allows kept |
-| `sandbox.network`, `sandbox.filesystem`, `sandbox.*` | merged key by key; Claude-only keys kept; deny lists reset to `[]` |
+| `permissions.allow` | `WebFetch(domain:…)` and `Edit(…)` entries replaced (twsrt owns them); other allows kept |
+| `sandbox.network`, `sandbox.filesystem`, `sandbox.*` | merged key by key; Claude-only keys kept; `denyRead`/`denyWrite`/`allowWrite` reset to `[]` |
 | everything else (hooks, plugins, model, theme, …) | kept, or synced from the other mode's file with `[claude_sync]` |
 
 Existing hand-maintained `~/.claude/settings.full.json`:
@@ -512,8 +512,10 @@ Warning: Bash ask rule 'git push' mapped to --deny-tool for copilot (no ask equi
 
 ## Doctor checks
 
-`twsrt doctor` reads `config.toml` and every registered fragment, writes
-nothing, and prints one line per finding on stdout followed by a count.
+`twsrt doctor` reads `config.toml`, every registered fragment, and the Claude
+settings files that can carry sandbox paths (the twsrt Claude targets, full
+and yolo, and `./.claude/settings.json` / `settings.local.json` of the current
+directory). It writes nothing, and prints one line per finding on stdout followed by a count.
 Exit `1` on any error, else `0`.
 
 Correctness runs the real pipeline (JSONC load, profile resolution,
@@ -541,6 +543,9 @@ covered entry's.
 | `inherited-fragment` | warning | A profile selects a fragment its `extends` chain already selects |
 | `redundant-extends` | warning | A profile extends a parent it already reaches through another parent |
 | `unused-fragment` | warning | A registered fragment no profile selects |
+| `symlinked-deny-path` | warning | A `denyRead`/`denyWrite` path reaches a symlink on disk and its real path is not denied too. srt keeps the unresolved spelling while Seatbelt matches the real path, so the deny is a no-op (bkmr 3686) |
+| `broad-allow-write` | warning | `allowWrite` on or above `/`, `~`, `~/.config` or `~/Library`. With Claude Code every `allowWrite` path also auto-approves the edit tools (ADR 0002) |
+| `claude-relative-sandbox-path` | warning | A relative or `**/` entry in `sandbox.filesystem.*` of a scanned Claude settings file. Claude anchors it at the settings-file root (`~/.claude`, the project root, or the `--settings` file's directory), not the launch cwd; use `Read()`/`Edit()` rules (bkmr 3742) |
 | `narrow-allow-glob` | warning | A glob in `allowWrite`/`allowRead`: on macOS `dir/*` grants direct children only and `a/*/b` only the directory `b` itself; Linux drops the rule |
 | `cwd-anchored-glob` | warning | A relative `**/x` entry protects or grants only below the directory the agent was launched in, not everywhere |
 | `linux-drops-write-glob` | info | A glob in `denyWrite` holds on macOS only; srt drops write globs on Linux |

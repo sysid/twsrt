@@ -15,6 +15,10 @@ from twsrt.lib.models import (
 )
 
 
+# sandbox.filesystem path lists twsrt keeps empty; see ADR 0002.
+_MANAGED_PATH_LISTS = ("denyRead", "denyWrite", "allowWrite")
+
+
 class ClaudeGenerator:
     @property
     def name(self) -> str:
@@ -45,8 +49,15 @@ class ClaudeGenerator:
                 deny.append(f"Edit({_rule_pattern(rule.pattern)})")
 
             elif rule.scope == Scope.WRITE and rule.action == Action.ALLOW:
-                # FR-008: allowWrite → no Claude output (SRT enforces)
-                pass
+                # ADR 0002: allowWrite → Edit allow rule. Claude folds it into
+                # the sandbox write grant and anchors relative entries at the
+                # launch cwd, like srt; a raw sandbox.filesystem.allowWrite
+                # entry would anchor at the settings-file root (~/.claude).
+                # Side effect: Claude's edit tools no longer prompt there.
+                pattern = _rule_pattern(rule.pattern)
+                allow.append(f"Edit({pattern})")
+                if _is_directory_pattern(rule.pattern):
+                    allow.append(f"Edit({pattern.rstrip('/')}/**)")
 
             elif rule.scope == Scope.NETWORK and rule.action == Action.ALLOW:
                 # FR-009: allowedDomains → WebFetch + sandbox.network
@@ -73,26 +84,29 @@ class ClaudeGenerator:
 
         sandbox: dict = {"network": network}
 
-        # denyRead/denyWrite are managed-empty: every canonical deny path is
-        # already emitted as a Read/Edit deny rule above, and Claude Code
-        # merges those into the OS sandbox profile with identical anchoring
-        # (documented, and probe-verified for literals, absolutes, relative
-        # globs, and move-protection). Emitting the paths here too duplicated
-        # the Seatbelt profile's clause expansion past ARG_MAX (E2BIG).
+        # The path lists are managed-empty (ADR 0002): every canonical path is
+        # already emitted as a Read/Edit permission rule above, which Claude
+        # Code folds into the OS sandbox profile anchored like srt. A raw
+        # entry here anchors relative paths at the settings-file root instead
+        # (bkmr 3742), and emitting both routes once pushed the Seatbelt
+        # profile past ARG_MAX (E2BIG, bkmr 3671).
         filesystem = {
             key: value
             for key, value in config.filesystem_config.items()
-            if key not in ("denyRead", "denyWrite")
+            if key not in _MANAGED_PATH_LISTS
         }
         sandbox["filesystem"] = filesystem
 
         sandbox.update(config.sandbox_config)
-        sandbox["filesystem"]["denyRead"] = []
-        sandbox["filesystem"]["denyWrite"] = []
+        for key in _MANAGED_PATH_LISTS:
+            sandbox["filesystem"][key] = []
 
         # denyRead also arrives as an implied denyWrite, so Edit(path) is
         # emitted twice; keep the first occurrence.
-        permissions: dict = {"deny": list(dict.fromkeys(deny)), "allow": allow}
+        permissions: dict = {
+            "deny": list(dict.fromkeys(deny)),
+            "allow": list(dict.fromkeys(allow)),
+        }
         if not config.yolo:
             permissions["ask"] = ask
 
@@ -124,9 +138,9 @@ class ClaudeGenerator:
             ext_set = set(existing.get("permissions", {}).get(section, []))
 
             if section == "allow":
-                # Only compare WebFetch entries (others are unmanaged)
-                gen_set = {e for e in gen_set if _is_webfetch_entry(e)}
-                ext_set = {e for e in ext_set if _is_webfetch_entry(e)}
+                # Only compare twsrt-owned allows (others are unmanaged)
+                gen_set = {e for e in gen_set if _is_managed_allow(e)}
+                ext_set = {e for e in ext_set if _is_managed_allow(e)}
 
             for entry in gen_set - ext_set:
                 missing.append(entry)
@@ -225,6 +239,10 @@ def _is_directory_pattern(pattern: str) -> bool:
     """
     if "*" in pattern or "?" in pattern:
         return False
+    if not pattern.startswith(("/", "~")):
+        # Relative entries anchor at the agent's launch cwd, unknown here:
+        # stat'ing them against twsrt's own cwd would be meaningless.
+        return True
     try:
         expanded = Path(pattern).expanduser()
         if expanded.is_file():
@@ -238,6 +256,16 @@ def _is_directory_pattern(pattern: str) -> bool:
 def _is_webfetch_entry(entry: str) -> bool:
     """Check if an allow entry is a WebFetch(domain:...) entry managed by twsrt."""
     return entry.startswith("WebFetch(domain:")
+
+
+def _is_managed_allow(entry: str) -> bool:
+    """Allow entries twsrt owns in its target and replaces on every write.
+
+    Edit(...) is owned because generated grants must disappear when a path
+    leaves the policy (ADR 0002). Claude records "don't ask again" approvals in
+    .claude/settings.local.json, not in the user file twsrt writes.
+    """
+    return _is_webfetch_entry(entry) or entry.startswith("Edit(")
 
 
 # Sections owned by generate; sync_invariants never takes these from the donor.
@@ -335,9 +363,9 @@ def selective_merge(
     else:
         existing["permissions"].pop("ask", None)
 
-    # Selective merge for allow: strip WebFetch entries, keep everything else
+    # Selective merge for allow: strip twsrt-owned entries, keep everything else
     existing_allow = existing["permissions"].get("allow", [])
-    preserved = [e for e in existing_allow if not _is_webfetch_entry(e)]
+    preserved = [e for e in existing_allow if not _is_managed_allow(e)]
     generated_allow = generated["permissions"].get("allow", [])
     existing["permissions"]["allow"] = preserved + generated_allow
 

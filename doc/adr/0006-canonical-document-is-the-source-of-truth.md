@@ -79,7 +79,7 @@ Rules that follow from it:
 - One profile is in force globally at a time; per-project policy needed a separate output location
   (ADR 0004).
 
-**Known violation of rule 4 (open, 2026-10-03):** relative `allowWrite` entries (`.`, `.git`) are
+**Violation of rule 4 found 2026-10-03, fixed in code by ADR 0002 (live verification pending):** relative `allowWrite` entries (`.`, `.git`) are
 passed verbatim into Claude's `sandbox.filesystem.allowWrite`. Claude anchors those at the
 settings-file root, so in `~/.claude/settings.json` they grant `~/.claude` and `~/.claude/.git`
 instead of the project — a **widening**, and a divergence from srt, where they mean the launch

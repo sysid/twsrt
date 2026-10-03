@@ -77,28 +77,24 @@ Three ideas explain the whole tool.
 |---|---|---|
 | Files | `~/.srt-settings.json`, `bash-rules.json` | Claude `settings.full.json`, Codex `config.toml` + `.rules`, Copilot flags |
 | Role | Source of truth; SRT enforcement file | Lossy translations into each agent's native model |
-| Depends on | Profile only — never the agent, never `--yolo` | Canonical config + agent + `--yolo` |
+| Depends on | Profile only | Canonical config + agent + `--yolo` |
 | Inspect | `twsrt show [srt\|bash]` | `twsrt generate <agent>` |
-| Written by | **every** `generate -w`, whichever agent is named | `generate <that agent> -w` |
+| Written by | **every** `generate -w`, whichever agent is selected | `generate <that agent> -w` |
 
 Consequences:
 
-- **`twsrt generate copilot -w` also rewrites `~/.srt-settings.json`.** The
-  agent argument only selects which translations run; the canonical outputs
-  are always rewritten so every target matches the policy it came from.
-- **Never hand-edit generated files.** Agent configs are translated from the
-  in-memory compile of the fragments, not from the files on disk; the next
-  `generate -w` overwrites a hand edit, and `twsrt diff` reports it as drift.
-  Edit the fragments (`twsrt edit`) instead.
-- **Nothing is written unless everything compiles.** A conflict between
-  fragments aborts before the first file is touched.
+- **`twsrt generate copilot -w` writes `~/.srt-settings.json`.** The agent argument only selects
+  which translations run.
+- **Never hand-edit generated files.** ; the next `generate -w` overwrites a hand edit, and `twsrt
+  diff` reports it as drift. Edit the fragments (`twsrt edit`) instead.
+- **Nothing is written unless everything compiles.** A conflict between fragments fails fast.
 
 ### 2. Two enforcement layers
 
-The same policy is enforced twice, by two very different mechanisms:
+The same policy is enforced twice, by two different mechanisms:
 
 ```
-  agent process (Node, Rust, …)
+  agent (Node, Rust, …)
   ┌───────────────────────────────────────────────────────────────┐
   │  built-in tools: Read · Edit · WebFetch      ◄── layer 2 only │
   │        │                                                      │
@@ -362,7 +358,7 @@ Security properties and the residual gap:
 | Built-in tools | in-process, app rules only | sandboxed subprocesses | in-process, flags only |
 | `ask` tier | native | Codex default, not restated | absent: mapped to deny (warned) |
 | Full vs yolo output | differs | identical | differs |
-| Known trap | sandbox write allowlist hardcoded upstream | `sandbox_mode` in any layer disables the profile | ask → deny fidelity loss |
+| Known trap | relative `sandbox.filesystem` paths anchor at the settings-file root, not the cwd | `sandbox_mode` in any layer disables the profile | ask → deny fidelity loss |
 
 Rule-by-rule translation for all three:
 [Rule mapping per agent](doc/REFERENCE.md#rule-mapping-per-agent).
@@ -379,10 +375,16 @@ Rule-by-rule translation for all three:
   Claude-only sandbox keys are kept.
   [Merge example](doc/REFERENCE.md#claude-merge-example),
   [key mapping](doc/REFERENCE.md#claude-sandbox-key-mapping).
-- **Deny paths go through permission rules.** Claude folds `Read`/`Edit`
-  deny rules into its sandbox profile, so twsrt emits each deny path as
-  permission rules only and leaves `sandbox.filesystem.denyRead/denyWrite`
-  empty; duplicating them once pushed the profile past macOS `ARG_MAX`.
+- **All file paths go through permission rules** ([ADR 0002](doc/adr/0002-claude-file-rules-as-permission-rules.md)).
+  Claude folds `Read`/`Edit` rules into its sandbox profile: a deny becomes a
+  sandbox deny, an `Edit` allow a sandbox write grant. twsrt emits `denyRead`
+  as `Read`+`Edit` deny, `denyWrite` as `Edit` deny, `allowWrite` as `Edit`
+  allow, and leaves `sandbox.filesystem.denyRead/denyWrite/allowWrite` empty.
+  Permission rules anchor relative paths at the launch cwd, like srt; a raw
+  `sandbox.filesystem` entry would anchor at the settings-file root (`.` in
+  `~/.claude/settings.json` means `~/.claude`). Trade-off: Claude's edit
+  tools no longer prompt for files under `allowWrite` paths. twsrt owns every
+  `Edit(...)` allow in its target and replaces them on each write.
 - **Modes.** `[sandbox_overrides.yolo]`/`[sandbox_overrides.full]` set
   `sandbox` keys per mode, after the SRT values. Typical: yolo keeps the
   kernel sandbox on as the safety net for skipped prompts; full turns it off
@@ -392,9 +394,9 @@ Rule-by-rule translation for all three:
   `[claude_sync]`, every mode switch first copies those unmanaged keys from
   the current file into the target, so both converge.
   [Sync rules](doc/REFERENCE.md#claude-full-and-yolo-sync).
-- **Gotcha.** twsrt passes `allowWrite` through to `sandbox.filesystem`, but
-  Claude's sandbox write allowlist has been reported as hardcoded
-  ([claude-code#10377](https://github.com/anthropics/claude-code/issues/10377#issuecomment-3468689124)).
+- **Gotcha.** Relative entries in a hand-written `sandbox.filesystem`
+  (e.g. a repo's `.claude/settings.json`) anchor at that file's root, not
+  the launch cwd; `twsrt doctor` reports them as `claude-relative-sandbox-path`.
 
 ### Codex
 

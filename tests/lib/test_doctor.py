@@ -2,8 +2,19 @@
 
 from pathlib import Path
 
+import pytest
+
 from twsrt.lib.config import load_config
 from twsrt.lib.doctor import Finding, diagnose
+
+
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """doctor inspects paths on disk (symlinks, home roots): never the host's."""
+    home = tmp_path / "isolated-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    return home
 
 
 def write_config(
@@ -591,3 +602,132 @@ def test_wildcard_apex_is_reported_once_per_fragment_across_profiles(
     assert "'*.npmjs.org' (npmjs.org)" in apex[0]
     assert apex[1].startswith("srt/work.jsonc: network.allowedDomains: 1 ")
     assert "'*.corp.example' (corp.example)" in apex[1]
+
+
+# --- symlinked deny paths (bkmr 3686) ------------------------------------
+
+
+def test_symlinked_deny_path_without_its_real_path_is_flagged(
+    tmp_path: Path, monkeypatch
+) -> None:
+    home = tmp_path / "home"
+    real = tmp_path / "configs" / "dot-aws"
+    real.mkdir(parents=True)
+    home.mkdir()
+    (home / ".aws").symlink_to(real)
+    monkeypatch.setenv("HOME", str(home))
+    config = write_config(
+        tmp_path,
+        srt={"base": '{"enabled": true, "filesystem": {"denyRead": ["~/.aws"]}}'},
+        bash={"base": BASH_BASE},
+        profiles='[profiles.default]\nsrt = ["base"]\nbash = ["base"]\n',
+    )
+
+    findings = [f for f in run(config) if f.code == "symlinked-deny-path"]
+
+    assert len(findings) == 1
+    assert findings[0].severity == "warning"
+    assert findings[0].message.startswith("srt/base.jsonc: filesystem.denyRead: 1 ")
+    assert f"'~/.aws' (-> {real})" in findings[0].message
+
+
+def test_symlinked_deny_path_with_its_real_path_listed_is_fine(
+    tmp_path: Path, monkeypatch
+) -> None:
+    home = tmp_path / "home"
+    real = tmp_path / "configs" / "dot-aws"
+    real.mkdir(parents=True)
+    home.mkdir()
+    (home / ".aws").symlink_to(real)
+    monkeypatch.setenv("HOME", str(home))
+    config = write_config(
+        tmp_path,
+        srt={
+            "base": (
+                '{"enabled": true, "filesystem": '
+                f'{{"denyRead": ["~/.aws", "{tmp_path}/configs"]}}}}'
+            )
+        },
+        bash={"base": BASH_BASE},
+        profiles='[profiles.default]\nsrt = ["base"]\nbash = ["base"]\n',
+    )
+
+    assert "symlinked-deny-path" not in codes(run(config))
+
+
+# --- broad allowWrite (ADR 0002 auto-approval) ---------------------------
+
+
+def test_allow_write_covering_home_or_config_roots_is_broad(
+    tmp_path: Path, monkeypatch
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    config = write_config(
+        tmp_path,
+        srt={
+            "base": (
+                '{"enabled": true, "filesystem": '
+                '{"allowWrite": ["~", "~/.config", "~/.cache", "/"]}}'
+            )
+        },
+        bash={"base": BASH_BASE},
+        profiles='[profiles.default]\nsrt = ["base"]\nbash = ["base"]\n',
+    )
+
+    findings = [f for f in run(config) if f.code == "broad-allow-write"]
+
+    assert len(findings) == 1
+    message = findings[0].message
+    assert message.startswith("srt/base.jsonc: filesystem.allowWrite: 3 ")
+    assert "'~', '~/.config', '/'" in message
+    assert "~/.cache" not in message
+
+
+# --- relative entries in Claude sandbox.filesystem (bkmr 3742) -----------
+
+
+def test_relative_entries_in_claude_sandbox_filesystem_are_flagged(
+    tmp_path: Path,
+) -> None:
+    config = write_config(
+        tmp_path,
+        srt={"base": '{"enabled": true}'},
+        bash={"base": BASH_BASE},
+        profiles='[profiles.default]\nsrt = ["base"]\nbash = ["base"]\n',
+    )
+    repo_settings = tmp_path / "repo" / ".claude" / "settings.json"
+    repo_settings.parent.mkdir(parents=True)
+    repo_settings.write_text(
+        '{"sandbox": {"filesystem": {"allowWrite": [".", "~/x", "/abs", "//abs2"],'
+        ' "denyRead": ["**/.env"]}}}'
+    )
+    absent = tmp_path / "missing.json"
+
+    findings = [
+        f
+        for f in diagnose(load_config(config), config.parent, [repo_settings, absent])
+        if f.code == "claude-relative-sandbox-path"
+    ]
+
+    assert [f.severity for f in findings] == ["warning", "warning"]
+    assert findings[0].message.startswith(
+        f"{repo_settings}: sandbox.filesystem.allowWrite: 1 "
+    )
+    assert "'.'" in findings[0].message
+    assert "'~/x'" not in findings[0].message
+    assert "'**/.env'" in findings[1].message
+
+
+def test_unreadable_claude_settings_file_is_skipped_not_fatal(tmp_path: Path) -> None:
+    config = write_config(
+        tmp_path,
+        srt={"base": '{"enabled": true}'},
+        bash={"base": BASH_BASE},
+        profiles='[profiles.default]\nsrt = ["base"]\nbash = ["base"]\n',
+    )
+    broken = tmp_path / "broken.json"
+    broken.write_text("{ not json")
+
+    assert diagnose(load_config(config), config.parent, [broken]) == []

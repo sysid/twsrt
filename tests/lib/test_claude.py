@@ -375,10 +375,12 @@ class TestFilesystemConfig:
     here too duplicated the Seatbelt clause expansion past ARG_MAX (E2BIG).
     """
 
-    def test_deny_lists_always_empty_allow_write_passthrough(
-        self, gen: ClaudeGenerator
-    ) -> None:
-        """allowWrite passes through; denyRead/denyWrite are emptied."""
+    def test_all_path_lists_are_managed_empty(self, gen: ClaudeGenerator) -> None:
+        """ADR 0002: allowWrite travels as Edit allow rules, not as a raw path.
+
+        A relative sandbox.filesystem entry anchors at the settings-file root,
+        so "." in ~/.claude/settings.json granted ~/.claude, not the project.
+        """
         config = AppConfig(
             filesystem_config={
                 "allowWrite": [".", "/tmp"],
@@ -388,26 +390,26 @@ class TestFilesystemConfig:
         )
         output = json.loads(gen.generate([], config))
         fs = output["sandbox"]["filesystem"]
-        assert fs["allowWrite"] == [".", "/tmp"]
+        assert fs["allowWrite"] == []
         assert fs["denyWrite"] == []
         assert fs["denyRead"] == []
 
     def test_partial_filesystem_config(self, gen: ClaudeGenerator) -> None:
-        """denyRead-only config still yields managed empty lists, no allowWrite."""
+        """denyRead-only config still yields all three managed empty lists."""
         config = AppConfig(filesystem_config={"denyRead": ["~/.ssh"]})
         output = json.loads(gen.generate([], config))
         fs = output["sandbox"]["filesystem"]
         assert fs["denyRead"] == []
         assert fs["denyWrite"] == []
-        assert "allowWrite" not in fs
+        assert fs["allowWrite"] == []
 
     def test_empty_filesystem_config_still_emits_managed_section(
         self, gen: ClaudeGenerator, config: AppConfig
     ) -> None:
-        """Section is always present so stale deny lists in targets get cleared."""
+        """Section is always present so stale path lists in targets get cleared."""
         output = json.loads(gen.generate([], config))
         fs = output["sandbox"]["filesystem"]
-        assert fs == {"denyRead": [], "denyWrite": []}
+        assert fs == {"denyRead": [], "denyWrite": [], "allowWrite": []}
 
     def test_filesystem_coexists_with_network(self, gen: ClaudeGenerator) -> None:
         """Filesystem and network sections coexist in sandbox."""
@@ -928,7 +930,9 @@ class TestSandboxOverridesInGeneration:
         output = json.loads(gen.generate([], config))
         filesystem = output["sandbox"]["filesystem"]
 
-        assert filesystem["allowWrite"] == ["/override"]
+        # ADR 0002: allowWrite is managed-empty too; an override cannot route
+        # a path around the Edit-rule translation.
+        assert filesystem["allowWrite"] == []
         assert filesystem["customKey"] == ["kept"]
         assert filesystem["denyRead"] == []
         assert filesystem["denyWrite"] == []
@@ -1245,3 +1249,158 @@ def test_read_and_write_deny_on_one_path_emit_each_rule_once(
 
     assert deny.count("Edit(**/.env)") == 1
     assert deny.count("Read(**/.env)") == 1
+
+
+class TestAllowWriteAsEditAllowRules:
+    """ADR 0002: allowWrite → Edit(...) allow rules (route A, anchors at cwd)."""
+
+    def test_absolute_directory_gets_double_slash_bare_and_recursive(
+        self, gen: ClaudeGenerator, config: AppConfig, tmp_path: Path
+    ) -> None:
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        rules = [
+            SecurityRule(Scope.WRITE, Action.ALLOW, str(cache), Source.SRT_FILESYSTEM)
+        ]
+
+        allow = json.loads(gen.generate(rules, config))["permissions"]["allow"]
+
+        assert f"Edit(/{cache})" in allow
+        assert f"Edit(/{cache}/**)" in allow
+
+    def test_home_directory_keeps_tilde(
+        self, gen: ClaudeGenerator, config: AppConfig
+    ) -> None:
+        rules = [
+            SecurityRule(Scope.WRITE, Action.ALLOW, "~/.gradle", Source.SRT_FILESYSTEM)
+        ]
+
+        allow = json.loads(gen.generate(rules, config))["permissions"]["allow"]
+
+        assert "Edit(~/.gradle)" in allow
+        assert "Edit(~/.gradle/**)" in allow
+
+    def test_relative_entry_stays_relative_so_it_anchors_at_the_launch_cwd(
+        self, gen: ClaudeGenerator, config: AppConfig
+    ) -> None:
+        rules = [
+            SecurityRule(Scope.WRITE, Action.ALLOW, ".", Source.SRT_FILESYSTEM),
+            SecurityRule(Scope.WRITE, Action.ALLOW, ".git", Source.SRT_FILESYSTEM),
+        ]
+
+        allow = json.loads(gen.generate(rules, config))["permissions"]["allow"]
+
+        assert "Edit(.)" in allow
+        assert "Edit(./**)" in allow
+        assert "Edit(.git)" in allow
+        assert "Edit(.git/**)" in allow
+
+    def test_glob_entry_is_emitted_bare_only(
+        self, gen: ClaudeGenerator, config: AppConfig
+    ) -> None:
+        rules = [
+            SecurityRule(
+                Scope.WRITE, Action.ALLOW, "~/.cache/*/x", Source.SRT_FILESYSTEM
+            )
+        ]
+
+        allow = json.loads(gen.generate(rules, config))["permissions"]["allow"]
+
+        assert allow == ["Edit(~/.cache/*/x)"]
+
+    def test_overlapping_deny_is_still_emitted_so_deny_wins_at_runtime(
+        self, gen: ClaudeGenerator, config: AppConfig
+    ) -> None:
+        rules = [
+            SecurityRule(Scope.WRITE, Action.ALLOW, ".", Source.SRT_FILESYSTEM),
+            SecurityRule(Scope.WRITE, Action.DENY, "./xxx/x.md", Source.SRT_FILESYSTEM),
+        ]
+
+        output = json.loads(gen.generate(rules, config))
+
+        assert "Edit(.)" in output["permissions"]["allow"]
+        assert "Edit(./xxx/x.md)" in output["permissions"]["deny"]
+
+    def test_yolo_mode_still_emits_the_allow_rules(self, gen: ClaudeGenerator) -> None:
+        # They feed the sandbox write grant; yolo only drops ask rules.
+        rules = [SecurityRule(Scope.WRITE, Action.ALLOW, ".", Source.SRT_FILESYSTEM)]
+
+        allow = json.loads(gen.generate(rules, AppConfig(yolo=True)))["permissions"][
+            "allow"
+        ]
+
+        assert "Edit(.)" in allow
+
+
+class TestEditAllowOwnership:
+    """ADR 0002: twsrt owns every Edit(...) allow entry in its Claude target."""
+
+    def test_regenerate_replaces_stale_edit_allows_and_keeps_other_allows(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "settings.json"
+        target.write_text(
+            json.dumps(
+                {
+                    "permissions": {
+                        "allow": [
+                            "Edit(~/old-grant)",
+                            "Bash(git status)",
+                            "mcp__server__tool",
+                            "WebFetch(domain:old.example)",
+                        ]
+                    }
+                }
+            )
+        )
+        generated = {
+            "permissions": {"deny": [], "allow": ["Edit(.)", "Edit(./**)"]},
+            "sandbox": {},
+        }
+
+        result = selective_merge(target, generated)
+
+        assert result["permissions"]["allow"] == [
+            "Bash(git status)",
+            "mcp__server__tool",
+            "Edit(.)",
+            "Edit(./**)",
+        ]
+
+    def test_regenerate_clears_a_stale_raw_allow_write_list(
+        self, gen: ClaudeGenerator, tmp_path: Path
+    ) -> None:
+        # The live bug: "." and ".git" in sandbox.filesystem.allowWrite of the
+        # user settings granted ~/.claude and ~/.claude/.git.
+        target = tmp_path / "settings.json"
+        target.write_text(
+            json.dumps({"sandbox": {"filesystem": {"allowWrite": [".", ".git"]}}})
+        )
+        generated = json.loads(
+            gen.generate([], AppConfig(filesystem_config={"allowWrite": [".", ".git"]}))
+        )
+
+        result = selective_merge(target, generated)
+
+        assert result["sandbox"]["filesystem"]["allowWrite"] == []
+
+
+class TestEditAllowDiff:
+    def test_missing_and_stale_edit_allows_are_drift(
+        self, gen: ClaudeGenerator, config: AppConfig, tmp_path: Path
+    ) -> None:
+        rules = [SecurityRule(Scope.WRITE, Action.ALLOW, ".", Source.SRT_FILESYSTEM)]
+        target = tmp_path / "settings.json"
+        generated = json.loads(gen.generate(rules, config))
+        generated["permissions"]["allow"] = [
+            "Edit(./**)",
+            "Edit(~/stale)",
+            "Bash(ls)",
+        ]
+        target.write_text(json.dumps(generated))
+
+        result = gen.diff(rules, target, config)
+
+        assert "Edit(.)" in result.missing
+        assert "Edit(~/stale)" in result.extra
+        assert "Bash(ls)" not in result.extra

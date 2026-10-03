@@ -154,8 +154,10 @@ def test_claude_output_covers_every_denied_path_via_rules(tmp_path: Path) -> Non
     assert "Edit(**/.env)" in deny
     assert "Edit(//etc/ssl/certs)" in deny
 
+    # allowWrite travels as Edit allow rules (ADR 0002)
+    assert "Edit(.)" in output["permissions"]["allow"]
     fs = output["sandbox"]["filesystem"]
-    assert fs["allowWrite"] == ["."]
+    assert fs["allowWrite"] == []
     assert fs["denyRead"] == []
     assert fs["denyWrite"] == []
 

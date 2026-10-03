@@ -498,7 +498,16 @@ def doctor(ctx: typer.Context) -> None:
         _error(str(exc))
         raise typer.Exit(1)
 
-    findings = diagnose(config, config_path.parent)
+    # The twsrt Claude targets plus the repo's own settings, which Claude also
+    # loads and which twsrt never writes (relative-path trap, bkmr 3742).
+    project = Path.cwd() / ".claude"
+    claude_files = [
+        config.claude_settings_path,
+        config.claude_yolo_path or yolo_path(config.claude_settings_path),
+        project / "settings.json",
+        project / "settings.local.json",
+    ]
+    findings = diagnose(config, config_path.parent, claude_files)
     if not findings:
         _success("doctor: no findings")
         return

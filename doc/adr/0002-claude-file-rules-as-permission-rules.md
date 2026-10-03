@@ -1,7 +1,7 @@
 # ADR 0002: Claude Code — all filesystem rules travel as `Read`/`Edit` permission rules
 
-- **Status:** Accepted. Deny part implemented (existing behaviour); allow part decided 2026-10-03,
-  **implementation pending**
+- **Status:** Accepted and implemented in code (2026-10-03); live verification pending (plan
+  `thoughts/plans/2026-10-03-adr0002-claude-allow-edit-rules.md`, step 6)
 - **Date:** 2026-10-03
 - **Deciders:** Tom
 - **Implementation:** `src/twsrt/lib/claude.py` `ClaudeGenerator.generate`, `selective_merge`
@@ -132,8 +132,12 @@ widening outweigh the lost prompt. Denies still win in both gates.
 **Negative / open**
 
 - Prompt loss for edits under `allowWrite` paths (see trade-off).
-- `selective_merge` must own the generated `Edit(...)` allow entries (today it replaces only
-  `WebFetch(domain:…)` allows); user-added `Edit` allows must survive regeneration.
+- `selective_merge` owns **every** `Edit(...)` allow in the twsrt target and replaces them on each
+  write, so a path removed from the policy loses its grant. A hand-written `Edit` allow in the user
+  file is therefore dropped; Claude records "don't ask again" approvals in `settings.local.json`,
+  which twsrt never writes.
+- `[sandbox_overrides]` can no longer place paths into `sandbox.filesystem.allowWrite`; like the
+  deny lists it is reset to `[]` after the overrides.
 - Unverified: whether gate 1 treats `Edit(.)` as covering files below `.` (may need `Edit(./**)`);
   in the sandbox `.` is recursive either way.
 - Spike 2026-10-03 (Claude 2.1.288, `Vm()`): `Edit` allow folding is skipped only when the env var

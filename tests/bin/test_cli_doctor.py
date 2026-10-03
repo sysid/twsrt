@@ -2,11 +2,21 @@
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from twsrt.bin.cli import app
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """doctor inspects paths on disk (symlinks, home roots): never the host's."""
+    home = tmp_path / "isolated-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    return home
 
 
 def write_config(tmp_path: Path, srt_base: str, extra_profiles: str = "") -> Path:
@@ -91,3 +101,22 @@ def test_doctor_reports_an_unloadable_config_as_an_error(tmp_path: Path) -> None
 
     assert result.exit_code == 1
     assert "schema_version" in result.stderr
+
+
+def test_doctor_scans_the_repo_claude_settings_for_relative_sandbox_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = write_config(tmp_path, '{"enabled": true}')
+    (tmp_path / "off.jsonc").write_text("{}")
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "settings.local.json").write_text(
+        '{"sandbox": {"filesystem": {"allowWrite": ["./build"]}}}'
+    )
+    monkeypatch.chdir(repo)
+
+    result = runner.invoke(app, ["-c", str(config), "doctor"])
+
+    assert result.exit_code == 0, result.output
+    assert "claude-relative-sandbox-path" in result.stdout
+    assert "'./build'" in result.stdout

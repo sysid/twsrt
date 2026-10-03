@@ -759,8 +759,10 @@ class TestUS1AcceptanceScenarios:
             assert f"MultiEdit({path})" not in deny
             assert f"MultiEdit({path}/**)" not in deny
 
-    def test_scenario_2_allow_write_no_output(self, tmp_path: Path) -> None:
-        """allowWrite produces no Claude output."""
+    def test_scenario_2_allow_write_becomes_edit_allow_rules(
+        self, tmp_path: Path
+    ) -> None:
+        """ADR 0002: allowWrite → Edit allow rules; no raw sandbox path."""
         srt = {
             "filesystem": {
                 "allowWrite": [".", "/tmp"],
@@ -771,7 +773,13 @@ class TestUS1AcceptanceScenarios:
         assert result.exit_code == 0
         output = json.loads(result.stdout)
         assert output["permissions"]["deny"] == []
-        assert output["permissions"]["allow"] == []
+        assert output["permissions"]["allow"] == [
+            "Edit(.)",
+            "Edit(./**)",
+            "Edit(//tmp)",
+            "Edit(//tmp/**)",
+        ]
+        assert output["sandbox"]["filesystem"]["allowWrite"] == []
 
     def test_scenario_3_allowed_domains(self, tmp_path: Path) -> None:
         """allowedDomains → WebFetch allow + sandbox.network."""
@@ -1811,7 +1819,7 @@ class TestDiffCommand:
             },
             "sandbox": {
                 "network": {"allowedDomains": []},
-                "filesystem": {"denyRead": [], "denyWrite": []},
+                "filesystem": {"denyRead": [], "denyWrite": [], "allowWrite": []},
             },
         }
         claude_target.write_text(json.dumps(existing))
@@ -1878,7 +1886,7 @@ class TestUS3AcceptanceScenarios:
             },
             "sandbox": {
                 "network": {"allowedDomains": []},
-                "filesystem": {"denyRead": [], "denyWrite": []},
+                "filesystem": {"denyRead": [], "denyWrite": [], "allowWrite": []},
             },
         }
         claude_target.write_text(json.dumps(existing))

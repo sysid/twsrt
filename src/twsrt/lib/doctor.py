@@ -10,6 +10,8 @@ thoughts/research/2026-10-02-srt-wildcard-semantics.md.
 from __future__ import annotations
 
 import os
+import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -35,8 +37,15 @@ class Finding:
     message: str
 
 
-def diagnose(config: AppConfig, base_dir: Path) -> list[Finding]:
-    """Run every check; findings are deduplicated and ordered by severity."""
+def diagnose(
+    config: AppConfig, base_dir: Path, claude_files: Sequence[Path] = ()
+) -> list[Finding]:
+    """Run every check; findings are deduplicated and ordered by severity.
+
+    claude_files are Claude Code settings files to scan for relative
+    sandbox.filesystem entries (the twsrt target and the repo's .claude/
+    files); missing or unparseable files are skipped.
+    """
     findings: list[Finding] = []
     loaded, broken = _load_fragments(config, base_dir, findings)
     resolved = _resolve_profiles(config, findings)
@@ -46,6 +55,9 @@ def diagnose(config: AppConfig, base_dir: Path) -> list[Finding]:
     for profile in resolved.values():
         _check_profile_lists(profile, loaded, base_dir, findings)
     _check_patterns(config, loaded, base_dir, findings)
+    _check_symlinked_denies(config, loaded, base_dir, findings)
+    _check_broad_allow_write(config, loaded, base_dir, findings)
+    _check_claude_files(claude_files, findings)
 
     unique = list(dict.fromkeys(findings))
     return sorted(unique, key=lambda finding: SEVERITIES.index(finding.severity))
@@ -401,6 +413,142 @@ def _path_trap(key: str, entry: str) -> str | None:
 
 def _count(items: list[str], singular: str, plural: str) -> str:
     return f"{len(items)} {singular if len(items) == 1 else plural}"
+
+
+# --- D. checks added with ADR 0002 ----------------------------------------
+
+
+def _srt_entries(
+    config: AppConfig, loaded: dict[Path, dict[str, Any]], key: str
+) -> list[tuple[Path, str]]:
+    """(fragment path, entry) for one filesystem list across all srt fragments."""
+    found: list[tuple[Path, str]] = []
+    for fragment in config.sources["srt"].fragments.values():
+        filesystem = loaded.get(fragment.path, {}).get("filesystem", {})
+        entries = filesystem.get(key, []) if isinstance(filesystem, dict) else []
+        if isinstance(entries, list):
+            found += [(fragment.path, e) for e in entries if isinstance(e, str)]
+    return found
+
+
+def _concrete_path(entry: str) -> str | None:
+    """Absolute expanded path of a non-glob ~ or / entry; None otherwise."""
+    if "*" in entry or "?" in entry or "[" in entry:
+        return None
+    if not entry.startswith(("/", "~")):
+        return None  # relative: anchored at a launch cwd unknown here
+    return os.path.normpath(os.path.expanduser(entry.removesuffix("/**")))
+
+
+def _check_symlinked_denies(
+    config: AppConfig,
+    loaded: dict[Path, dict[str, Any]],
+    base_dir: Path,
+    findings: list[Finding],
+) -> None:
+    """A deny on a symlinked path is a no-op unless its real path is denied too.
+
+    srt keeps the unresolved spelling while Seatbelt matches the real vnode
+    path (bkmr 3686); Claude folds the same paths into the same library.
+    """
+    for key in ("denyRead", "denyWrite"):
+        entries = _srt_entries(config, loaded, key)
+        listed = {path for _, e in entries if (path := _concrete_path(e))}
+        hits: dict[Path, list[str]] = {}
+        for origin, entry in entries:
+            path = _concrete_path(entry)
+            if path is None:
+                continue
+            real = os.path.realpath(path)
+            if real == path:
+                continue
+            if any(real == item or real.startswith(item + "/") for item in listed):
+                continue
+            hits.setdefault(origin, []).append(f"{entry!r} (-> {real})")
+        for origin, items in hits.items():
+            findings.append(
+                Finding(
+                    "warning",
+                    "symlinked-deny-path",
+                    f"{_show(origin, base_dir)}: filesystem.{key}: "
+                    f"{_count(items, 'entry', 'entries')} through a symlink; the "
+                    "sandbox matches the real path, so list it too: "
+                    + ", ".join(items),
+                )
+            )
+
+
+def _broad_roots() -> list[str]:
+    home = os.path.expanduser("~")
+    return ["/", home, os.path.join(home, ".config"), os.path.join(home, "Library")]
+
+
+def _check_broad_allow_write(
+    config: AppConfig,
+    loaded: dict[Path, dict[str, Any]],
+    base_dir: Path,
+    findings: list[Finding],
+) -> None:
+    """allowWrite on or above a broad root: with Claude Code (ADR 0002) every
+    allowWrite path also auto-approves Claude's edit tools."""
+    roots = _broad_roots()
+    hits: dict[Path, list[str]] = {}
+    for origin, entry in _srt_entries(config, loaded, "allowWrite"):
+        path = _concrete_path(entry)
+        if path is None:
+            continue
+        if any(
+            root == path or root.startswith(path.rstrip("/") + "/") for root in roots
+        ):
+            hits.setdefault(origin, []).append(repr(entry))
+    for origin, items in hits.items():
+        findings.append(
+            Finding(
+                "warning",
+                "broad-allow-write",
+                f"{_show(origin, base_dir)}: filesystem.allowWrite: "
+                f"{_count(items, 'entry', 'entries')} covering home, / or a config "
+                "root; in Claude Code they also auto-approve edits (ADR 0002): "
+                + ", ".join(items),
+            )
+        )
+
+
+def _check_claude_files(claude_files: Sequence[Path], findings: list[Finding]) -> None:
+    """Relative sandbox.filesystem entries anchor at the settings-file root.
+
+    In ~/.claude/settings.json "." means ~/.claude, in a --settings file its
+    directory (bkmr 3742). Read()/Edit() rules anchor at the launch cwd.
+    """
+    for path in dict.fromkeys(claude_files):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        sandbox = data.get("sandbox", {}) if isinstance(data, dict) else {}
+        filesystem = sandbox.get("filesystem", {}) if isinstance(sandbox, dict) else {}
+        if not isinstance(filesystem, dict):
+            continue
+        for key in ("allowWrite", "denyWrite", "denyRead", "allowRead"):
+            entries = filesystem.get(key, [])
+            if not isinstance(entries, list):
+                continue
+            relative = [
+                repr(e)
+                for e in entries
+                if isinstance(e, str) and not e.startswith(("/", "~"))
+            ]
+            if relative:
+                findings.append(
+                    Finding(
+                        "warning",
+                        "claude-relative-sandbox-path",
+                        f"{path}: sandbox.filesystem.{key}: "
+                        f"{_count(relative, 'entry', 'entries')} anchored at the "
+                        "settings-file root, not the launch directory; use "
+                        "Read()/Edit() rules instead: " + ", ".join(relative),
+                    )
+                )
 
 
 def _show(path: Path, base_dir: Path) -> str:

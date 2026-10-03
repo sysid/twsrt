@@ -383,3 +383,22 @@ def test_project_writes_into_the_current_directory_even_below_a_repo_root(
     assert result.exit_code == 0, result.output
     assert (subdir / ".twsrt/claude-settings.json").exists()
     assert not (project / ".twsrt").exists()
+
+
+def test_project_claude_file_grants_writes_via_edit_rules_not_raw_sandbox_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ADR 0002: in a --settings file a raw sandbox.filesystem "." would anchor
+    # at .twsrt/ (the settings-file root); Edit(.) anchors at the launch cwd.
+    config, claude_target, project = make_config(tmp_path)
+    monkeypatch.chdir(project)
+    write_global_claude_settings(claude_target)
+
+    result = runner.invoke(
+        app, ["-c", str(config), "generate", "claude", "-w", "--project"]
+    )
+
+    assert result.exit_code == 0, result.output
+    claude = json.loads((project / ".twsrt/claude-settings.json").read_text())
+    assert "Edit(.)" in claude["permissions"]["allow"]
+    assert claude["sandbox"]["filesystem"]["allowWrite"] == []
