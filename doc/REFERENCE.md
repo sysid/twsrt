@@ -595,7 +595,23 @@ Drift and the Claude settings symlink are out of scope; use `diff`.
 `~/.srt-settings.json` says? `diff` proves the file matches the fragments;
 `test` proves the sandbox matches the file. It exercises the SRT wrapper only
 (`srt -s <settings> -c`), not Claude Code's native sandbox, Codex, or the
-Bash deny/ask rules.
+Bash deny/ask rules. Design rationale: [ADR 0007](adr/0007-probes-are-derived-and-judged-differentially.md).
+
+### Probe patterns
+
+| Pattern | Guarantees | Details |
+|---|---|---|
+| Derived probes | the probe set follows the compiled settings; unprobeable rules show as `SKIP` | [Maintaining the probe set](#maintaining-the-probe-set) |
+| Control vs. sandbox run | a block counts only if the same command works outside the sandbox | [Execution model](#execution-model) |
+| OS-denial exception | a root-owned path denied below srt still passes, with a reason | [Execution model](#execution-model) |
+| One-byte read | read denies are proven without leaking content (stdout discarded) | [Read probes](#read-probes) |
+| Realpath twin | a deny that a symlink turns into a no-op shows as its own failing row | [Read probes](#read-probes) |
+| Append-open write | write denies are proven without truncating or touching mtime | [Write probes](#write-probes) |
+| Glob witness | a deny glob is observed on a matching file inside a writable root, below the glob's prefix | [Write probes](#write-probes) |
+| HEAD request | domain rules are proven by connecting, regardless of HTTP status | [Network probes](#network-probes) |
+| Allowlist canary | allowlist mode itself is on: a non-allowlisted host is blocked | [Network probes](#network-probes) |
+| Section options | `--denyRead`, `--denyWrite`, … run one settings key's probes | below |
+| Artifact cleanup | created files and witness directories are removed; pre-existing files never | [Write probes](#write-probes), [Known limits](#known-limits) |
 
 ### Execution model
 
@@ -846,7 +862,7 @@ the rules and cannot fall out of sync:
 | To change | Edit | Consequence |
 |---|---|---|
 | which rules are probed | the registered fragments (`twsrt edit`), then `twsrt generate -w` | the probe set follows; no code change |
-| how a rule becomes a command | `derive_probes` and its `_read_deny` / `_write_deny` / `_write_allow` / `_network` helpers in `src/twsrt/lib/probe.py` | new probe shape; update the [probe catalogue](#probe-catalogue) |
+| how a rule becomes a command | `derive_probes` and its `_read_deny` / `_write_deny` / `_write_allow` / `_network` helpers in `src/twsrt/lib/probe.py`; glob witness placement in `_witness_dir` | new probe shape; update the [probe catalogue](#probe-catalogue) |
 | what counts as a pass | `judge` in the same module | update the [verdict table](#execution-model) |
 
 Derivation and verdict logic are covered by `tests/lib/test_probe.py` and
@@ -867,6 +883,11 @@ Derivation and verdict logic are covered by `tests/lib/test_probe.py` and
 - Bash deny/ask rules are application-layer and out of scope.
 - Probes run one after another; a long allowlist costs one HEAD request per
   domain.
+- Cleanup runs after each run and on timeout, not on Ctrl-C or a crash. An
+  interruption right after a control run can leave `.twsrt-probe-<pid>` in
+  the probed directory, and `kill -9` can leave `.twsrt-test-*` directories.
+  Find leftovers with
+  `find ~ \( -name '.twsrt-probe-*' -o -name '.twsrt-test-*' \) 2>/dev/null`.
 
 ## Diagnostic output
 

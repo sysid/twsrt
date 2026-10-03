@@ -122,10 +122,10 @@ durable core and translates with high fidelity into every agent. The Bash
 deny/ask rules are a per-agent supplement. Why both are needed:
 [SECURITY_CONCEPT.md](SECURITY_CONCEPT.md#3-security-principles).
 
-### 3. Profiles choose which fragments are in force
+### 3. Profiles choose which fragments are active
 
-A fragment is one slice of policy. A profile is a selection of fragments;
-it holds no policy itself. Profiles extend each other but only ever *add*:
+A fragment is one slice of policy. A profile is a combination of fragments.
+Profiles extend each other but only ever *add*:
 
 ```
                      fragment pool (the policy)
@@ -139,11 +139,10 @@ it holds no policy itself. Profiles extend each other but only ever *add*:
 - **Children add, they never override.** A scalar the parent sets cannot be
   changed by a child; that is a compile error, so no profile can silently
   weaken another.
-- **One profile is in force at a time** for the global files: output paths
-  are per source kind, not per profile, so `generate -w -p work` and
-  `generate -w` write the same files and the last run wins.
-- **A project drops a rule by choosing a profile without that fragment**,
-  compiled into the repository instead of the global files — see
+- **One profile is in force at a time** for the global files: `generate -w -p work` and `generate
+  -w` write the same files and the last run wins.
+- **A project can drop a rule by choosing a profile without that fragment**,
+  compiled into a project repository instead of the global files — see
   [Per-project policy](#per-project-policy).
 
 ## Use cases at a glance
