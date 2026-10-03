@@ -447,7 +447,7 @@ Three read-only commands answer three different questions:
 
 | Command | Exit codes | Notes |
 |---|---|---|
-| `twsrt doctor` | `0` ok, `1` errors | Unparseable fragments, profiles that do not compile, redundant rules, glob traps. [Checks](doc/REFERENCE.md#doctor-checks) |
+| `twsrt doctor` | `0` ok, `1` errors | Unparseable fragments, profiles that do not compile, redundant rules, glob traps. Accept one with a trailing `// doctor-ignore[: reason]`. [Checks](doc/REFERENCE.md#doctor-checks) |
 | `twsrt diff [agent]` | `0` no drift, `1` drift, `2` target missing | Catches unapplied fragment edits and out-of-band edits to generated files |
 | `twsrt test [-k TEXT] [--json]` | `0` passed, `1` any `FAIL`, `INVALID` or `ERROR`, `2` settings missing or srt cannot sandbox here | Run from a plain terminal, after every srt, agent or OS upgrade |
 

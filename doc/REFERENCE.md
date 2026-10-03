@@ -552,6 +552,35 @@ covered entry's.
 | `noop-glob-suffix` | info | A trailing `/**` is stripped by srt; the bare directory is the same rule |
 | `wildcard-apex` | info | `*.x.com` without `x.com` in the same list: the apex is not matched |
 
+### Silencing a finding
+
+A trailing `// doctor-ignore` comment on a fragment line accepts its entries
+as intended and silences every entry-level finding about them. Anything after
+a colon is a free-text reason for the reader; doctor does not interpret it:
+
+```jsonc
+"allowWrite": [
+  "~/.copilot",
+  "~/.copilot/ide/**",  // doctor-ignore: spelled out for readers
+  "~/legacy/**"         // doctor-ignore
+],
+"denyWrite": [
+  "**/.env"             // doctor-ignore: project-local by design
+]
+```
+
+- Only the entries on the comment's own line; a directive on a line of its
+  own covers nothing.
+- Applies to entry-level codes: `subsumed-rule`, `duplicate-rule`,
+  `wildcard-apex`, `symlinked-deny-path`, `broad-allow-write` and the pattern
+  traps. Errors and profile or fragment findings cannot be silenced; Claude
+  settings files are JSON and carry no comments.
+- All of an entry's findings go silent together; there is no per-code choice.
+- `subsumed-rule` is silenced on the covered entry (the one reported), not
+  the covering one. `duplicate-rule` is silenced by a directive in any of the
+  fragments that list the entry.
+- A directive applies to the same string in every list of its fragment.
+
 Pattern semantics are from srt `117eb92` (v0.0.78), see
 `thoughts/research/2026-10-02-srt-wildcard-semantics.md`. Not modelled
 (deliberate simplifications): coverage by a glob entry and port-qualified

@@ -753,3 +753,122 @@ def test_unreadable_claude_settings_file_is_skipped_not_fatal(tmp_path: Path) ->
     broken.write_text("{ not json")
 
     assert diagnose(load_config(config), config.parent, [broken]) == []
+
+
+# --- E. doctor-ignore comments --------------------------------------------
+
+
+def test_bare_doctor_ignore_silences_every_finding_for_that_line(
+    tmp_path: Path,
+) -> None:
+    config = write_config(
+        tmp_path,
+        srt={
+            "base": (
+                '{"enabled": true, "filesystem": {"denyWrite": [\n'
+                '  "**/.env",  // doctor-ignore\n'
+                '  "**/*.pem"\n'
+                "]}}"
+            )
+        },
+        bash={"base": BASH_BASE},
+        profiles='[profiles.default]\nsrt = ["base"]\nbash = ["base"]\n',
+    )
+
+    findings = run(config)
+
+    assert codes(findings) == ["cwd-anchored-glob"]
+    assert findings[0].message.startswith("srt/base.jsonc: filesystem.denyWrite: 1 ")
+    assert "'**/*.pem'" in findings[0].message
+    assert "'**/.env'" not in findings[0].message
+
+
+def test_doctor_ignore_text_after_the_colon_is_a_reason_not_a_filter(
+    tmp_path: Path,
+) -> None:
+    # '~/x/**' is both subsumed by '~/x' and a no-op /** suffix: a reason that
+    # happens to name one finding still silences both.
+    config = write_config(
+        tmp_path,
+        srt={
+            "base": (
+                '{"enabled": true, "filesystem": {"allowWrite": [\n'
+                '  "~/x",\n'
+                '  "~/x/**"  // doctor-ignore: subsumed-rule, kept for readers\n'
+                "]}}"
+            )
+        },
+        bash={"base": BASH_BASE},
+        profiles='[profiles.default]\nsrt = ["base"]\nbash = ["base"]\n',
+    )
+
+    assert run(config) == []
+
+
+def test_doctor_ignore_works_in_bash_fragments(tmp_path: Path) -> None:
+    config = write_config(
+        tmp_path,
+        srt={"base": '{"enabled": true}'},
+        bash={
+            "base": (
+                '{"allow": [], "ask": [], "deny": [\n'
+                '  "rm",\n'
+                '  "rm -rf",  // doctor-ignore: explicit for readers\n'
+                '  "rm -r"\n'
+                "]}"
+            )
+        },
+        profiles='[profiles.default]\nsrt = ["base"]\nbash = ["base"]\n',
+    )
+
+    findings = run(config)
+
+    assert codes(findings) == ["subsumed-rule"]
+    assert "'rm -r' by 'rm'" in findings[0].message
+    assert "rm -rf" not in findings[0].message
+
+
+def test_doctor_ignore_silences_wildcard_apex_on_the_wildcard_line(
+    tmp_path: Path,
+) -> None:
+    config = write_config(
+        tmp_path,
+        srt={
+            "base": (
+                '{"enabled": true, "network": {"allowedDomains": [\n'
+                '  "*.pypi.org",  // doctor-ignore: no apex host exists\n'
+                '  "*.npmjs.org"\n'
+                "]}}"
+            )
+        },
+        bash={"base": BASH_BASE},
+        profiles='[profiles.default]\nsrt = ["base"]\nbash = ["base"]\n',
+    )
+
+    findings = run(config)
+
+    assert codes(findings) == ["wildcard-apex"]
+    assert "pypi" not in findings[0].message
+
+
+def test_doctor_ignore_inside_a_string_or_plain_comment_is_not_a_directive(
+    tmp_path: Path,
+) -> None:
+    config = write_config(
+        tmp_path,
+        srt={
+            "base": (
+                '{"enabled": true, "filesystem": {"denyWrite": [\n'
+                '  "**/// doctor-ignore",\n'
+                '  "**/.env"  // see doctor-ignore docs\n'
+                "]}}"
+            )
+        },
+        bash={"base": BASH_BASE},
+        profiles='[profiles.default]\nsrt = ["base"]\nbash = ["base"]\n',
+    )
+
+    findings = run(config)
+
+    assert codes(findings) == ["cwd-anchored-glob"]
+    assert findings[0].message.startswith("srt/base.jsonc: filesystem.denyWrite: 2 ")

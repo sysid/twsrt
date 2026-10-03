@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import os
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from twsrt.lib.jsonc import load as load_jsonc
+from twsrt.lib.jsonc import load as load_jsonc, split_comments
 from twsrt.lib.models import AppConfig, ResolvedProfile
 from twsrt.lib.profiles import resolve_profile
 from twsrt.lib.sources import compile_sources
@@ -28,6 +29,14 @@ _PATH_LISTS = ("allowWrite", "denyWrite", "denyRead", "allowRead")
 _DOMAIN_LISTS = ("allowedDomains", "deniedDomains")
 _BASH_LISTS = ("allow", "ask", "deny")
 _ALLOW_PATH_LISTS = ("allowWrite", "allowRead")
+
+# `// doctor-ignore` or `// doctor-ignore: free-text reason` after an entry.
+_IGNORE_DIRECTIVE = re.compile(r"//\s*doctor-ignore\b")
+# A JSON string literal that is a value, not an object key.
+_STRING_VALUE = re.compile(r'"((?:[^"\\]|\\.)*)"(?!\s*:)')
+
+# fragment -> entries whose findings are silenced.
+Ignores = dict[Path, set[str]]
 
 
 @dataclass(frozen=True)
@@ -47,16 +56,16 @@ def diagnose(
     files); missing or unparseable files are skipped.
     """
     findings: list[Finding] = []
-    loaded, broken = _load_fragments(config, base_dir, findings)
+    loaded, broken, ignores = _load_fragments(config, base_dir, findings)
     resolved = _resolve_profiles(config, findings)
     _compile_profiles(config, resolved, broken, findings)
     _check_profile_structure(config, findings)
     _check_unused_fragments(config, findings)
     for profile in resolved.values():
-        _check_profile_lists(profile, loaded, base_dir, findings)
-    _check_patterns(config, loaded, base_dir, findings)
-    _check_symlinked_denies(config, loaded, base_dir, findings)
-    _check_broad_allow_write(config, loaded, base_dir, findings)
+        _check_profile_lists(profile, loaded, ignores, base_dir, findings)
+    _check_patterns(config, loaded, ignores, base_dir, findings)
+    _check_symlinked_denies(config, loaded, ignores, base_dir, findings)
+    _check_broad_allow_write(config, loaded, ignores, base_dir, findings)
     _check_claude_files(claude_files, findings)
 
     unique = list(dict.fromkeys(findings))
@@ -68,14 +77,16 @@ def diagnose(
 
 def _load_fragments(
     config: AppConfig, base_dir: Path, findings: list[Finding]
-) -> tuple[dict[Path, dict[str, Any]], set[Path]]:
+) -> tuple[dict[Path, dict[str, Any]], set[Path], Ignores]:
     """Parse every registered fragment once, used or not."""
     loaded: dict[Path, dict[str, Any]] = {}
     broken: set[Path] = set()
+    ignores: Ignores = {}
     for source in config.sources.values():
         for fragment in source.fragments.values():
             try:
                 loaded[fragment.path] = load_jsonc(fragment.path)
+                ignores[fragment.path] = _ignore_directives(fragment.path)
             except (OSError, ValueError) as exc:
                 broken.add(fragment.path)
                 findings.append(
@@ -85,7 +96,26 @@ def _load_fragments(
                         f"{_show(fragment.path, base_dir)}: {exc}",
                     )
                 )
-    return loaded, broken
+    return loaded, broken, ignores
+
+
+def _ignore_directives(path: Path) -> set[str]:
+    """Entries on a line ending in `// doctor-ignore[: reason]`.
+
+    ponytail: keyed by entry value, so the directive also covers the same
+    string in another list of the same fragment; per-list scoping would need
+    a location-aware JSON parser.
+    """
+    ignored: set[str] = set()
+    for code, comment in split_comments(path.read_text(), path):
+        if _IGNORE_DIRECTIVE.match(comment):
+            ignored |= {json.loads(f'"{s}"') for s in _STRING_VALUE.findall(code)}
+    return ignored
+
+
+def _ignored(ignores: Ignores, origins: Sequence[Path], entry: str) -> bool:
+    """True if any contributing fragment marks this entry doctor-ignore."""
+    return any(entry in ignores.get(origin, set()) for origin in origins)
 
 
 def _resolve_profiles(
@@ -203,6 +233,7 @@ def _check_unused_fragments(config: AppConfig, findings: list[Finding]) -> None:
 def _check_profile_lists(
     profile: ResolvedProfile,
     loaded: dict[Path, dict[str, Any]],
+    ignores: Ignores,
     base_dir: Path,
     findings: list[Finding],
 ) -> None:
@@ -214,7 +245,7 @@ def _check_profile_lists(
             # Grouped per contributing fragment: one finding per file and list.
             covered: dict[Path, list[str]] = {}
             for value, origins in values.items():
-                if len(origins) > 1:
+                if len(origins) > 1 and not _ignored(ignores, origins, value):
                     shown = ", ".join(_show(path, base_dir) for path in origins)
                     findings.append(
                         Finding(
@@ -223,6 +254,8 @@ def _check_profile_lists(
                             f"{list_name}: {value!r} appears in {shown}",
                         )
                     )
+                if _ignored(ignores, origins, value):
+                    continue
                 for other, other_origins in values.items():
                     if _covers(key, other, value):
                         where = (
@@ -245,7 +278,7 @@ def _check_profile_lists(
                     )
                 )
             if key == "allowedDomains":
-                _check_wildcard_apex(list_name, values, base_dir, findings)
+                _check_wildcard_apex(list_name, values, ignores, base_dir, findings)
 
 
 def _profile_lists(
@@ -321,12 +354,15 @@ def _domain_covers(parent: str, child: str) -> bool:
 def _check_wildcard_apex(
     list_name: str,
     values: dict[str, list[Path]],
+    ignores: Ignores,
     base_dir: Path,
     findings: list[Finding],
 ) -> None:
     """Grouped by the wildcard's fragment, so profiles sharing it dedup."""
     missing: dict[Path, list[str]] = {}
     for value, origins in values.items():
+        if _ignored(ignores, origins, value):
+            continue
         if value.startswith("*.") and ":" not in value and value[2:] not in values:
             missing.setdefault(origins[0], []).append(f"{value!r} ({value[2:]})")
     for origin, items in missing.items():
@@ -370,6 +406,7 @@ _PATTERN_TRAPS = {
 def _check_patterns(
     config: AppConfig,
     loaded: dict[Path, dict[str, Any]],
+    ignores: Ignores,
     base_dir: Path,
     findings: list[Finding],
 ) -> None:
@@ -387,7 +424,9 @@ def _check_patterns(
             for entry in entries:
                 if isinstance(entry, str):
                     code = _path_trap(key, entry)
-                    if code is not None:
+                    if code is not None and not _ignored(
+                        ignores, [fragment.path], entry
+                    ):
                         hits.setdefault(code, []).append(repr(entry))
             for code, (severity, description) in _PATTERN_TRAPS.items():
                 if code in hits:
@@ -447,6 +486,7 @@ def _concrete_path(entry: str) -> str | None:
 def _check_symlinked_denies(
     config: AppConfig,
     loaded: dict[Path, dict[str, Any]],
+    ignores: Ignores,
     base_dir: Path,
     findings: list[Finding],
 ) -> None:
@@ -461,7 +501,7 @@ def _check_symlinked_denies(
         hits: dict[Path, list[str]] = {}
         for origin, entry in entries:
             path = _concrete_path(entry)
-            if path is None:
+            if path is None or _ignored(ignores, [origin], entry):
                 continue
             real = os.path.realpath(path)
             if real == path:
@@ -490,6 +530,7 @@ def _broad_roots() -> list[str]:
 def _check_broad_allow_write(
     config: AppConfig,
     loaded: dict[Path, dict[str, Any]],
+    ignores: Ignores,
     base_dir: Path,
     findings: list[Finding],
 ) -> None:
@@ -499,7 +540,7 @@ def _check_broad_allow_write(
     hits: dict[Path, list[str]] = {}
     for origin, entry in _srt_entries(config, loaded, "allowWrite"):
         path = _concrete_path(entry)
-        if path is None:
+        if path is None or _ignored(ignores, [origin], entry):
             continue
         if any(
             root == path or root.startswith(path.rstrip("/") + "/") for root in roots

@@ -49,6 +49,20 @@ def loads(text: str, source: Path) -> dict[str, Any]:
     return document
 
 
+def split_comments(text: str, source: Path) -> list[tuple[str, str]]:
+    """Per line: (code with comments blanked, comment text from its start)."""
+    lines: list[tuple[str, str]] = []
+    for original, code in zip(
+        text.splitlines(), _replace_comments(text, source).splitlines()
+    ):
+        start = next(
+            (i for i, (a, b) in enumerate(zip(original, code)) if a != b),
+            len(original),
+        )
+        lines.append((code, original[start:].strip()))
+    return lines
+
+
 def _replace_comments(text: str, source: Path) -> str:
     """Replace comments with spaces without changing offsets or line endings."""
     output = list(text)
