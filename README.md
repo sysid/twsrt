@@ -521,3 +521,7 @@ make install           # uv tool install -e . plus shell completion
 `scripts/srt-schema.mjs` prints the config key tree of the installed srt (Node; srt ships no JSON
 schema). Run it after an srt upgrade to spot new keys; srt silently drops unknown keys outside
 `credentials`.
+
+`scripts/copilot-schema.py` does the same for the `sandbox` key of Copilot CLI's
+`~/.copilot/settings.json` (uv script), read from the JSON schema shipped with the newest build
+under `~/.copilot/pkg/`.
