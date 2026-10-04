@@ -383,11 +383,14 @@ def edit(
         False, "--dry-run", "-n", help="Name the fragments, open nothing"
     ),
 ) -> None:
-    """Open the profile's canonical-source fragments in $EDITOR.
+    """Open canonical-source fragments in $EDITOR.
+
+    Without --profile every registered fragment opens; with it, only the
+    fragments that profile resolves to (inherited ones included).
 
     The complement of `config`: that opens the registry, this opens the policy.
-    Only the profile is resolved, never compiled, so a fragment with a syntax
-    error still opens -- that is exactly when you need an editor.
+    Fragments are never compiled before opening, so one with a syntax error
+    still opens -- that is exactly when you need an editor.
     """
     from twsrt.lib.config import load_config
     from twsrt.lib.profiles import resolve_profile
@@ -395,7 +398,13 @@ def edit(
     config_path: Path = ctx.obj["config_path"]
     try:
         config = load_config(config_path)
-        resolved = resolve_profile(config, profile)
+        if profile is None:
+            fragments_by_kind = {
+                source_kind: list(source.fragments.values())
+                for source_kind, source in config.sources.items()
+            }
+        else:
+            fragments_by_kind = resolve_profile(config, profile).fragments
     except (OSError, ValueError) as exc:
         log.debug("Edit setup failed", exc_info=True)
         _error(str(exc))
@@ -411,13 +420,11 @@ def edit(
     for source_kind in config.sources:
         if kind not in ("all", source_kind):
             continue
-        for fragment in resolved.fragments.get(source_kind, []):
+        for fragment in fragments_by_kind.get(source_kind, []):
             if fragment.path not in paths:
                 paths.append(fragment.path)
 
-    log.debug(
-        "Editing profile %r kind=%s fragments=%d", resolved.name, kind, len(paths)
-    )
+    log.debug("Editing profile %r kind=%s fragments=%d", profile, kind, len(paths))
     for path in paths:
         try:
             absent = not path.exists()

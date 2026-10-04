@@ -166,7 +166,7 @@ Profiles extend each other but only ever *add*:
 uv tool install twsrt        # or: pip install twsrt
 
 twsrt config --init          # writes ~/.config/twsrt/config.toml + starter fragments
-twsrt edit                   # opens the profile's fragments: deny paths, domains, command rules
+twsrt edit                   # opens every fragment: deny paths, domains, command rules
 
 twsrt show                   # print the compiled canonical ~/.srt-settings.json
 twsrt generate claude        # preview the Claude translation; writes nothing
@@ -474,7 +474,7 @@ Threat model, rationale and every known gap:
 | Command | Effect |
 |---|---|
 | `twsrt config [--init]` | Open `config.toml` in `$EDITOR` (fallback `vi`); `--init` first creates it and starter fragments, never overwriting an existing file |
-| `twsrt edit [srt\|bash] [-p P] [-n]` | Open the profile's fragments in `$EDITOR`, then report whether targets are stale; `-n` only names them |
+| `twsrt edit [srt\|bash] [-p P] [-n]` | Open every registered fragment (only profile P's with `-p`) in `$EDITOR`, then report whether targets are stale; `-n` only names them |
 | `twsrt profiles` | Table of every profile with its parents and resolved fragments per source kind; `*` marks `default_profile`, inherited fragments are dimmed, `invalid` marks one that cannot compile on its own |
 | `twsrt show [srt\|bash] [-p P]` | Print the compiled canonical document exactly as `-w` would write it. Writes nothing |
 | `twsrt generate [agent] [-p P]` | Print the agent translation (`claude`, `codex`, `copilot`, default `all`). Writes nothing |

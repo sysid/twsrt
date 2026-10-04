@@ -304,11 +304,41 @@ def test_edit_opens_the_fragments_the_profile_inherits(tmp_path: Path) -> None:
     run.assert_not_called()
 
 
-def test_edit_defaults_to_the_configured_profile(tmp_path: Path) -> None:
-    """default_profile is `base`, which selects no srt-work fragment."""
+def test_edit_without_profile_opens_every_registered_fragment(tmp_path: Path) -> None:
+    """default_profile `base` selects no srt-work fragment, yet it still opens."""
     config, _ = make_profile_config(tmp_path)
+    fragments = tmp_path / "fragments"
 
     result = runner.invoke(app, ["-c", str(config), "edit", "-n"])
+
+    assert result.exit_code == 0, result.output
+    opened = [line for line in result.stdout.splitlines() if line.strip()]
+    assert opened == [
+        str(fragments / "srt-base.jsonc"),
+        str(fragments / "srt-work.jsonc"),
+        str(fragments / "bash-base.jsonc"),
+    ]
+
+
+def test_edit_without_profile_narrows_to_one_source_kind(tmp_path: Path) -> None:
+    config, _ = make_profile_config(tmp_path)
+    fragments = tmp_path / "fragments"
+
+    result = runner.invoke(app, ["-c", str(config), "edit", "srt", "-n"])
+
+    assert result.exit_code == 0, result.output
+    opened = [line for line in result.stdout.splitlines() if line.strip()]
+    assert opened == [
+        str(fragments / "srt-base.jsonc"),
+        str(fragments / "srt-work.jsonc"),
+    ]
+
+
+def test_edit_with_profile_opens_only_that_profiles_fragments(tmp_path: Path) -> None:
+    """`base` selects no srt-work fragment."""
+    config, _ = make_profile_config(tmp_path)
+
+    result = runner.invoke(app, ["-c", str(config), "edit", "-p", "base", "-n"])
 
     assert result.exit_code == 0, result.output
     assert "srt-work.jsonc" not in result.stdout
