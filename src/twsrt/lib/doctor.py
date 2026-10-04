@@ -41,9 +41,17 @@ Ignores = dict[Path, set[str]]
 
 @dataclass(frozen=True)
 class Finding:
+    """One diagnostic, structured so output can group and list it.
+
+    location is where to fix it: a fragment, `profile 'x'` or a settings file.
+    items are the affected entries, one per output line; message summarises them.
+    """
+
     severity: str
     code: str
+    location: str
     message: str
+    items: tuple[str, ...] = ()
 
 
 def diagnose(
@@ -60,7 +68,7 @@ def diagnose(
     resolved = _resolve_profiles(config, findings)
     _compile_profiles(config, resolved, broken, findings)
     _check_profile_structure(config, findings)
-    _check_unused_fragments(config, findings)
+    _check_unused_fragments(config, base_dir, findings)
     for profile in resolved.values():
         _check_profile_lists(profile, loaded, ignores, base_dir, findings)
     _check_patterns(config, loaded, ignores, base_dir, findings)
@@ -93,7 +101,8 @@ def _load_fragments(
                     Finding(
                         "error",
                         "fragment-load",
-                        f"{_show(fragment.path, base_dir)}: {exc}",
+                        _show(fragment.path, base_dir),
+                        str(exc),
                     )
                 )
     return loaded, broken, ignores
@@ -131,7 +140,8 @@ def _resolve_profiles(
                 Finding(
                     "warning",
                     "profile-incomplete",
-                    f"profile {name!r} cannot be used on its own: {exc}",
+                    f"profile {name!r}",
+                    f"cannot be used on its own: {exc}",
                 )
             )
     return resolved
@@ -154,7 +164,7 @@ def _compile_profiles(
             compile_sources(config, profile)
         except (OSError, ValueError) as exc:
             findings.append(
-                Finding("error", "profile-compile", f"profile {name!r}: {exc}")
+                Finding("error", "profile-compile", f"profile {name!r}", str(exc))
             )
 
 
@@ -175,8 +185,8 @@ def _check_profile_structure(config: AppConfig, findings: list[Finding]) -> None
                     Finding(
                         "warning",
                         "redundant-extends",
-                        f"profile {name!r}: extends {parent!r} is already "
-                        f"inherited via {via[0]!r}",
+                        f"profile {name!r}",
+                        f"extends {parent!r} is already inherited via {via[0]!r}",
                     )
                 )
         inherited = _inherited_selections(config, name)
@@ -188,8 +198,9 @@ def _check_profile_structure(config: AppConfig, findings: list[Finding]) -> None
                         Finding(
                             "warning",
                             "inherited-fragment",
-                            f"profile {name!r}: {kind} fragment {fragment!r} is "
-                            f"already inherited from {owner!r}",
+                            f"profile {name!r}",
+                            f"{kind} fragment {fragment!r} is already inherited "
+                            f"from {owner!r}",
                         )
                     )
 
@@ -211,7 +222,9 @@ def _inherited_selections(config: AppConfig, name: str) -> dict[tuple[str, str],
     return owners
 
 
-def _check_unused_fragments(config: AppConfig, findings: list[Finding]) -> None:
+def _check_unused_fragments(
+    config: AppConfig, base_dir: Path, findings: list[Finding]
+) -> None:
     used = {
         (kind, fragment)
         for profile in config.profiles.values()
@@ -219,12 +232,13 @@ def _check_unused_fragments(config: AppConfig, findings: list[Finding]) -> None:
         for fragment in selected
     }
     for kind, source in config.sources.items():
-        for fragment in source.fragments:
+        for fragment, registered in source.fragments.items():
             if (kind, fragment) not in used:
                 findings.append(
                     Finding(
                         "warning",
                         "unused-fragment",
+                        _show(registered.path, base_dir),
                         f"{kind} fragment {fragment!r} is selected by no profile",
                     )
                 )
@@ -244,18 +258,14 @@ def _check_profile_lists(
             key = list_name.rsplit(".", 1)[-1]
             # Grouped per contributing fragment: one finding per file and list.
             covered: dict[Path, list[str]] = {}
+            # (redundant copy, earlier copies) -> duplicated entries.
+            duplicated: dict[tuple[Path, tuple[Path, ...]], list[str]] = {}
             for value, origins in values.items():
-                if len(origins) > 1 and not _ignored(ignores, origins, value):
-                    shown = ", ".join(_show(path, base_dir) for path in origins)
-                    findings.append(
-                        Finding(
-                            "warning",
-                            "duplicate-rule",
-                            f"{list_name}: {value!r} appears in {shown}",
-                        )
-                    )
                 if _ignored(ignores, origins, value):
                     continue
+                if len(origins) > 1:
+                    key_pair = (origins[-1], tuple(origins[:-1]))
+                    duplicated.setdefault(key_pair, []).append(repr(value))
                 for other, other_origins in values.items():
                     if _covers(key, other, value):
                         where = (
@@ -267,14 +277,27 @@ def _check_profile_lists(
                             f"{value!r} by {other!r}{where}"
                         )
                         break
+            for (origin, earlier), items in duplicated.items():
+                shown = ", ".join(_show(path, base_dir) for path in earlier)
+                findings.append(
+                    Finding(
+                        "warning",
+                        "duplicate-rule",
+                        _show(origin, base_dir),
+                        f"{list_name}: {_count(items, 'entry', 'entries')} "
+                        f"also in {shown}",
+                        tuple(items),
+                    )
+                )
             for origin, items in covered.items():
                 findings.append(
                     Finding(
                         "warning",
                         "subsumed-rule",
-                        f"{_show(origin, base_dir)}: {list_name}: "
-                        f"{_count(items, 'entry', 'entries')} already covered: "
-                        + ", ".join(items),
+                        _show(origin, base_dir),
+                        f"{list_name}: {_count(items, 'entry', 'entries')} "
+                        "already covered",
+                        tuple(items),
                     )
                 )
             if key == "allowedDomains":
@@ -370,9 +393,10 @@ def _check_wildcard_apex(
             Finding(
                 "info",
                 "wildcard-apex",
-                f"{_show(origin, base_dir)}: {list_name}: "
-                f"{_count(items, 'wildcard', 'wildcards')} not matching the bare "
-                "apex domain (add it where needed): " + ", ".join(items),
+                _show(origin, base_dir),
+                f"{list_name}: {_count(items, 'wildcard', 'wildcards')} not "
+                "matching the bare apex domain (add it where needed)",
+                tuple(items),
             )
         )
 
@@ -434,9 +458,10 @@ def _check_patterns(
                         Finding(
                             severity,
                             code,
-                            f"{where}: filesystem.{key}: "
-                            f"{_count(hits[code], 'entry', 'entries')} "
-                            f"{description}: " + ", ".join(hits[code]),
+                            where,
+                            f"filesystem.{key}: "
+                            f"{_count(hits[code], 'entry', 'entries')} {description}",
+                            tuple(hits[code]),
                         )
                     )
 
@@ -514,10 +539,11 @@ def _check_symlinked_denies(
                 Finding(
                     "warning",
                     "symlinked-deny-path",
-                    f"{_show(origin, base_dir)}: filesystem.{key}: "
-                    f"{_count(items, 'entry', 'entries')} through a symlink; the "
-                    "sandbox matches the real path, so list it too: "
-                    + ", ".join(items),
+                    _show(origin, base_dir),
+                    f"filesystem.{key}: {_count(items, 'entry', 'entries')} "
+                    "through a symlink; the sandbox matches the real path, so "
+                    "list it too",
+                    tuple(items),
                 )
             )
 
@@ -551,10 +577,11 @@ def _check_broad_allow_write(
             Finding(
                 "warning",
                 "broad-allow-write",
-                f"{_show(origin, base_dir)}: filesystem.allowWrite: "
-                f"{_count(items, 'entry', 'entries')} covering home, / or a config "
-                "root; in Claude Code they also auto-approve edits (ADR 0002): "
-                + ", ".join(items),
+                _show(origin, base_dir),
+                f"filesystem.allowWrite: {_count(items, 'entry', 'entries')} "
+                "covering home, / or a config root; in Claude Code they also "
+                "auto-approve edits (ADR 0002)",
+                tuple(items),
             )
         )
 
@@ -588,10 +615,12 @@ def _check_claude_files(claude_files: Sequence[Path], findings: list[Finding]) -
                     Finding(
                         "warning",
                         "claude-relative-sandbox-path",
-                        f"{path}: sandbox.filesystem.{key}: "
+                        str(path),
+                        f"sandbox.filesystem.{key}: "
                         f"{_count(relative, 'entry', 'entries')} anchored at the "
                         "settings-file root, not the launch directory; use "
-                        "Read()/Edit() rules instead: " + ", ".join(relative),
+                        "Read()/Edit() rules instead",
+                        tuple(relative),
                     )
                 )
 

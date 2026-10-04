@@ -340,7 +340,7 @@ switch:
   donor.
 - `twsrt diff` does not report full/yolo drift; it is transient by design.
 
-## Claude per-project launch premise
+## Claude per-project launch premise (not relevant for `srt`)
 
 `generate --project` is only useful for Claude if Claude is launched as:
 
@@ -391,8 +391,7 @@ top: only not loading the global file works (claims 4 and 5). Claim 6 is why
   plain `claude` launch.
 - Managed settings cannot be skipped and still apply.
 - Starting `claude` without both flags in a project directory is not unsafe:
-  the global file loads and the union is *stricter* than the project policy.
-  The dropped rule is simply still in force.
+  the global file loads.
 
 **If Claude Code changes:**
 
@@ -523,17 +522,30 @@ covers every level, and exit is `1` on any error, shown or not, else `0`.
 Correctness runs the real pipeline (JSONC load, profile resolution,
 compilation) over every profile, so doctor and `generate` cannot disagree.
 Redundancy is checked within the rule union each profile compiles to;
-findings shared by several profiles are reported once. Per-entry findings
-are grouped: one line per fragment and list, each naming every affected
-entry. `dir` and `dir/**` are reported once, as the longer spelling:
+findings shared by several profiles are reported once. Output is grouped
+under the location to fix (a fragment, `profile 'x'`, or a Claude settings
+file), the location holding the most severe finding first. Per-entry
+findings are grouped per fragment and list, one affected entry per line.
+`dir` and `dir/**` are reported once, as the longer spelling:
 
 ```
-warning  subsumed-rule      bash/base.jsonc: deny: 3 entries already covered: 'rm -fr' by 'rm', 'rm -r' by 'rm', 'rm -rf' by 'rm'
-warning  cwd-anchored-glob  srt/base.jsonc: filesystem.denyWrite: 24 entries anchored at the launch directory, not global: '**/.env', ...
+bash/base.jsonc
+  warning  subsumed-rule      deny: 3 entries already covered
+                              • 'rm -fr' by 'rm'
+                              • 'rm -r' by 'rm'
+                              • 'rm -rf' by 'rm'
+
+srt/base.jsonc
+  warning  cwd-anchored-glob  filesystem.denyWrite: 24 entries anchored at the launch directory, not global
+                              • '**/.env'
+                              ...
+
+doctor: 0 errors, 2 warnings, 0 info
 ```
 
 The covering entry's fragment is shown only when it differs from the
-covered entry's.
+covered entry's. A `duplicate-rule` is reported at the later fragment, the
+redundant copy, and names the earlier one.
 
 | Code | Severity | Meaning |
 |---|---|---|
@@ -801,8 +813,9 @@ PASS     read-deny  ~/.ssh               0   1     85  head -c 1 -- /Users/x/.ss
 FAIL     read-deny  ~/.aws (realpath)    0   0     90  head -c 1 -- /Users/x/configs/dot-aws/sso/cache/x.json
 SKIP     read-deny  **/.env              -   -      -  glob pattern: no concrete probe
 PASS     net-deny   example.com (not allowlisted)  0  56  412  curl -sS -m 10 -o /dev/null -I https://example.com/
---- read-deny ~/.aws (realpath): FAIL ---
-  not blocked: command succeeded inside the sandbox
+
+FAIL read-deny ~/.aws (realpath)
+  reason: not blocked: command succeeded inside the sandbox
   command: head -c 1 -- /Users/x/configs/dot-aws/sso/cache/x.json
 --- summary ---
 FAIL     read-deny  ~/.aws (realpath)  not blocked: command succeeded inside the sandbox
@@ -905,20 +918,25 @@ stream and color.
 | Write narration: `Wrote …`, `Would write …`, sync and migration notes, restart hints | green (done) / cyan | stderr |
 | Report info: `test` header and summary, `edit -n` paths, preview section headers | cyan | stdout |
 | Clean diff | green | stdout |
-| Drift | yellow | stdout |
-| Unexpected extra entry | red | stdout |
+| Drift (canonical, agent target header) | yellow | stdout |
+| Diff entry missing from target / extra in target | green `+` / red `-` | stdout |
+| `doctor` severity: error / warning / info | bold red / yellow / cyan | stdout |
 | Debug (`--verbose`) | dim cyan | stderr |
 
 Colors are enabled only on an interactive terminal; `NO_COLOR` (even empty)
-disables ANSI output. `diff` reports per target, for example:
+disables ANSI output. Long lines are never broken, so piped output stays
+one entry per line. `diff` reports per target, naming each drifted file,
+with the `+`/`-` legend printed once:
 
 ```
 srt canonical: no drift
 bash canonical: no drift
-claude: 2 missing, 1 extra
-  + Bash(terraform) (missing from existing)
-  + Bash(terraform *) (missing from existing)
-  - Bash(docker run:*) (in existing, not in sources)
+claude: 2 missing, 1 extra  /Users/x/.claude/settings.full.json
+  + Bash(terraform)
+  + Bash(terraform *)
+  - Bash(docker run:*)
+
++ missing from target   - in target, not in sources
 ```
 
 `--verbose` goes before the subcommand and reports lifecycle facts only:

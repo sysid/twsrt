@@ -13,6 +13,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
+    "rich>=14.3.3",
     "tomlkit>=0.13.2",
     "typer>=0.15.1",
 ]

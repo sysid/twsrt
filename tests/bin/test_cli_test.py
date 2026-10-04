@@ -211,6 +211,23 @@ class TestHumanOutput:
         assert "read-deny" in result.stdout
         assert "not blocked" in result.stdout
 
+    def test_failure_detail_is_a_block_headed_by_status_kind_and_rule(
+        self, tmp_path: Path
+    ) -> None:
+        config, secret = _secret_config(tmp_path)
+        fake = FakeRunner(blocked=("example.com",))
+
+        with patch(RUN, fake):
+            result = runner.invoke(app, ["-c", str(config), "test"])
+
+        assert result.exit_code == 1
+        lines = result.stdout.splitlines()
+        header = lines.index(f"FAIL read-deny {secret}")
+        assert lines[header + 1].startswith("  reason: ")
+        # Unwrapped and unboxed, so the command can be copied to reproduce.
+        assert lines[header + 2] == f"  command: head -c 1 -- {secret}"
+        assert not any(line.startswith("--- read-deny") for line in lines)
+
     def test_short_summary_lists_every_failed_and_skipped_probe(
         self, tmp_path: Path
     ) -> None:

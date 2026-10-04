@@ -165,10 +165,12 @@ class TestDiagnosticOutput:
         assert generated.exit_code == 0, generated.output
         claude_target.write_text("{}")
 
+        # color=True reaches click only; rich detects the terminal itself and
+        # needs FORCE_COLOR. On a real TTY both decide alike.
         result = runner.invoke(
             app,
             ["-c", str(config), "diff", "claude"],
-            env={"NO_COLOR": None},
+            env={"NO_COLOR": None, "FORCE_COLOR": "1"},
             color=True,
         )
 
@@ -1873,6 +1875,60 @@ class TestUS3AcceptanceScenarios:
         # .kube should be missing, docker should be extra
         assert ".kube" in result.output
         assert "docker" in result.output
+
+    def test_drift_lists_bare_entries_under_a_target_header_and_one_legend(
+        self, tmp_path: Path
+    ) -> None:
+        srt = {}
+        bash_rules = {"deny": ["rm"], "ask": []}
+        config, claude_target, _ = _make_config_with_targets(tmp_path, srt, bash_rules)
+        # Bash(rm *) is missing, Bash(docker run:*) is extra.
+        existing = {
+            "permissions": {
+                "deny": ["Bash(rm)", "Bash(docker run:*)"],
+                "ask": [],
+                "allow": [],
+            },
+            "sandbox": {
+                "network": {"allowedDomains": []},
+                "filesystem": {"denyRead": [], "denyWrite": [], "allowWrite": []},
+            },
+        }
+        claude_target.write_text(json.dumps(existing))
+
+        result = runner.invoke(app, ["-c", str(config), "diff", "claude"])
+
+        assert result.exit_code == 1
+        # The header names the drifted file; entries carry no per-line legend.
+        assert result.stdout.splitlines()[2:] == [
+            f"claude: 1 missing, 1 extra  {claude_target}",
+            "  + Bash(rm *)",
+            "  - Bash(docker run:*)",
+            "",
+            "+ missing from target   - in target, not in sources",
+        ]
+
+    def test_no_drift_prints_no_legend(self, tmp_path: Path) -> None:
+        srt = {}
+        bash_rules = {"deny": ["rm"], "ask": []}
+        config, claude_target, _ = _make_config_with_targets(tmp_path, srt, bash_rules)
+        existing = {
+            "permissions": {
+                "deny": ["Bash(rm)", "Bash(rm *)"],
+                "ask": [],
+                "allow": [],
+            },
+            "sandbox": {
+                "network": {"allowedDomains": []},
+                "filesystem": {"denyRead": [], "denyWrite": [], "allowWrite": []},
+            },
+        }
+        claude_target.write_text(json.dumps(existing))
+
+        result = runner.invoke(app, ["-c", str(config), "diff", "claude"])
+
+        assert result.exit_code == 0, result.output
+        assert "missing from target" not in result.stdout
 
     def test_no_drift_reports_clean(self, tmp_path: Path) -> None:
         srt = {}

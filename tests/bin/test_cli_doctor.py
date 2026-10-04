@@ -66,10 +66,15 @@ def test_doctor_with_only_warnings_exits_zero_and_lists_them_on_stdout(
     result = runner.invoke(app, ["-c", str(config), "doctor"])
 
     assert result.exit_code == 0, result.output
-    lines = result.stdout.splitlines()
-    assert lines[0].startswith("warning  subsumed-rule")
-    assert "'~/.aws/sso'" in lines[0]
-    assert lines[-1] == "doctor: 0 errors, 1 warning, 0 info"
+    # Grouped under the file to fix; each affected entry on its own line,
+    # aligned under the message.
+    assert result.stdout == (
+        "base.jsonc\n"
+        "  warning  subsumed-rule  filesystem.denyRead: 1 entry already covered\n"
+        "                          • '~/.aws/sso' by '~/.aws'\n"
+        "\n"
+        "doctor: 0 errors, 1 warning, 0 info\n"
+    )
 
 
 def test_doctor_exits_one_when_any_profile_fails_to_compile(tmp_path: Path) -> None:
@@ -78,9 +83,33 @@ def test_doctor_exits_one_when_any_profile_fails_to_compile(tmp_path: Path) -> N
     result = runner.invoke(app, ["-c", str(config), "doctor"])
 
     assert result.exit_code == 1
-    assert result.stdout.splitlines()[0].startswith("error    profile-compile")
-    assert "profile 'off'" in result.stdout
-    assert result.stdout.splitlines()[-1] == "doctor: 1 error, 0 warnings, 0 info"
+    lines = result.stdout.splitlines()
+    assert lines[0] == "profile 'off'"
+    assert lines[1].startswith("  error    profile-compile  ")
+    assert lines[-1] == "doctor: 1 error, 0 warnings, 0 info"
+
+
+def test_doctor_colors_findings_on_a_color_terminal(tmp_path: Path) -> None:
+    """Control for the NO_COLOR test below: FORCE_COLOR does produce ANSI."""
+    config = write_config(tmp_path, ALL_SEVERITIES)
+
+    result = runner.invoke(app, ["-c", str(config), "doctor"], env={"FORCE_COLOR": "1"})
+
+    assert "\x1b[" in result.stdout
+
+
+def test_doctor_empty_no_color_disables_ansi_like_every_other_command(
+    tmp_path: Path,
+) -> None:
+    """NO_COLOR counts when set at all, even empty (doc/REFERENCE.md);
+    rich alone would only honour a non-empty value."""
+    config = write_config(tmp_path, ALL_SEVERITIES)
+
+    result = runner.invoke(
+        app, ["-c", str(config), "doctor"], env={"FORCE_COLOR": "1", "NO_COLOR": ""}
+    )
+
+    assert "\x1b[" not in result.stdout
 
 
 def test_doctor_on_a_clean_configuration_says_so(tmp_path: Path) -> None:
@@ -132,8 +161,16 @@ ALL_SEVERITIES = (
 
 
 def severities(stdout: str) -> list[str]:
-    """Severity column of every finding line; the summary line is excluded."""
-    return [line.split()[0] for line in stdout.splitlines()[:-1]]
+    """Severity column of every finding line.
+
+    Finding lines are indented two spaces; location headers are not indented,
+    item lines are indented further, and the summary line is excluded.
+    """
+    return [
+        line.split()[0]
+        for line in stdout.splitlines()
+        if line.startswith("  ") and not line.startswith("   ")
+    ]
 
 
 def test_doctor_without_a_level_option_hides_info_but_still_counts_it(
@@ -154,6 +191,21 @@ def test_doctor_all_shows_every_level(tmp_path: Path) -> None:
     result = runner.invoke(app, ["-c", str(config), "doctor", "--all"])
 
     assert severities(result.stdout) == ["error", "warning", "info"]
+
+
+def test_doctor_groups_findings_by_location_most_severe_location_first(
+    tmp_path: Path,
+) -> None:
+    config = write_config(tmp_path, ALL_SEVERITIES)
+
+    result = runner.invoke(app, ["-c", str(config), "doctor", "--all"])
+
+    headers = [line for line in result.stdout.splitlines() if line and line[0] != " "][
+        :-1
+    ]
+    # The error sits in profile 'off'; base.jsonc holds the warning and the
+    # info, listed once under a single header.
+    assert headers == ["profile 'off'", "base.jsonc"]
 
 
 @pytest.mark.parametrize(

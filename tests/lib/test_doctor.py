@@ -88,7 +88,7 @@ def test_every_profile_is_compiled_not_only_the_default(tmp_path: Path) -> None:
 
     assert codes(findings) == ["profile-compile"]
     assert findings[0].severity == "error"
-    assert "profile 'broken'" in findings[0].message
+    assert findings[0].location == "profile 'broken'"
     assert "/enabled" in findings[0].message
 
 
@@ -103,7 +103,9 @@ def test_unparseable_fragment_is_an_error_even_when_unused(tmp_path: Path) -> No
     findings = run(config)
 
     assert ("error", "fragment-load") in [(f.severity, f.code) for f in findings]
-    assert any("srt/draft.jsonc" in f.message for f in findings)
+    assert [f.location for f in findings if f.code == "fragment-load"] == [
+        "srt/draft.jsonc"
+    ]
 
 
 def test_profile_using_a_broken_fragment_is_not_reported_twice(
@@ -135,7 +137,7 @@ def test_mixin_profile_that_cannot_stand_alone_is_a_warning(tmp_path: Path) -> N
     assert [(f.severity, f.code) for f in findings] == [
         ("warning", "profile-incomplete")
     ]
-    assert "mixin" in findings[0].message
+    assert findings[0].location == "profile 'mixin'"
 
 
 # --- B. redundancy --------------------------------------------------------
@@ -156,9 +158,11 @@ def test_path_below_an_already_listed_directory_is_redundant(tmp_path: Path) -> 
 
     assert codes(findings) == ["subsumed-rule"]
     assert findings[0].severity == "warning"
-    message = findings[0].message
-    assert message.startswith("srt/work.jsonc: filesystem.allowWrite: ")
-    assert "'~/dev/los/instructions' by '~/dev/los' (srt/base.jsonc)" in message
+    assert findings[0].location == "srt/work.jsonc"
+    assert findings[0].message == "filesystem.allowWrite: 1 entry already covered"
+    assert findings[0].items == (
+        "'~/dev/los/instructions' by '~/dev/los' (srt/base.jsonc)",
+    )
 
 
 def test_sibling_with_a_shared_name_prefix_is_not_redundant(tmp_path: Path) -> None:
@@ -194,7 +198,7 @@ def test_relative_path_is_covered_by_the_working_directory_entry(
     findings = run(config)
 
     assert codes(findings) == ["subsumed-rule"]
-    assert "'./build'" in findings[0].message
+    assert findings[0].items == ("'./build' by '.'",)
 
 
 def test_wildcard_covered_by_a_broader_wildcard_is_redundant(
@@ -216,7 +220,7 @@ def test_wildcard_covered_by_a_broader_wildcard_is_redundant(
     findings = run(config)
 
     assert codes(findings) == ["subsumed-rule"]
-    assert "'*.api.github.com' by '*.github.com'" in findings[0].message
+    assert findings[0].items == ("'*.api.github.com' by '*.github.com'",)
 
 
 def test_concrete_host_under_a_wildcard_is_kept_as_a_probe_target(
@@ -253,8 +257,8 @@ def test_bash_command_covered_by_a_shorter_prefix_is_redundant(
     findings = run(config)
 
     assert codes(findings) == ["subsumed-rule"]
-    assert "deny" in findings[0].message
-    assert "'git push'" in findings[0].message
+    assert findings[0].message == "deny: 1 entry already covered"
+    assert findings[0].items == ("'git push' by 'git'",)
 
 
 def test_same_rule_in_two_fragments_of_one_profile_is_a_duplicate(
@@ -273,9 +277,35 @@ def test_same_rule_in_two_fragments_of_one_profile_is_a_duplicate(
     findings = run(config)
 
     assert codes(findings) == ["duplicate-rule"]
-    assert "'~/.ssh'" in findings[0].message
-    assert "srt/base.jsonc" in findings[0].message
-    assert "srt/work.jsonc" in findings[0].message
+    # Reported at the later fragment: that copy is the redundant one.
+    assert findings[0].location == "srt/work.jsonc"
+    assert findings[0].message == "filesystem.denyRead: 1 entry also in srt/base.jsonc"
+    assert findings[0].items == ("'~/.ssh'",)
+
+
+def test_duplicates_between_the_same_fragments_are_grouped_per_list(
+    tmp_path: Path,
+) -> None:
+    config = write_config(
+        tmp_path,
+        srt={
+            "base": (
+                '{"enabled": true, "filesystem": {"denyRead": ["~/.ssh", "~/.aws"]}}'
+            ),
+            "work": '{"filesystem": {"denyRead": ["~/.ssh", "~/.aws"]}}',
+        },
+        bash={"base": BASH_BASE},
+        profiles='[profiles.default]\nsrt = ["base", "work"]\nbash = ["base"]\n',
+    )
+
+    findings = run(config)
+
+    assert codes(findings) == ["duplicate-rule"]
+    assert findings[0].location == "srt/work.jsonc"
+    assert findings[0].message == (
+        "filesystem.denyRead: 2 entries also in srt/base.jsonc"
+    )
+    assert findings[0].items == ("'~/.ssh'", "'~/.aws'")
 
 
 def test_findings_shared_by_several_profiles_are_reported_once(
@@ -311,9 +341,10 @@ def test_fragment_selected_again_after_extends_is_redundant(tmp_path: Path) -> N
     findings = run(config)
 
     assert codes(findings) == ["inherited-fragment"]
-    assert "profile 'work'" in findings[0].message
-    assert "srt fragment 'base'" in findings[0].message
-    assert "'default'" in findings[0].message
+    assert findings[0].location == "profile 'work'"
+    assert findings[0].message == (
+        "srt fragment 'base' is already inherited from 'default'"
+    )
 
 
 def test_parent_already_reached_through_another_parent_is_redundant(
@@ -333,9 +364,8 @@ def test_parent_already_reached_through_another_parent_is_redundant(
     findings = run(config)
 
     assert codes(findings) == ["redundant-extends"]
-    assert "profile 'both'" in findings[0].message
-    assert "'default'" in findings[0].message
-    assert "'work'" in findings[0].message
+    assert findings[0].location == "profile 'both'"
+    assert findings[0].message == "extends 'default' is already inherited via 'work'"
 
 
 def test_registered_fragment_no_profile_selects_is_unused(tmp_path: Path) -> None:
@@ -349,7 +379,8 @@ def test_registered_fragment_no_profile_selects_is_unused(tmp_path: Path) -> Non
     findings = run(config)
 
     assert codes(findings) == ["unused-fragment"]
-    assert "srt fragment 'old'" in findings[0].message
+    assert findings[0].location == "srt/old.jsonc"
+    assert findings[0].message == "srt fragment 'old' is selected by no profile"
 
 
 # --- C. pattern traps -----------------------------------------------------
@@ -366,7 +397,7 @@ def test_trailing_double_star_is_reported_as_a_no_op(tmp_path: Path) -> None:
     findings = run(config)
 
     assert [(f.severity, f.code) for f in findings] == [("info", "noop-glob-suffix")]
-    assert "'~/.kube/**'" in findings[0].message
+    assert findings[0].items == ("'~/.kube/**'",)
 
 
 def test_glob_in_an_allow_list_grants_less_than_it_looks(tmp_path: Path) -> None:
@@ -387,7 +418,7 @@ def test_glob_in_an_allow_list_grants_less_than_it_looks(tmp_path: Path) -> None
     assert [(f.severity, f.code) for f in findings] == [
         ("warning", "narrow-allow-glob")
     ]
-    assert "'~/work/*', '~/repos/*/build/**'" in findings[0].message
+    assert findings[0].items == ("'~/work/*'", "'~/repos/*/build/**'")
 
 
 def test_relative_recursive_glob_is_anchored_at_the_launch_directory(
@@ -441,9 +472,10 @@ def test_wildcard_domain_without_its_apex_is_noted(tmp_path: Path) -> None:
     findings = run(config)
 
     assert [(f.severity, f.code) for f in findings] == [("info", "wildcard-apex")]
-    assert "'*.pypi.org' (pypi.org)" in findings[0].message
-    assert "'*.npmjs.org' (npmjs.org)" in findings[0].message
-    assert "github" not in findings[0].message
+    assert findings[0].items == (
+        "'*.pypi.org' (pypi.org)",
+        "'*.npmjs.org' (npmjs.org)",
+    )
 
 
 def test_findings_are_ordered_errors_first(tmp_path: Path) -> None:
@@ -489,7 +521,7 @@ def test_home_relative_and_absolute_spellings_are_compared_alike(
 
     assert codes(findings) == ["subsumed-rule"]
     # Same fragment on both sides: the covering entry needs no location.
-    assert findings[0].message.endswith(f"'{home}/.aws/sso' by '~/.aws'")
+    assert findings[0].items == (f"'{home}/.aws/sso' by '~/.aws'",)
 
 
 def test_pattern_traps_are_grouped_per_fragment_and_list(tmp_path: Path) -> None:
@@ -509,9 +541,11 @@ def test_pattern_traps_are_grouped_per_fragment_and_list(tmp_path: Path) -> None
     findings = run(config)
 
     assert codes(findings) == ["cwd-anchored-glob", "cwd-anchored-glob"]
-    assert findings[0].message.startswith("srt/base.jsonc: filesystem.denyRead: 3 ")
-    assert "'**/.env', '**/*.pem', '**/id_rsa'" in findings[0].message
-    assert findings[1].message.startswith("srt/work.jsonc: filesystem.denyRead: 1 ")
+    assert [(f.location, f.items) for f in findings] == [
+        ("srt/base.jsonc", ("'**/.env'", "'**/*.pem'", "'**/id_rsa'")),
+        ("srt/work.jsonc", ("'**/.npmrc'",)),
+    ]
+    assert findings[0].message.startswith("filesystem.denyRead: 3 entries ")
 
 
 def test_subsumed_rules_are_grouped_per_fragment_and_list(tmp_path: Path) -> None:
@@ -532,10 +566,12 @@ def test_subsumed_rules_are_grouped_per_fragment_and_list(tmp_path: Path) -> Non
     findings = run(config)
 
     assert codes(findings) == ["subsumed-rule"]
-    message = findings[0].message
-    assert message.startswith("srt/base.jsonc: network.allowedDomains: 2 ")
-    assert "'*.registry.npmjs.org' by '*.npmjs.org'" in message
-    assert "'*.static.crates.io' by '*.crates.io'" in message
+    assert findings[0].location == "srt/base.jsonc"
+    assert findings[0].message == "network.allowedDomains: 2 entries already covered"
+    assert findings[0].items == (
+        "'*.registry.npmjs.org' by '*.npmjs.org'",
+        "'*.static.crates.io' by '*.crates.io'",
+    )
 
 
 def test_read_deny_inside_a_write_root_is_not_flagged_since_compile_implies_write_deny(
@@ -596,9 +632,7 @@ def test_equivalent_spellings_of_one_directory_are_reported_once(
     subsumed = [f for f in run(config) if f.code == "subsumed-rule"]
 
     assert len(subsumed) == 1
-    assert subsumed[0].message.endswith(
-        "1 entry already covered: '~/.copilot/ide/**' by '~/.copilot/ide'"
-    )
+    assert subsumed[0].items == ("'~/.copilot/ide/**' by '~/.copilot/ide'",)
 
 
 def test_wildcard_apex_is_reported_once_per_fragment_across_profiles(
@@ -617,13 +651,12 @@ def test_wildcard_apex_is_reported_once_per_fragment_across_profiles(
         ),
     )
 
-    apex = [f.message for f in run(config) if f.code == "wildcard-apex"]
+    apex = [(f.location, f.items) for f in run(config) if f.code == "wildcard-apex"]
 
-    assert len(apex) == 2
-    assert apex[0].startswith("srt/base.jsonc: network.allowedDomains: 1 ")
-    assert "'*.npmjs.org' (npmjs.org)" in apex[0]
-    assert apex[1].startswith("srt/work.jsonc: network.allowedDomains: 1 ")
-    assert "'*.corp.example' (corp.example)" in apex[1]
+    assert apex == [
+        ("srt/base.jsonc", ("'*.npmjs.org' (npmjs.org)",)),
+        ("srt/work.jsonc", ("'*.corp.example' (corp.example)",)),
+    ]
 
 
 # --- symlinked deny paths (bkmr 3686) ------------------------------------
@@ -649,8 +682,9 @@ def test_symlinked_deny_path_without_its_real_path_is_flagged(
 
     assert len(findings) == 1
     assert findings[0].severity == "warning"
-    assert findings[0].message.startswith("srt/base.jsonc: filesystem.denyRead: 1 ")
-    assert f"'~/.aws' (-> {real})" in findings[0].message
+    assert findings[0].location == "srt/base.jsonc"
+    assert findings[0].message.startswith("filesystem.denyRead: 1 entry through ")
+    assert findings[0].items == (f"'~/.aws' (-> {real})",)
 
 
 def test_symlinked_deny_path_with_its_real_path_listed_is_fine(
@@ -701,10 +735,9 @@ def test_allow_write_covering_home_or_config_roots_is_broad(
     findings = [f for f in run(config) if f.code == "broad-allow-write"]
 
     assert len(findings) == 1
-    message = findings[0].message
-    assert message.startswith("srt/base.jsonc: filesystem.allowWrite: 3 ")
-    assert "'~', '~/.config', '/'" in message
-    assert "~/.cache" not in message
+    assert findings[0].location == "srt/base.jsonc"
+    assert findings[0].message.startswith("filesystem.allowWrite: 3 entries ")
+    assert findings[0].items == ("'~'", "'~/.config'", "'/'")
 
 
 # --- relative entries in Claude sandbox.filesystem (bkmr 3742) -----------
@@ -734,12 +767,10 @@ def test_relative_entries_in_claude_sandbox_filesystem_are_flagged(
     ]
 
     assert [f.severity for f in findings] == ["warning", "warning"]
-    assert findings[0].message.startswith(
-        f"{repo_settings}: sandbox.filesystem.allowWrite: 1 "
-    )
-    assert "'.'" in findings[0].message
-    assert "'~/x'" not in findings[0].message
-    assert "'**/.env'" in findings[1].message
+    assert findings[0].location == str(repo_settings)
+    assert findings[0].message.startswith("sandbox.filesystem.allowWrite: 1 entry ")
+    assert findings[0].items == ("'.'",)
+    assert findings[1].items == ("'**/.env'",)
 
 
 def test_unreadable_claude_settings_file_is_skipped_not_fatal(tmp_path: Path) -> None:
@@ -778,9 +809,7 @@ def test_bare_doctor_ignore_silences_every_finding_for_that_line(
     findings = run(config)
 
     assert codes(findings) == ["cwd-anchored-glob"]
-    assert findings[0].message.startswith("srt/base.jsonc: filesystem.denyWrite: 1 ")
-    assert "'**/*.pem'" in findings[0].message
-    assert "'**/.env'" not in findings[0].message
+    assert findings[0].items == ("'**/*.pem'",)
 
 
 def test_doctor_ignore_text_after_the_colon_is_a_reason_not_a_filter(
@@ -824,8 +853,7 @@ def test_doctor_ignore_works_in_bash_fragments(tmp_path: Path) -> None:
     findings = run(config)
 
     assert codes(findings) == ["subsumed-rule"]
-    assert "'rm -r' by 'rm'" in findings[0].message
-    assert "rm -rf" not in findings[0].message
+    assert findings[0].items == ("'rm -r' by 'rm'",)
 
 
 def test_doctor_ignore_silences_wildcard_apex_on_the_wildcard_line(
@@ -848,7 +876,7 @@ def test_doctor_ignore_silences_wildcard_apex_on_the_wildcard_line(
     findings = run(config)
 
     assert codes(findings) == ["wildcard-apex"]
-    assert "pypi" not in findings[0].message
+    assert findings[0].items == ("'*.npmjs.org' (npmjs.org)",)
 
 
 def test_doctor_ignore_inside_a_string_or_plain_comment_is_not_a_directive(
@@ -871,4 +899,4 @@ def test_doctor_ignore_inside_a_string_or_plain_comment_is_not_a_directive(
     findings = run(config)
 
     assert codes(findings) == ["cwd-anchored-glob"]
-    assert findings[0].message.startswith("srt/base.jsonc: filesystem.denyWrite: 2 ")
+    assert findings[0].message.startswith("filesystem.denyWrite: 2 entries ")

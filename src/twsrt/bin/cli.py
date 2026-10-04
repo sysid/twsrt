@@ -75,6 +75,20 @@ def _debug(message: str) -> None:
     typer.secho(f"Debug: {message}", fg=typer.colors.CYAN, dim=True, err=True)
 
 
+def _console():
+    """Rich console on stdout, created per call so it binds the current
+    sys.stdout (CliRunner swaps it) and honours NO_COLOR.
+
+    Pass user data as rich.text.Text, never as a plain str: rich parses a
+    `[...]` in a rule or path as markup and silently drops it. Print lines with
+    soft_wrap=True so a piped line is never broken at 80 columns.
+    """
+    from rich.console import Console
+
+    # NO_COLOR counts when set at all, as in main(); rich alone ignores "".
+    return Console(color_system=None if "NO_COLOR" in os.environ else "auto")
+
+
 class _CliLogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         _debug(self.format(record))
@@ -441,10 +455,14 @@ def edit(
 def profiles(ctx: typer.Context) -> None:
     """List the configured profiles and the fragments each one resolves to.
 
-    `*` marks default_profile. A profile that cannot be used on its own (e.g.
-    a mixin selecting no fragment for some source kind) is listed as invalid
-    instead of failing the whole listing.
+    `*` marks default_profile. Fragments a profile selects itself are shown
+    plain, inherited ones dimmed. A profile that cannot be used on its own
+    (e.g. a mixin selecting no fragment for some source kind) is listed as
+    invalid instead of failing the whole listing.
     """
+    from rich.table import Table
+    from rich.text import Text
+
     from twsrt.lib.config import load_config
     from twsrt.lib.profiles import resolve_profile
 
@@ -455,27 +473,39 @@ def profiles(ctx: typer.Context) -> None:
         _error(str(exc))
         raise typer.Exit(1)
 
-    names = sorted(config.profiles)
-    labels = {
-        name: f"{name} *" if name == config.default_profile else name for name in names
-    }
-    width = max(len(label) for label in labels.values())
-    for name in names:
+    table = Table(caption="* default profile", caption_justify="left")
+    table.add_column("Profile", style="bold cyan", no_wrap=True)
+    table.add_column("Extends", style="magenta")
+    # config.sources order, so srt precedes bash as in config.toml.
+    for kind in config.sources:
+        table.add_column(kind)
+
+    for name in sorted(config.profiles):
+        profile = config.profiles[name]
+        label = (
+            Text(f"{name} *", style="bold green")
+            if name == config.default_profile
+            else Text(name)
+        )
+        extends = ", ".join(profile.extends)
         try:
             resolved = resolve_profile(config, name)
         except ValueError as exc:
-            summary = f"invalid: {exc}"
-        else:
-            # config.sources order, so srt precedes bash as in config.toml.
-            summary = " | ".join(
-                f"{kind}: "
-                + ", ".join(fragment.name for fragment in resolved.fragments[kind])
-                for kind in config.sources
-            )
-            extends = config.profiles[name].extends
-            if extends:
-                summary += f"  (extends {', '.join(extends)})"
-        typer.echo(f"{labels[name].ljust(width)}  {summary}")
+            invalid = Text(f"invalid: {exc}", style="red")
+            table.add_row(label, extends, invalid, *[""] * (len(config.sources) - 1))
+            continue
+        cells = []
+        for kind in config.sources:
+            own = profile.selections.get(kind, [])
+            cell = Text()
+            for index, fragment in enumerate(resolved.fragments[kind]):
+                if index:
+                    cell.append(", ")
+                cell.append(fragment.name, style="" if fragment.name in own else "dim")
+            cells.append(cell)
+        table.add_row(label, extends, *cells)
+
+    _console().print(table)
 
 
 @app.command()
@@ -521,11 +551,6 @@ def doctor(
         _success("doctor: no findings")
         return
 
-    colors = {
-        "error": typer.colors.RED,
-        "warning": typer.colors.YELLOW,
-        "info": typer.colors.CYAN,
-    }
     levels = {
         "error": show_error,
         "warning": show_warn,
@@ -538,24 +563,56 @@ def doctor(
     else:
         shown = {"error", "warning"}
     # The filter is display only: counts and the exit code see every finding.
-    visible = [finding for finding in findings if finding.severity in shown]
-    width = max((len(finding.code) for finding in visible), default=0)
-    for finding in visible:
-        typer.secho(
-            f"{finding.severity:<7}  {finding.code:<{width}}  {finding.message}",
-            fg=colors[finding.severity],
-        )
+    _print_findings([finding for finding in findings if finding.severity in shown])
     counts = {
         severity: sum(finding.severity == severity for finding in findings)
-        for severity in colors
+        for severity in _SEVERITY_STYLES
     }
     errors, warnings = counts["error"], counts["warning"]
-    typer.echo(
+    typer.secho(
         f"doctor: {errors} error{'' if errors == 1 else 's'}, "
-        f"{warnings} warning{'' if warnings == 1 else 's'}, {counts['info']} info"
+        f"{warnings} warning{'' if warnings == 1 else 's'}, {counts['info']} info",
+        fg=typer.colors.RED
+        if errors
+        else typer.colors.YELLOW
+        if warnings
+        else typer.colors.GREEN,
+        bold=bool(errors),
     )
     if errors:
         raise typer.Exit(1)
+
+
+_SEVERITY_STYLES = {"error": "bold red", "warning": "yellow", "info": "cyan"}
+
+
+def _print_findings(findings: list) -> None:
+    """Grouped by location (where to fix it), most severe location first.
+
+    findings arrive ordered by severity, so first appearance orders the groups.
+    Each affected entry gets its own line, aligned under the message.
+    """
+    from rich.text import Text
+
+    console = _console()
+    groups: dict[str, list] = {}
+    for finding in findings:
+        groups.setdefault(finding.location, []).append(finding)
+    width = max((len(finding.code) for finding in findings), default=0)
+    indent = " " * (2 + len("warning") + 2 + width + 2)
+    for location, group in groups.items():
+        console.print(Text(location, style="bold"), soft_wrap=True)
+        for finding in group:
+            line = Text("  ")
+            line.append(
+                f"{finding.severity:<7}", style=_SEVERITY_STYLES[finding.severity]
+            )
+            line.append(f"  {finding.code:<{width}}  ", style="dim")
+            line.append(finding.message)
+            console.print(line, soft_wrap=True)
+            for item in finding.items:
+                console.print(Text(f"{indent}• {item}"), soft_wrap=True)
+        console.print()
 
 
 def _report_stale_targets(config_path: Path, profile: str | None) -> None:
@@ -768,6 +825,7 @@ def diff(
     )
     drifted = _canonical_drift(compiled)
     has_drift = bool(drifted)
+    agent_drift = False
     for kind in compiled.documents:
         if kind in drifted:
             _drift(f"{kind} canonical: drift")
@@ -801,20 +859,46 @@ def diff(
         if result.matched:
             _success(f"{generator.name}: no drift")
         else:
-            has_drift = True
-            _drift(
-                f"{generator.name}: {len(result.missing)} missing, "
-                f"{len(result.extra)} extra"
-            )
-            for entry in result.missing:
-                _drift(f"  + {entry} (missing from existing)")
-            for entry in result.extra:
-                _extra(f"  - {entry} (in existing, not in sources)")
+            has_drift = agent_drift = True
+            _print_agent_drift(generator.name, target, result)
 
+    if agent_drift:
+        from rich.text import Text
+
+        _console().print(
+            Text.assemble(
+                ("+ missing from target", "green"),
+                "   ",
+                ("- in target, not in sources", "red"),
+            ),
+            soft_wrap=True,
+        )
     _print_generator_warnings(generators, compiled, config)
 
     if has_drift:
         raise typer.Exit(1)
+
+
+def _print_agent_drift(name: str, target: Path, result) -> None:
+    """Header naming the drifted file, then one bare entry per line; the
+    +/- legend is printed once after all targets."""
+    from rich.text import Text
+
+    console = _console()
+    console.print(
+        Text.assemble(
+            (f"{name}: ", "bold"),
+            (f"{len(result.missing)} missing, {len(result.extra)} extra", "yellow"),
+            "  ",
+            (str(target), "dim"),
+        ),
+        soft_wrap=True,
+    )
+    for entry in result.missing:
+        console.print(Text(f"  + {entry}", style="green"), soft_wrap=True)
+    for entry in result.extra:
+        console.print(Text(f"  - {entry}", style="red"), soft_wrap=True)
+    console.print()
 
 
 @app.command(name="test")
@@ -1027,17 +1111,32 @@ def _print_probe_result(result, widths: tuple[int, int]) -> None:
 
 
 def _print_probe_details(results: list) -> None:
+    """One block per failed probe. Deliberately unboxed and soft-wrapped: the
+    command line must copy-paste intact to reproduce the verdict by hand."""
+    from rich.text import Text
+
     from twsrt.lib.probe import Status
 
+    console = _console()
     for result in results:
         if result.status in (Status.PASS, Status.SKIP):
             continue
         probe = result.probe
-        _extra(f"--- {probe.kind} {probe.rule}: {result.status.value} ---")
-        typer.echo(f"  {result.reason}")
-        typer.echo(f"  command: {probe.command}")
+        status = result.status.value
+        console.print()
+        console.print(
+            Text.assemble(
+                (status, f"bold {_PROBE_STATUS_COLORS[status]}"),
+                (f" {probe.kind} ", "dim"),
+                (probe.rule, "bold"),
+            ),
+            soft_wrap=True,
+        )
+        fields = [("reason", result.reason), ("command", probe.command)]
         if result.sandbox_stderr.strip():
-            typer.echo(f"  stderr: {result.sandbox_stderr.strip()}")
+            fields.append(("stderr", result.sandbox_stderr.strip()))
+        for label, value in fields:
+            console.print(Text.assemble((f"  {label}: ", "dim"), value), soft_wrap=True)
 
 
 def _print_probe_summary(results: list, widths: tuple[int, int]) -> None:

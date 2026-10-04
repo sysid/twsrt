@@ -311,28 +311,6 @@ srt-p()    { local p=$1 d; shift; d=$(twsrt generate claude -w -p "$p" --project
              srt -s "$d/srt-settings.json" "$@"; }
 ```
 
-**Dropping a global rule.** Composition only adds, so a project never
-subtracts. Put a rule you may want to drop into its own fragment and give
-the project a profile that leaves it out (`twsrt profiles` lists them):
-
-```toml
-[profiles.default]
-srt = ["base", "cloud-creds"]
-
-[profiles.slim]            # same as default, without cloud-creds
-srt = ["base"]
-bash = ["base"]            # every profile selects fragments for every source kind
-```
-
-**Why the launch line needs both flags.** `--settings X` loads the project
-policy; `--setting-sources project,local` skips `~/.claude/settings.json`.
-Claude unions list settings across scopes, so without the second flag every
-deny the project profile dropped silently comes back from the global file.
-Because the global file is skipped, `X` also carries your user settings
-(hooks, plugins, model): it is the selective merge of the project policy
-onto the global Claude target of the same mode, which must exist
-(`twsrt generate claude -w [--yolo]` once).
-
 **What `--project` changes.** Only where outputs land: `./.twsrt/` of the
 current directory (`cd` first). No symlink flip, no `[claude_sync]` donor,
 no global file touched; preview and `-w -n` work as usual. `all` means
@@ -497,7 +475,7 @@ Threat model, rationale and every known gap:
 |---|---|
 | `twsrt config [--init]` | Open `config.toml` in `$EDITOR` (fallback `vi`); `--init` first creates it and starter fragments, never overwriting an existing file |
 | `twsrt edit [srt\|bash] [-p P] [-n]` | Open the profile's fragments in `$EDITOR`, then report whether targets are stale; `-n` only names them |
-| `twsrt profiles` | List every profile with its resolved fragments; `*` marks `default_profile`, `invalid` one that cannot compile on its own |
+| `twsrt profiles` | Table of every profile with its parents and resolved fragments per source kind; `*` marks `default_profile`, inherited fragments are dimmed, `invalid` marks one that cannot compile on its own |
 | `twsrt show [srt\|bash] [-p P]` | Print the compiled canonical document exactly as `-w` would write it. Writes nothing |
 | `twsrt generate [agent] [-p P]` | Print the agent translation (`claude`, `codex`, `copilot`, default `all`). Writes nothing |
 | `twsrt generate [agent] -w` | Write the canonical outputs (always, whichever agent) and the agent target |

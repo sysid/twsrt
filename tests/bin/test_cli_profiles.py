@@ -212,18 +212,41 @@ def test_diff_reports_canonical_output_drift(tmp_path: Path) -> None:
     assert "srt canonical: drift" in result.output
 
 
-def test_profiles_lists_every_profile_with_its_resolved_fragments(
+def test_profiles_prints_a_table_with_one_column_per_source_kind(
     tmp_path: Path,
 ) -> None:
     config, _ = make_profile_config(tmp_path)
 
-    result = runner.invoke(app, ["-c", str(config), "profiles"])
+    result = runner.invoke(app, ["-c", str(config), "profiles"], env={"COLUMNS": "200"})
 
     assert result.exit_code == 0, result.output
-    assert result.stdout.splitlines() == [
-        "base *  srt: base | bash: base",
-        "work    srt: base, work | bash: base  (extends base)",
+    header = next(line for line in result.stdout.splitlines() if "┃" in line)
+    # Body rows are the lines drawn with the light vertical bar.
+    rows = [
+        [cell.strip() for cell in line.split("│")[1:-1]]
+        for line in result.stdout.splitlines()
+        if line.startswith("│")
     ]
+    # config.sources order, so srt precedes bash as in config.toml.
+    assert [cell.strip() for cell in header.split("┃")[1:-1]] == [
+        "Profile",
+        "Extends",
+        "srt",
+        "bash",
+    ]
+    assert rows == [
+        ["base *", "", "base", "base"],
+        ["work", "base", "base, work", "base"],
+    ]
+
+
+def test_profiles_explains_the_default_marker(tmp_path: Path) -> None:
+    config, _ = make_profile_config(tmp_path)
+
+    result = runner.invoke(app, ["-c", str(config), "profiles"], env={"COLUMNS": "200"})
+
+    assert result.exit_code == 0, result.output
+    assert "* default profile" in result.stdout
 
 
 def test_profiles_reports_an_unresolvable_profile_without_hiding_the_others(
@@ -237,14 +260,19 @@ def test_profiles_reports_an_unresolvable_profile_without_hiding_the_others(
         )
     )
 
-    result = runner.invoke(app, ["-c", str(config), "profiles"])
+    result = runner.invoke(app, ["-c", str(config), "profiles"], env={"COLUMNS": "200"})
 
     assert result.exit_code == 0, result.output
-    lines = result.stdout.splitlines()
-    assert lines[0] == "base *  srt: base | bash: base"
-    assert lines[1].startswith("mixin   invalid: ")
-    assert "selects no fragments for source kind 'bash'" in lines[1]
-    assert lines[2] == "work    srt: base, work | bash: base  (extends base)"
+    rows = [
+        [cell.strip() for cell in line.split("│")[1:-1]]
+        for line in result.stdout.splitlines()
+        if line.startswith("│")
+    ]
+    assert rows[0] == ["base *", "", "base", "base"]
+    assert rows[1][0] == "mixin"
+    assert rows[1][2].startswith("invalid: ")
+    assert "selects no fragments for source kind 'bash'" in rows[1][2]
+    assert rows[2] == ["work", "base", "base, work", "base"]
 
 
 def test_profiles_fails_on_a_broken_config(tmp_path: Path) -> None:
