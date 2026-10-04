@@ -517,3 +517,7 @@ make ty                # type check with ty
 make static-analysis   # all of the above
 make install           # uv tool install -e . plus shell completion
 ```
+
+`scripts/srt-schema.mjs` prints the config key tree of the installed srt (Node; srt ships no JSON
+schema). Run it after an srt upgrade to spot new keys; srt silently drops unknown keys outside
+`credentials`.
