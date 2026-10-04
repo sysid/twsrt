@@ -557,6 +557,7 @@ redundant copy, and names the earlier one.
 | `inherited-fragment` | warning | A profile selects a fragment its `extends` chain already selects |
 | `redundant-extends` | warning | A profile extends a parent it already reaches through another parent |
 | `unused-fragment` | warning | A registered fragment no profile selects |
+| `unknown-srt-key` | warning | A top-level, `network.*` or `filesystem.*` key outside srt's config schema (sandbox-runtime 0.0.78) that twsrt does not map either. srt strips it without a word, so it reaches no agent. Typical case: a Claude-only key such as `excludedCommands`, which belongs in `[sandbox_overrides]`. Fragment-level, so `// doctor-ignore` does not apply |
 | `symlinked-deny-path` | warning | A `denyRead`/`denyWrite` path reaches a symlink on disk and its real path is not denied too. srt keeps the unresolved spelling while Seatbelt matches the real path, so the deny is a no-op (bkmr 3686) |
 | `broad-allow-write` | warning | `allowWrite` on or above `/`, `~`, `~/.config` or `~/Library`. With Claude Code every `allowWrite` path also auto-approves the edit tools (ADR 0002) |
 | `claude-relative-sandbox-path` | warning | A relative or `**/` entry in `sandbox.filesystem.*` of a scanned Claude settings file. Claude anchors it at the settings-file root (`~/.claude`, the project root, or the `--settings` file's directory), not the launch cwd; use `Read()`/`Edit()` rules (bkmr 3742) |

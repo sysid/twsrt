@@ -30,6 +30,58 @@ _DOMAIN_LISTS = ("allowedDomains", "deniedDomains")
 _BASH_LISTS = ("allow", "ask", "deny")
 _ALLOW_PATH_LISTS = ("allowWrite", "allowRead")
 
+# Keys srt's config schema accepts; srt strips anything else without a word.
+# ponytail: hand-copied from SandboxRuntimeConfigSchema in sandbox-runtime
+# 0.0.78 (dist/sandbox/sandbox-config.js); a newer srt key is reported until
+# added here. Upgrade path: read the schema from the installed srt.
+_SRT_SCHEMA_KEYS = {
+    "": {
+        "network",
+        "filesystem",
+        "credentials",
+        "ignoreViolations",
+        "enableWeakerNestedSandbox",
+        "enableWeakerNetworkIsolation",
+        "allowAppleEvents",
+        "ripgrep",
+        "mandatoryDenySearchDepth",
+        "allowPty",
+        "seccomp",
+        "bwrapPath",
+        "socatPath",
+        "javaAgentJarPath",
+        "windows",
+        "git",
+        # Not in srt's schema, but twsrt maps it to Claude's sandbox.enabled.
+        "enabled",
+    },
+    "network": {
+        "allowedDomains",
+        "deniedDomains",
+        "deniedDomainReasons",
+        "strictAllowlist",
+        "deniedResolvedAddresses",
+        "allowUnixSockets",
+        "allowAllUnixSockets",
+        "allowLocalBinding",
+        "allowMachLookup",
+        "httpProxyPort",
+        "socksProxyPort",
+        "mitmProxy",
+        "filterRequest",
+        "tlsTerminate",
+        "parentProxy",
+    },
+    "filesystem": {
+        "disabled",
+        "denyRead",
+        "allowRead",
+        "allowWrite",
+        "denyWrite",
+        "allowGitConfig",
+    },
+}
+
 # `// doctor-ignore` or `// doctor-ignore: free-text reason` after an entry.
 _IGNORE_DIRECTIVE = re.compile(r"//\s*doctor-ignore\b")
 # A JSON string literal that is a value, not an object key.
@@ -72,6 +124,7 @@ def diagnose(
     for profile in resolved.values():
         _check_profile_lists(profile, loaded, ignores, base_dir, findings)
     _check_patterns(config, loaded, ignores, base_dir, findings)
+    _check_unknown_srt_keys(config, loaded, base_dir, findings)
     _check_symlinked_denies(config, loaded, ignores, base_dir, findings)
     _check_broad_allow_write(config, loaded, ignores, base_dir, findings)
     _check_claude_files(claude_files, findings)
@@ -477,6 +530,43 @@ def _path_trap(key: str, entry: str) -> str | None:
     if entry.endswith("/**"):
         return "noop-glob-suffix"
     return None
+
+
+def _check_unknown_srt_keys(
+    config: AppConfig,
+    loaded: dict[Path, dict[str, Any]],
+    base_dir: Path,
+    findings: list[Finding],
+) -> None:
+    """A key outside srt's schema is stripped by srt and dropped by twsrt.
+
+    Typical cause: a Claude-only setting such as excludedCommands placed in a
+    fragment, where it silently does nothing.
+    """
+    for fragment in config.sources["srt"].fragments.values():
+        document = loaded.get(fragment.path, {})
+        unknown: list[str] = []
+        for section, known in _SRT_SCHEMA_KEYS.items():
+            container = document.get(section, {}) if section else document
+            if not isinstance(container, dict):
+                continue
+            unknown += [
+                repr(f"{section}.{key}" if section else key)
+                for key in container
+                if key not in known
+            ]
+        if unknown:
+            findings.append(
+                Finding(
+                    "warning",
+                    "unknown-srt-key",
+                    _show(fragment.path, base_dir),
+                    f"{_count(unknown, 'key', 'keys')} srt ignores and twsrt maps "
+                    "to no agent; Claude-only settings belong in "
+                    "[sandbox_overrides]",
+                    tuple(unknown),
+                )
+            )
 
 
 def _count(items: list[str], singular: str, plural: str) -> str:

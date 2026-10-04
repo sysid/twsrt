@@ -900,3 +900,65 @@ def test_doctor_ignore_inside_a_string_or_plain_comment_is_not_a_directive(
 
     assert codes(findings) == ["cwd-anchored-glob"]
     assert findings[0].message.startswith("filesystem.denyWrite: 2 entries ")
+
+
+# --- keys that reach no agent (srt strips unknown keys silently) ---------
+
+
+def test_claude_only_key_in_an_srt_fragment_reaches_no_agent(tmp_path: Path) -> None:
+    config = write_config(
+        tmp_path,
+        srt={"base": '{"enabled": true, "excludedCommands": ["gradlew"]}'},
+        bash={"base": BASH_BASE},
+        profiles='[profiles.default]\nsrt = ["base"]\nbash = ["base"]\n',
+    )
+
+    findings = [f for f in run(config) if f.code == "unknown-srt-key"]
+
+    assert len(findings) == 1
+    assert findings[0].severity == "warning"
+    assert findings[0].location == "srt/base.jsonc"
+    assert findings[0].message.startswith("1 key srt ignores and twsrt maps to no ")
+    assert "[sandbox_overrides]" in findings[0].message
+    assert findings[0].items == ("'excludedCommands'",)
+
+
+def test_misspelled_network_and_filesystem_keys_reach_no_agent(
+    tmp_path: Path,
+) -> None:
+    config = write_config(
+        tmp_path,
+        srt={
+            "base": (
+                '{"enabled": true,'
+                ' "network": {"allowedDomain": ["github.com"]},'
+                ' "filesystem": {"denyReads": ["~/.ssh"]}}'
+            )
+        },
+        bash={"base": BASH_BASE},
+        profiles='[profiles.default]\nsrt = ["base"]\nbash = ["base"]\n',
+    )
+
+    findings = [f for f in run(config) if f.code == "unknown-srt-key"]
+
+    assert len(findings) == 1
+    assert findings[0].items == ("'network.allowedDomain'", "'filesystem.denyReads'")
+
+
+def test_keys_known_to_srt_or_mapped_by_twsrt_are_not_flagged(
+    tmp_path: Path,
+) -> None:
+    config = write_config(
+        tmp_path,
+        srt={
+            "base": (
+                '{"enabled": true, "allowPty": true,'
+                ' "network": {"allowMachLookup": ["com.apple.x"]},'
+                ' "filesystem": {"allowRead": ["~/x"]}}'
+            )
+        },
+        bash={"base": BASH_BASE},
+        profiles='[profiles.default]\nsrt = ["base"]\nbash = ["base"]\n',
+    )
+
+    assert "unknown-srt-key" not in codes(run(config))
