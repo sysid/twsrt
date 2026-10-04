@@ -60,9 +60,11 @@ install-srt:  ## install Anthropic Sandbox Runtime globally via npm
 	npm install -g @anthropic-ai/sandbox-runtime
 
 .PHONY: install
+# The completion line has no shell metacharacters, so make execs twsrt directly
+# instead of via /bin/sh and typer's shell detection finds the interactive shell.
 install:  ## install as uv tool
 	uv tool install -e .
-	twsrt --install-completion bash 2>/dev/null || true
+	-twsrt --install-completion
 
 .PHONY: uninstall
 uninstall:  ## uninstall uv tool
