@@ -289,6 +289,12 @@ A security document that omits known gaps is worse than none.
   the rules you wrote are enforced, not that you wrote the right ones.
 - **Violation exceptions.** SRT `ignoreViolations` entries are passed
   through as written; twsrt does not judge them.
+- **Agent configuration loaded from added directories.** Copilot's
+  `--add-dir` grants file access *and* loads that directory's
+  `.github/skills` and `.github/agents` as trusted configuration. The
+  sandbox confines what those agents can touch, but not what they instruct
+  the model to do. twsrt never emits `--add-dir`; adding one is a trust
+  decision outside the policy.
 - **User-level configuration is bypassable by the user.** Generated configs
   live in the user's home; a user can deliberately launch with full-access or
   ignore-configuration options. Non-bypassable enforcement needs managed

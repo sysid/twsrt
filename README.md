@@ -394,8 +394,8 @@ is preserved. Restart Codex after generation.
 
 ### Copilot CLI
 
-Copilot has no settings file, so twsrt emits a flag snippet for the launch
-command (to stdout, or to `copilot_output`). Nothing kernel-guards Copilot's
+twsrt does not manage Copilot's `~/.copilot/settings.json`; it emits a flag
+snippet for the launch command (to stdout, or to `copilot_output`). Nothing kernel-guards Copilot's
 tools, so run it under the SRT wrapper, which enforces the paths and domains:
 
 ```bash
@@ -406,6 +406,12 @@ Ask rules become `--deny-tool` with a warning. With `--yolo` the snippet
 starts with `--yolo` and keeps only `--deny-tool` and `--deny-url`; deny
 flags still take precedence over `--yolo`.
 [Copilot flags](doc/REFERENCE.md#copilot-flags).
+
+**`--add-dir` is a trust grant.** Besides file access, Copilot loads the added
+directory's `.github/skills` and `.github/agents` as trusted configuration.
+Start Copilot inside the repository instead, or add only directories whose
+agent definitions you trust. twsrt does not emit `--add-dir`
+([SECURITY_CONCEPT.md §7.1](SECURITY_CONCEPT.md#71-what-twsrt-does-not-protect-against)).
 
 ## Verifying the policy
 
