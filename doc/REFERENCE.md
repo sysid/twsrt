@@ -93,8 +93,12 @@ source-specific and could conceal an authoring error.
 
 **Write denies are implied.** After composition every `denyRead` path is
 added to `denyWrite` (`sources._imply_write_denies`), plus `./.twsrt` under
-`--project`. A path in both `denyRead` and `allowWrite` asks for write-only
-access and fails. Why: [ADR 0001](adr/0001-deny-read-implies-deny-write.md).
+`--project`, plus the policy files: `config.toml` and every `[sources]`
+output and fragment path (`AppConfig.policy_files`), absolute (`~/…` under
+the home directory) and, behind a symlink, also as the real path. `--project` keeps protecting the global
+outputs. A path in both `denyRead` and `allowWrite` asks for write-only
+access and fails. Why: [ADR 0001](adr/0001-deny-read-implies-deny-write.md),
+[SECURITY_CONCEPT §3.4](../SECURITY_CONCEPT.md#34-least-privilege-denyread-implies-denywrite).
 
 ### Canonical documents feed every target
 
@@ -987,12 +991,20 @@ Command stdout is still never captured or logged.
    `sandbox_mode` in the managed file abort generation instead of guessing.
 6. **Deterministic output.** The same config, profile and fragments produce
    identical output; rule sets are sorted, and no runtime state takes part
-   in composition.
+   in composition. One exception: the policy-file denies (invariant 8)
+   follow `$HOME` (`~/…` spelling) and the symlinks on their paths, so
+   `generate` and `diff` must run under the same `$HOME`.
 7. **Project mode writes nothing global.** `generate --project` sends
    every canonical output and the Claude target to `./.twsrt/`, adds that
    directory to the compiled `denyWrite`, reads the global Claude target only
    as merge base, and never touches the symlink or the `[claude_sync]` donor.
    Rules are dropped per project by profile choice, never by subtraction.
+   The global policy files stay write-denied (invariant 8).
+8. **The policy is never writable by the agent it governs.** Every compile
+   write-denies `config.toml` and every `[sources]` output and fragment path,
+   whatever the profile selects, absolute (`~/…` under `$HOME`) and through
+   a symlink also as the real path
+   ([ADR 0008](adr/0008-policy-files-are-write-denied.md)).
 
 ## Extending twsrt
 

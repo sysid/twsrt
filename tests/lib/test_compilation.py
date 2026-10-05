@@ -82,6 +82,35 @@ def test_compile_sources_unions_documents_and_derives_rules(tmp_path: Path) -> N
     )
 
 
+def test_compile_sources_write_denies_config_and_every_sources_path(
+    tmp_path: Path,
+) -> None:
+    """An agent able to edit the policy could loosen the next compile.
+
+    Fragments the profile does not select are protected too: switching
+    profiles must not activate a fragment an agent has already rewritten.
+    """
+    config_path = configured_profile(tmp_path, "{}", "{}")
+    config_path.write_text(
+        config_path.read_text().replace('srt = ["base", "work"]', 'srt = ["base"]')
+    )
+    config = load_config(config_path)
+
+    compiled = compile_sources(config, resolve_profile(config))
+
+    deny_write = compiled.documents["srt"].document["filesystem"]["denyWrite"]
+    for path in (
+        "config.toml",
+        "compiled/srt.json",
+        "fragments/srt-base.jsonc",
+        "fragments/srt-work.jsonc",
+        "compiled/bash.json",
+        "fragments/bash-base.jsonc",
+        "fragments/bash-work.jsonc",
+    ):
+        assert str(tmp_path / path) in deny_write
+
+
 def test_compile_sources_sorts_schema_sets_but_keeps_pass_through_list_order(
     tmp_path: Path,
 ) -> None:
@@ -224,7 +253,9 @@ def test_compile_sources_adds_extra_deny_write_to_document_and_rules(
     )
 
     # ~/.ssh is the base fragment's denyRead, implied as a write deny too.
-    assert compiled.documents["srt"].document["filesystem"]["denyWrite"] == [
+    policy = set(config.policy_files)
+    deny_write = compiled.documents["srt"].document["filesystem"]["denyWrite"]
+    assert [path for path in deny_write if path not in policy] == [
         "/a/repo/.twsrt",
         "/z/existing",
         "~/.ssh",
@@ -252,7 +283,7 @@ def test_compile_sources_extra_deny_write_creates_missing_filesystem_section(
     )
 
     assert compiled.documents["srt"].document["filesystem"] == {
-        "denyWrite": ["/a/repo/.twsrt"]
+        "denyWrite": sorted(["/a/repo/.twsrt", *config.policy_files])
     }
 
 
@@ -270,7 +301,9 @@ def test_every_read_deny_is_also_compiled_as_a_write_deny(tmp_path: Path) -> Non
 
     compiled = compile_sources(config, resolve_profile(config))
 
-    assert compiled.documents["srt"].document["filesystem"]["denyWrite"] == [
+    policy = set(config.policy_files)
+    deny_write = compiled.documents["srt"].document["filesystem"]["denyWrite"]
+    assert [path for path in deny_write if path not in policy] == [
         "**/.env",
         "/z/existing",
         "~/.aws",

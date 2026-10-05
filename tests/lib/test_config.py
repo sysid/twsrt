@@ -55,6 +55,64 @@ class TestLoadConfig:
         assert "~" not in str(config.sources["srt"].output_path)
         assert config.sources["bash"].output_path == tmp_twsrt_dir / "bash-rules.json"
 
+    def test_policy_files_are_config_and_every_sources_path_as_absolute_paths(
+        self, tmp_twsrt_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Relative entries would anchor at srt's launch cwd, not the config."""
+        (tmp_twsrt_dir / "config.toml").write_text(base_config())
+        monkeypatch.chdir(tmp_twsrt_dir)
+
+        config = load_config(Path("config.toml"))
+
+        assert config.policy_files == [
+            str(tmp_twsrt_dir / "config.toml"),
+            "~/.srt-settings.json",
+            str(tmp_twsrt_dir / "srt/base.jsonc"),
+            str(tmp_twsrt_dir / "bash-rules.json"),
+            str(tmp_twsrt_dir / "bash/base.jsonc"),
+        ]
+
+    def test_policy_files_under_home_are_spelled_with_tilde(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Generated files stay readable and match hand-written ~ entries."""
+        home = tmp_path / "home"
+        twsrt_dir = home / ".config" / "twsrt"
+        twsrt_dir.mkdir(parents=True)
+        (twsrt_dir / "config.toml").write_text(base_config())
+        monkeypatch.setenv("HOME", str(home))
+
+        config = load_config(twsrt_dir / "config.toml")
+
+        assert config.policy_files == [
+            "~/.config/twsrt/config.toml",
+            "~/.srt-settings.json",
+            "~/.config/twsrt/srt/base.jsonc",
+            "~/.config/twsrt/bash-rules.json",
+            "~/.config/twsrt/bash/base.jsonc",
+        ]
+
+    def test_policy_files_behind_a_symlink_carry_their_real_path_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """srt keeps a symlink spelling whose target leaves its tree (stow),
+        while Seatbelt matches the real path: the deny must name both."""
+        home = tmp_path / "home"
+        real = home / "dotfiles" / "twsrt"
+        real.mkdir(parents=True)
+        (real / "config.toml").write_text(base_config())
+        link = home / ".config" / "twsrt"
+        link.parent.mkdir()
+        link.symlink_to(real)
+        monkeypatch.setenv("HOME", str(home))
+
+        config = load_config(link / "config.toml")
+
+        assert "~/.config/twsrt/config.toml" in config.policy_files
+        assert "~/dotfiles/twsrt/config.toml" in config.policy_files
+        assert "~/.config/twsrt/srt/base.jsonc" in config.policy_files
+        assert "~/dotfiles/twsrt/srt/base.jsonc" in config.policy_files
+
     def test_no_targets_table_means_no_agent_is_configured(
         self, tmp_twsrt_dir: Path
     ) -> None:

@@ -62,7 +62,9 @@ def compile_sources(
 
     extra_deny_write adds paths no fragment names, e.g. a project's own
     .twsrt directory, which must be protected wherever that profile runs.
+    config.policy_files are always added: no fragment can name them portably.
     """
+    extra_deny_write = [*extra_deny_write, *config.policy_files]
     documents: dict[str, CompiledDocument] = {}
     loaded_by_kind: dict[str, list[tuple[SourceFragment, dict[str, Any]]]] = {}
 

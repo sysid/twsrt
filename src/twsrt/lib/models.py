@@ -147,6 +147,10 @@ class ClaudeSync:
 @dataclass
 class AppConfig:
     sources: dict[str, CanonicalSource] = field(default_factory=dict)
+    # config.toml and every [sources] path as deny rules (absolute or ~/…),
+    # captured at load: write-denied in every compile so an agent cannot
+    # loosen the policy it runs under.
+    policy_files: list[str] = field(default_factory=list)
     profiles: dict[str, Profile] = field(default_factory=dict)
     default_profile: str | None = None
     srt_path: Path = field(

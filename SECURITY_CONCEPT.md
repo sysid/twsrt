@@ -158,6 +158,16 @@ same intent is expressed as `Read(...)` plus `Edit(...)` denies, since one
 `Edit` rule covers every file-editing tool. Why srt alone does not provide
 this: §7.4.
 
+**The policy protects itself.** Every compile adds `config.toml` and every
+`[sources]` path (each canonical output and every fragment, selected by the
+profile or not) to `denyWrite`. An agent able to edit a fragment loosens what
+the next `generate -w` compiles; one able to edit `~/.srt-settings.json`
+loosens the next bare `srt` launch. No fragment can name these paths
+portably, so the compiler injects them: absolute (`~/…` under the home
+directory), because srt anchors a relative entry at its launch cwd, and
+through a symlink also as the real path (§7.4). Agent targets (`[targets]`)
+are not included ([ADR 0008](doc/adr/0008-policy-files-are-write-denied.md)).
+
 ### 3.5 Auditability
 
 - **Deterministic generation.** The same config, profile and fragments
@@ -242,7 +252,8 @@ Its security properties:
   add rules or override sandbox scalars, the same exposure as a plain launch.
   Launching without the flags is not unsafe: the union is stricter.
 - **The policy cannot rewrite itself.** Claude hot-reloads settings, so
-  `./.twsrt` is added to the compiled `denyWrite`; every launch regenerates
+  `./.twsrt` is added to the compiled `denyWrite`, next to the global policy
+  files every compile protects (§3.4); every launch regenerates
   the files, overwriting anything a repository ships there.
 - **Residual gap.** A session running under the global policy in the same
   directory lacks that deny. Close it with `.twsrt` in a global fragment's
@@ -257,6 +268,7 @@ Its security properties:
 | Agent reads `~/.aws/credentials` via Bash | Each agent's deny list configured by hand | Kernel blocks `read()` **and** agent denies `Bash(cat)`: two layers |
 | Agent reads `~/.aws/credentials` via Read tool | Each agent's deny list configured by hand | Agent denies `Read()`: one layer |
 | Agent overwrites a read-denied file inside the project | Depends on a hand-written `denyWrite` | Implied `denyWrite` blocks it in every target |
+| Agent loosens the policy by editing a fragment or `config.toml` | Possible wherever a write root covers the config (e.g. a dotfiles repo) | Policy files are write-denied in every target (§3.4) |
 | Agent runs `rm -rf /` | Added by hand to each agent | Bash deny translates to every agent |
 | Agent sends data to `evil.com` via Bash | Network allowlist per agent by hand | Proxy blocks **and** agent denies: two layers |
 | Agent sends data to `evil.com` via WebFetch | Network allowlist per agent by hand | `WebFetch(domain:…)` allow check: one layer |
@@ -349,7 +361,8 @@ real vnode path. `denyRead: ["~/.aws"]` therefore blocks nothing when
 `~/.aws` is a symlink into a dotfiles repository, the most common layout for
 managed configs. The implied write deny inherits the same no-op. Mitigation:
 deny the real directory as well; `twsrt test` probes every deny path through
-its real path and reports the gap as a `(realpath)` `FAIL`.
+its real path and reports the gap as a `(realpath)` `FAIL`. twsrt's own
+policy files (§3.4) are emitted under both spellings automatically.
 
 ### 7.5 `denyRead` is not a write deny
 

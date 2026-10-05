@@ -28,10 +28,14 @@ class FakeRunner:
     """Stands in for subprocess.run. Sandboxed commands that mention a blocked
     substring fail with EPERM text; everything else exits 0."""
 
+    # _make_config's policy files are write-denied by every compile and lie
+    # outside every allowWrite root, so real srt blocks their probes.
+    POLICY_FILES = ("/srt.jsonc", "/.srt-settings.json", "/config/twsrt/")
+
     def __init__(
         self, blocked: tuple[str, ...] = (), srt_failure: tuple[int, str] | None = None
     ) -> None:
-        self.blocked = blocked
+        self.blocked = (*self.POLICY_FILES, *blocked)
         self.srt_failure = srt_failure
         self.calls: list[list[str]] = []
 
@@ -84,6 +88,8 @@ def _make_config(tmp_path: Path, srt: dict, write_settings: bool = True) -> Path
         shown = runner.invoke(app, ["-c", str(config), "show", "srt"])
         assert shown.exit_code == 0, shown.output
         settings.write_text(shown.stdout)
+        # Present like after `generate -w`, so its write-deny probe runs.
+        (twsrt_dir / "bash-rules.json").write_text("{}")
     return config
 
 
@@ -170,8 +176,9 @@ class TestHumanOutput:
         assert any(line.startswith("STATUS") and "PROBE" in line for line in lines)
         assert any("read-deny" in line and "PASS" in line for line in lines)
         assert any("net-deny" in line and "PASS" in line for line in lines)
-        # read-deny + implied write-deny for the secret, plus the canary.
-        assert "passed=3 failed=0 invalid=0 error=0 skipped=0" in result.stdout
+        # read-deny + implied write-deny for the secret, the canary, and the
+        # write-deny of config.toml, both fragments and both outputs.
+        assert "passed=8 failed=0 invalid=0 error=0 skipped=0" in result.stdout
         assert "srt 0.0.75" in result.stdout
 
     def test_skipped_rules_show_the_reason(
@@ -259,8 +266,9 @@ class TestHumanOutput:
             for line in summary
         )
         assert not any(line.startswith("PASS") for line in summary)
-        # The secret and **/.env each fail their implied write-deny probe too.
-        assert summary[-1] == "passed=1 failed=3 invalid=0 error=0 skipped=1"
+        # The secret and **/.env each fail their implied write-deny probe too;
+        # the five policy files pass theirs.
+        assert summary[-1] == "passed=6 failed=3 invalid=0 error=0 skipped=1"
         # Details (with the command) come before the short summary.
         assert lines.index(f"  command: head -c 1 -- {secret}") < header
 
@@ -274,7 +282,7 @@ class TestHumanOutput:
         assert result.exit_code == 0, result.output
         assert "--- summary ---" not in result.stdout
         assert result.stdout.splitlines()[-1] == (
-            "passed=3 failed=0 invalid=0 error=0 skipped=0"
+            "passed=8 failed=0 invalid=0 error=0 skipped=0"
         )
 
     def test_statuses_are_colored_on_a_terminal(self, tmp_path: Path) -> None:
@@ -326,7 +334,7 @@ class TestHumanOutput:
         assert any(line.startswith("preflight ok: srt 0.0.75") for line in debug)
         # Derivation and filtering.
         assert any("scratch" in line and ".twsrt-test-" in line for line in debug)
-        assert any("keyword 'read' kept 1 of 3 probes" in line for line in debug)
+        assert any("keyword 'read' kept 1 of 8 probes" in line for line in debug)
         # Per probe: control and sandbox argv, exit codes, verdict with duration.
         assert f"exec: sh -c 'head -c 1 -- {secret}'" in debug
         assert f"exec: srt -s {settings} -c 'head -c 1 -- {secret}'" in debug
@@ -368,8 +376,8 @@ class TestJsonOutput:
         assert document["srt_version"] == "0.0.75"
         assert document["settings"] == str(tmp_path / ".srt-settings.json")
         assert document["summary"] == {
-            "total": 3,
-            "passed": 1,
+            "total": 8,
+            "passed": 6,
             "failed": 2,
             "invalid": 0,
             "error": 0,

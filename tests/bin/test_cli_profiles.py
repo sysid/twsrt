@@ -355,8 +355,12 @@ def test_show_prints_the_compiled_srt_document_and_writes_nothing(
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout) == {
         "enabled": True,
-        # denyRead implies denyWrite (see sources._imply_write_denies).
-        "filesystem": {"denyRead": ["~/.ssh"], "denyWrite": ["~/.ssh"]},
+        # denyRead implies denyWrite; the policy files are always write-denied
+        # (see sources.compile_sources).
+        "filesystem": {
+            "denyRead": ["~/.ssh"],
+            "denyWrite": sorted(["~/.ssh", *load_config(config).policy_files]),
+        },
     }
     assert not (tmp_path / "compiled").exists()
     assert not claude_target.exists()
@@ -440,8 +444,12 @@ def test_generate_yolo_write_leaves_the_canonical_srt_document_unchanged(
     assert json.loads(yolo_target.read_text())["sandbox"]["enabled"] is False
     assert json.loads((tmp_path / "compiled/srt.json").read_text()) == {
         "enabled": True,
-        # denyRead implies denyWrite (see sources._imply_write_denies).
-        "filesystem": {"denyRead": ["~/.ssh"], "denyWrite": ["~/.ssh"]},
+        # denyRead implies denyWrite; the policy files are always write-denied
+        # (see sources.compile_sources).
+        "filesystem": {
+            "denyRead": ["~/.ssh"],
+            "denyWrite": sorted(["~/.ssh", *load_config(config).policy_files]),
+        },
     }
 
 

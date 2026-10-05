@@ -9,6 +9,8 @@ import pytest
 from typer.testing import CliRunner
 
 from twsrt.bin.cli import __version__, _editor_argv, _resolve_editor, app
+from twsrt.lib.config import load_config
+from twsrt.lib.models import Action, Scope, SecurityRule, Source
 
 runner = CliRunner()
 
@@ -790,7 +792,13 @@ class TestUS1AcceptanceScenarios:
         result = runner.invoke(app, ["-c", str(config), "generate", "claude"])
         assert result.exit_code == 0
         output = json.loads(result.stdout)
-        assert output["permissions"]["deny"] == []
+        # Only the always write-denied policy files; allowWrite adds no deny.
+        policy = load_config(config).policy_files
+        assert [
+            rule
+            for rule in output["permissions"]["deny"]
+            if not any(path in rule for path in policy)
+        ] == []
         assert output["permissions"]["allow"] == [
             "Edit(.)",
             "Edit(./**)",
@@ -1528,7 +1536,6 @@ def _make_config_with_targets(
     twsrt_dir.mkdir(parents=True)
     br_file = twsrt_dir / "bash-rules.jsonc"
     br_file.write_text(json.dumps(bash_rules or {"deny": [], "ask": []}))
-    (tmp_path / ".srt-settings.json").write_text(json.dumps(srt))
     (twsrt_dir / "bash-rules.json").write_text(
         json.dumps(bash_rules or {"deny": [], "ask": []})
     )
@@ -1556,7 +1563,25 @@ def _make_config_with_targets(
         f'[targets]\nclaude_settings = "{claude_target}"\n'
         f'copilot_output = "{copilot_target}"\n'
     )
+    # The compiled document, not the fragment verbatim: compilation adds
+    # write denies (denyRead, policy files), and a raw copy would drift.
+    shown = runner.invoke(app, ["-c", str(config_file), "show", "srt"])
+    assert shown.exit_code == 0, shown.output
+    (tmp_path / ".srt-settings.json").write_text(shown.stdout)
     return config_file, claude_target, copilot_target
+
+
+def _policy_write_denies(config: Path) -> list[SecurityRule]:
+    """The write denies every compile adds: config.toml and every [sources] path."""
+    return [
+        SecurityRule(Scope.WRITE, Action.DENY, str(path), Source.SRT_FILESYSTEM)
+        for path in load_config(config).policy_files
+    ]
+
+
+def _policy_edit_denies(config: Path) -> list[str]:
+    """Claude's form of _policy_write_denies; every policy file exists here."""
+    return [f"Edit(/{rule.pattern})" for rule in _policy_write_denies(config)]
 
 
 class TestYoloDiffCommand:
@@ -1580,6 +1605,7 @@ class TestYoloDiffCommand:
         rules = [
             SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
             SecurityRule(Scope.EXECUTE, Action.ASK, "git push", Source.BASH_RULES),
+            *_policy_write_denies(config),
         ]
         output = gen.generate(rules, ac)
         yolo_target.write_text(output)
@@ -1656,7 +1682,10 @@ class TestSymlinkDiffCommand:
         )
 
         gen = ClaudeGenerator()
-        rules = [SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES)]
+        rules = [
+            SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
+            *_policy_write_denies(config),
+        ]
         output = gen.generate(rules, AC())
         claude_target.write_text(output)
 
@@ -1687,6 +1716,7 @@ class TestSymlinkDiffCommand:
         rules = [
             SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
             SecurityRule(Scope.EXECUTE, Action.ASK, "git push", Source.BASH_RULES),
+            *_policy_write_denies(config),
         ]
         ac = AC(yolo=True)
         output = gen.generate(rules, ac)
@@ -1723,9 +1753,12 @@ class TestDiffCommand:
             + f'claude_settings = "{claude_target}"\n'
             + f'copilot_output = "{copilot_target}"\n'
         )
+        # One HOME for both steps: policy files under it are spelled ~/….
         for agent in ("claude", "copilot"):
             write_result = runner.invoke(
-                app, ["-c", str(config), "generate", agent, "--write"]
+                app,
+                ["-c", str(config), "generate", agent, "--write"],
+                env={"HOME": str(tmp_path)},
             )
             assert write_result.exit_code == 0, write_result.output
 
@@ -1834,7 +1867,7 @@ class TestDiffCommand:
         # Write existing that matches (incl. the managed-empty deny lists)
         existing = {
             "permissions": {
-                "deny": ["Bash(rm)", "Bash(rm *)"],
+                "deny": ["Bash(rm)", "Bash(rm *)", *_policy_edit_denies(config)],
                 "ask": [],
                 "allow": [],
             },
@@ -1904,7 +1937,11 @@ class TestUS3AcceptanceScenarios:
         # Bash(rm *) is missing, Bash(docker run:*) is extra.
         existing = {
             "permissions": {
-                "deny": ["Bash(rm)", "Bash(docker run:*)"],
+                "deny": [
+                    "Bash(rm)",
+                    "Bash(docker run:*)",
+                    *_policy_edit_denies(config),
+                ],
                 "ask": [],
                 "allow": [],
             },
@@ -1933,7 +1970,7 @@ class TestUS3AcceptanceScenarios:
         config, claude_target, _ = _make_config_with_targets(tmp_path, srt, bash_rules)
         existing = {
             "permissions": {
-                "deny": ["Bash(rm)", "Bash(rm *)"],
+                "deny": ["Bash(rm)", "Bash(rm *)", *_policy_edit_denies(config)],
                 "ask": [],
                 "allow": [],
             },
@@ -1955,7 +1992,7 @@ class TestUS3AcceptanceScenarios:
         config, claude_target, _ = _make_config_with_targets(tmp_path, srt, bash_rules)
         existing = {
             "permissions": {
-                "deny": ["Bash(rm)", "Bash(rm *)"],
+                "deny": ["Bash(rm)", "Bash(rm *)", *_policy_edit_denies(config)],
                 "ask": [],
                 "allow": [],
             },

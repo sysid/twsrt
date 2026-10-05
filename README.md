@@ -188,6 +188,11 @@ Only `config.toml` and the `.jsonc` fragments are edited by hand. Relative
 paths resolve from the directory containing `config.toml`; `~` and absolute
 paths also work. `twsrt config --init` writes a fully commented version.
 
+Every compile write-denies `config.toml` and every `[sources]` path (outputs
+and fragments), so a sandboxed agent cannot loosen its own policy: edit them
+from a plain terminal
+([why](SECURITY_CONCEPT.md#34-least-privilege-denyread-implies-denywrite)).
+
 | Term | Meaning |
 |---|---|
 | Source kind | A canonical document type: `srt` (filesystem and network policy) and `bash` (command allow/ask/deny lists) |
@@ -334,7 +339,8 @@ no global file touched; preview and `-w -n` work as usual. `all` means
 settings file. Omitting `-p` compiles `default_profile`, the full policy.
 `--project` also adds `./.twsrt` to the compiled `denyWrite`, because Claude
 reloads settings mid-session and an agent able to write them could loosen
-its own policy.
+its own policy. `config.toml`, the fragments and the global outputs stay
+write-denied as in every compile.
 
 Evidence, failure directions and how to re-verify after a Claude upgrade:
 [Claude per-project launch premise](doc/REFERENCE.md#claude-per-project-launch-premise).
@@ -487,6 +493,8 @@ What to know:
 | Built-in tools (Read, Edit, WebFetch) run inside the agent process | Only the agent's own permission engine guards them, best-effort | Kernel-protect the highest-value secrets via `denyRead` |
 | macOS: srt keeps a symlinked deny path unresolved | `denyRead: ["~/.aws"]` blocks nothing when `~/.aws` is a symlink | Deny the real path too; `twsrt test` reports it as a `(realpath)` `FAIL` |
 | srt's `denyRead` is no write deny | A read-denied file inside a write root could be overwritten | twsrt compiles every `denyRead` into `denyWrite` ([ADR 0001](doc/adr/0001-deny-read-implies-deny-write.md)) |
+| A write root covers the twsrt config (agent launched in a dotfiles repo) | The agent could loosen the policy it runs under | twsrt write-denies `config.toml` and every `[sources]` path in every compile ([ADR 0008](doc/adr/0008-policy-files-are-write-denied.md)) |
+| srt anchors relative paths and `**/x` at its launch cwd | `"**/.env"` protects nothing outside the launch directory | Use `~/` or absolute prefixes for paths that must hold everywhere |
 | Codex `sandbox_mode` in another config layer | The twsrt profile is silently ignored | `codex doctor` after changing Codex config |
 
 Threat model, rationale and every known gap:

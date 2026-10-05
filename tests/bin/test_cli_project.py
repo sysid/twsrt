@@ -193,6 +193,29 @@ def test_project_twsrt_directory_is_write_protected_in_both_outputs(
     )
 
 
+def test_project_mode_write_protects_the_global_policy_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # --project reroutes the outputs into .twsrt/, but config.toml, the
+    # fragments and the global outputs still feed every later global launch.
+    config, claude_target, project = make_config(tmp_path)
+    monkeypatch.chdir(project)
+    write_global_claude_settings(claude_target)
+
+    result = runner.invoke(
+        app,
+        ["-c", str(config), "generate", "claude", "-w", "--project"],
+    )
+
+    assert result.exit_code == 0, result.output
+    srt = json.loads((project / ".twsrt/srt-settings.json").read_text())
+    for path in ("config.toml", "compiled/srt.json", "fragments/srt-cloud.jsonc"):
+        assert str(tmp_path / path) in srt["filesystem"]["denyWrite"]
+    claude = json.loads((project / ".twsrt/claude-settings.json").read_text())
+    assert f"Edit(/{tmp_path / 'config.toml'})" in claude["permissions"]["deny"]
+
+
 def test_project_twsrt_directory_ignores_itself_in_git(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

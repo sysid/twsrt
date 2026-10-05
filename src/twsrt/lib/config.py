@@ -58,6 +58,7 @@ def load_config(config_path: Path) -> AppConfig:
     targets = data.get("targets", {})
     config = AppConfig(
         sources=sources,
+        policy_files=_policy_files(config_path, sources),
         profiles=profiles,
         default_profile=default_profile,
     )
@@ -148,6 +149,38 @@ def _build_sources(raw: dict[str, Any], base_dir: Path) -> dict[str, CanonicalSo
     if missing:
         raise ValueError(f"Missing canonical source kind(s): {', '.join(missing)}")
     return sources
+
+
+def _policy_files(config_path: Path, sources: dict[str, CanonicalSource]) -> list[str]:
+    """config.toml plus every [sources] output and fragment path, as rules.
+
+    Absolute, because srt anchors a relative entry at its launch cwd, not at
+    the config: `--config config.toml` would protect nothing elsewhere. A
+    symlinked path also carries its real path: srt keeps a link spelling whose
+    target leaves the link's tree (a stow-managed ~/.config), while Seatbelt
+    matches the real path, so the link spelling alone would deny nothing.
+    """
+    paths = [config_path]
+    for source in sources.values():
+        paths.append(source.output_path)
+        paths.extend(fragment.path for fragment in source.fragments.values())
+    spellings = (
+        _tilde(spelling)
+        for path in paths
+        for spelling in (path.absolute(), path.resolve())
+    )
+    return list(dict.fromkeys(spellings))
+
+
+def _tilde(path: Path) -> str:
+    """Spell a path under the home directory as ~/…, like hand-written rules.
+
+    srt and every agent translation expand ~ themselves.
+    """
+    home = Path.home()
+    if path.is_relative_to(home):
+        return f"~/{path.relative_to(home)}"
+    return str(path)
 
 
 def _build_profiles(
