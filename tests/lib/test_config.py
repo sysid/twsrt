@@ -55,6 +55,32 @@ class TestLoadConfig:
         assert "~" not in str(config.sources["srt"].output_path)
         assert config.sources["bash"].output_path == tmp_twsrt_dir / "bash-rules.json"
 
+    def test_omitted_outputs_default_to_the_config_directory(
+        self, tmp_twsrt_dir: Path
+    ) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(
+            base_config()
+            .replace('output = "~/.srt-settings.json"\n', "")
+            .replace('output = "bash-rules.json"\n', "")
+        )
+
+        config = load_config(path)
+
+        assert config.sources["srt"].output_path == tmp_twsrt_dir / "srt-settings.json"
+        assert config.sources["bash"].output_path == tmp_twsrt_dir / "bash-rules.json"
+        assert config.srt_path == tmp_twsrt_dir / "srt-settings.json"
+
+    def test_an_explicit_output_overrides_the_default(
+        self, tmp_twsrt_dir: Path
+    ) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(base_config())
+
+        config = load_config(path)
+
+        assert config.sources["srt"].output_path == Path.home() / ".srt-settings.json"
+
     def test_policy_files_are_config_and_every_sources_path_as_absolute_paths(
         self, tmp_twsrt_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

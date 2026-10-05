@@ -71,7 +71,10 @@ Three ideas explain the whole tool.
 > **The canonical config is the input for every agent translation.**
 > `~/.srt-settings.json` and `bash-rules.json` are the compiled policy of one
 > profile: the single source of truth. SRT reads `~/.srt-settings.json`
-> directly; every agent config is translated from the same compile.
+> directly; every agent config is translated from the same compile. These
+> paths assume `output = "~/.srt-settings.json"`; an omitted `output` writes
+> `srt-settings.json` next to `config.toml`, which srt reads only via
+> `srt -s` ([config.toml](#configtoml)).
 
 | | Canonical config | Agent configs |
 |---|---|---|
@@ -209,14 +212,13 @@ default_profile = "default"
 
 # --- canonical sources: one compiled output, one or more fragments each ---
 [sources.srt]
-output = "~/.srt-settings.json"
+output = "~/.srt-settings.json"   # optional, see below
 [sources.srt.fragments.base]
 path = "srt/base.jsonc"
 [sources.srt.fragments.work]
 path = "srt/work.jsonc"
 
-[sources.bash]
-output = "bash-rules.json"
+[sources.bash]                    # output omitted: bash-rules.json next to config.toml
 [sources.bash.fragments.base]
 path = "bash/base.jsonc"
 
@@ -256,6 +258,13 @@ Only `schema_version`, `default_profile`, both `[sources.*]` kinds and one
 profile are required. `config --init` writes exactly that, plus
 `[sandbox_overrides.yolo]`, and leaves every other key commented out with
 its default value.
+
+`output` is optional per source kind and defaults to `srt-settings.json` /
+`bash-rules.json` next to `config.toml`. srt itself reads only
+`~/.srt-settings.json`, and when that file is missing it runs with built-in
+defaults, without any `denyRead`. With the default `output`, launch
+`srt -s <config dir>/srt-settings.json`, or set
+`output = "~/.srt-settings.json"` so a bare `srt` picks up the policy.
 
 An agent is configured only when its `[targets]` key is set. `generate` and
 `diff` treat every agent the same way:

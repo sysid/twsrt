@@ -161,10 +161,14 @@ default_profile = "default"
 # Both registered kinds, srt and bash, are required. Each kind has one generated
 # strict-JSON output and one or more named JSONC fragments. Output paths must be
 # distinct and must not be the same path as any input fragment.
+# `output` is optional and defaults to a file next to this config.toml.
 
 [sources.srt]
 # Compiled Sandbox Runtime configuration. This is generated; do not hand-edit it.
-output = "~/.srt-settings.json"
+# Default: srt-settings.json next to this file. srt itself reads only
+# ~/.srt-settings.json, and without it runs with no deny rules at all: launch
+# `srt -s <output>`, or set output = "~/.srt-settings.json".
+# output = "~/.srt-settings.json"
 
 [sources.srt.fragments.base]
 # Fragment names are arbitrary profile-facing identifiers.
@@ -176,7 +180,8 @@ path = "srt/base.jsonc"
 
 [sources.bash]
 # Compiled command-policy JSON consumed by the agent generators.
-output = "bash-rules.json"
+# Default: bash-rules.json next to this file.
+# output = "bash-rules.json"
 
 [sources.bash.fragments.base]
 path = "bash/base.jsonc"
@@ -1230,14 +1235,14 @@ def _compile(
     twsrt_dir: Path | None = None,
 ) -> tuple[AppConfig, CompilationResult]:
     """Load, resolve and compile; with twsrt_dir, canonical outputs move there."""
-    from twsrt.lib.config import load_config
+    from twsrt.lib.config import DEFAULT_OUTPUT_NAMES, load_config
     from twsrt.lib.profiles import resolve_profile
     from twsrt.lib.sources import compile_sources
 
     config = load_config(config_path)
     extra_deny_write: list[str] = []
     if twsrt_dir is not None:
-        for kind, name in _PROJECT_CANONICAL_NAMES.items():
+        for kind, name in DEFAULT_OUTPUT_NAMES.items():
             config.sources[kind] = replace(
                 config.sources[kind], output_path=twsrt_dir / name
             )
@@ -1342,9 +1347,6 @@ def _stage_agent_files(
             assert isinstance(generator, CodexGenerator)
             staged.update(generator.render_write_files(compiled.rules, config))
     return staged
-
-
-_PROJECT_CANONICAL_NAMES = {"srt": "srt-settings.json", "bash": "bash-rules.json"}
 
 
 def _project_agent(agent: str) -> str:

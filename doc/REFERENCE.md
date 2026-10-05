@@ -60,7 +60,11 @@ rationale are in [SECURITY_CONCEPT.md](../SECURITY_CONCEPT.md).
 
 Each source kind owns a fragment namespace and exactly one compiled output.
 Relative paths resolve from `config.toml`, so the configuration directory is
-relocatable. Unknown source kinds fail instead of being composed without
+relocatable. An omitted `output` defaults to `srt-settings.json` or
+`bash-rules.json` next to `config.toml` (`config.DEFAULT_OUTPUT_NAMES`, the
+same names `--project` uses in `./.twsrt/`). srt itself reads only
+`~/.srt-settings.json`, and a missing one runs it with built-in defaults, no
+`denyRead` at all: with the default, launch `srt -s <output>`. Unknown source kinds fail instead of being composed without
 validation or translation semantics.
 
 ### Profile resolution

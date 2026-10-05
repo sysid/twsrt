@@ -16,6 +16,9 @@ from twsrt.lib.models import (
 
 SCHEMA_VERSION = 1
 SOURCE_KINDS = ("srt", "bash")
+# Canonical output file names: next to config.toml when [sources.<kind>].output
+# is omitted, and inside ./.twsrt/ under `generate --project`.
+DEFAULT_OUTPUT_NAMES = {"srt": "srt-settings.json", "bash": "bash-rules.json"}
 
 
 def load_config(config_path: Path) -> AppConfig:
@@ -112,9 +115,9 @@ def _build_sources(raw: dict[str, Any], base_dir: Path) -> dict[str, CanonicalSo
             )
         if not isinstance(blob, dict):
             raise ValueError(f"sources.{kind} must be a table")
-        if "output" not in blob:
-            raise ValueError(f"sources.{kind}.output is required")
-        output_path = _resolve_path(blob["output"], base_dir)
+        output_path = _resolve_path(
+            blob.get("output", DEFAULT_OUTPUT_NAMES[kind]), base_dir
+        )
         if output_path in output_owners:
             raise ValueError(
                 f"sources.{kind} and sources.{output_owners[output_path]} use the "

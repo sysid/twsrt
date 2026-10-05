@@ -2481,6 +2481,22 @@ class TestInitMinimalConfig:
         assert config.agent_target("codex") is None
         assert config.claude_sync is None
 
+    def test_the_initial_config_writes_canonical_outputs_next_to_itself(
+        self, tmp_path: Path
+    ) -> None:
+        """No output key is set: nothing lands in ~ until the user opts in."""
+        from twsrt.lib.config import load_config
+
+        config_path = self._init(tmp_path)
+        config = load_config(config_path)
+
+        assert config.sources["srt"].output_path == (
+            config_path.parent / "srt-settings.json"
+        )
+        assert config.sources["bash"].output_path == (
+            config_path.parent / "bash-rules.json"
+        )
+
     def test_only_the_yolo_safety_override_stays_active(self, tmp_path: Path) -> None:
         """Yolo skips confirmation: its sandbox hardening is kept on by default."""
         from twsrt.lib.config import load_config
