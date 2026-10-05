@@ -14,7 +14,12 @@ from pathlib import Path
 
 import typer
 
-from twsrt.lib.models import AppConfig, CompilationResult, yolo_path
+from twsrt.lib.models import (
+    AGENT_TARGET_KEYS,
+    AppConfig,
+    CompilationResult,
+    yolo_path,
+)
 
 __version__ = "2.2.0"
 
@@ -208,25 +213,30 @@ bash = ["base"]
 # -----------------------------------------------------------------------------
 # Generated agent targets
 # -----------------------------------------------------------------------------
-# Every supported target key is shown here. Home-relative and absolute paths are
-# supported. Relative paths resolve from the directory containing config.toml.
+# Agents are opt-in: an agent is configured only when its primary key is set.
+# `generate`/`diff all` skip unconfigured agents with a note; naming one
+# explicitly (e.g. `generate codex`) fails. With no agent configured,
+# `generate -w` writes only the canonical outputs above.
+# Uncomment a key to enable its agent; the values shown are sensible defaults.
+# Home-relative and absolute paths are supported. Relative paths resolve from
+# the directory containing config.toml.
 
 [targets]
-# Full-mode settings file. It must not be named settings.json because that path
-# is reserved for twsrt's symlink anchor.
-claude_settings = "~/.claude/settings.full.json"
+# Claude Code. Must not be named settings.json: that path is twsrt's symlink
+# anchor, pointed at the full or yolo file by `generate -w claude`.
+# claude_settings = "~/.claude/settings.full.json"
 
-# Optional. When omitted, generate prints flags to stdout instead of writing them.
+# GitHub Copilot CLI flags file.
 # copilot_output = "copilot-flags.txt"
 
-# Optional for generate-all writes. Setting it enables the Codex target there.
-codex_config = "~/.codex/config.toml"
+# Codex user config; twsrt merges only its own permission profile into it.
+# codex_config = "~/.codex/config.toml"
 
-# Optional. Omit to disable generation of sandbox-escape escalation rules.
-codex_rules = "~/.codex/rules/twsrt.rules"
+# Optional, requires codex_config: sandbox-escape escalation rules.
+# codex_rules = "~/.codex/rules/twsrt.rules"
 
-# Optional explicit YOLO targets. When omitted, twsrt inserts ".yolo" before the
-# final suffix of the corresponding full-mode target.
+# Optional explicit YOLO targets, each requiring its full-mode key. When omitted,
+# twsrt inserts ".yolo" before the final suffix of the full-mode target.
 # claude_settings_yolo = "~/.claude/settings.yolo.json"
 # copilot_output_yolo = "copilot-flags.yolo.txt"
 
@@ -240,14 +250,14 @@ codex_rules = "~/.codex/rules/twsrt.rules"
 # (the donor) into the target being generated, so the two targets converge on
 # each mode switch. Deletions propagate; last writer wins. Managed sections
 # (permissions.deny/ask, WebFetch allows, sandbox.*) are never synced.
-# Remove the table to disable the sync.
-[claude_sync]
-# Keys that legitimately differ between modes and are never synced.
-# Dotted paths address nested keys, e.g. "hooks.PostToolUse".
-mode_specific = [
-  "skipDangerousModePermissionPrompt",
-  "skipAutoPermissionPrompt",
-]
+# Uncomment the table to enable the sync.
+# [claude_sync]
+# # Keys that legitimately differ between modes and are never synced.
+# # Dotted paths address nested keys, e.g. "hooks.PostToolUse".
+# mode_specific = [
+#   "skipDangerousModePermissionPrompt",
+#   "skipAutoPermissionPrompt",
+# ]
 
 
 # -----------------------------------------------------------------------------
@@ -280,7 +290,8 @@ mode_specific = [
 
 [sandbox_overrides.yolo]
 # YOLO skips command confirmation, so keep the kernel sandbox enabled and forbid
-# falling back to unsandboxed execution.
+# falling back to unsandboxed execution. The only optional table active by
+# default: removing it weakens yolo mode.
 enabled = true
 autoAllowBashIfSandboxed = true
 allowUnsandboxedCommands = false
@@ -304,11 +315,11 @@ allowUnsandboxedCommands = false
 # [sandbox_overrides.yolo.filesystem]
 # allowWrite = ["."]
 
-[sandbox_overrides.full]
-# Full mode retains interactive approval, so this profile intentionally disables
-# the agent's native sandbox. Remove this override to inherit SRT's enabled value.
-enabled = false
-
+# Full mode retains interactive approval; uncomment to disable the agent's native
+# sandbox there. Without it, full mode inherits SRT's enabled value.
+# [sandbox_overrides.full]
+# enabled = false
+#
 # The same seven top-level and eight nested keys documented above are valid here.
 """
 DEFAULT_SRT_JSONC = """\
@@ -547,12 +558,12 @@ def doctor(
     # The twsrt Claude targets plus the repo's own settings, which Claude also
     # loads and which twsrt never writes (relative-path trap, bkmr 3742).
     project = Path.cwd() / ".claude"
-    claude_files = [
-        config.claude_settings_path,
-        config.claude_yolo_path or yolo_path(config.claude_settings_path),
-        project / "settings.json",
-        project / "settings.local.json",
-    ]
+    claude_files = [project / "settings.json", project / "settings.local.json"]
+    if config.claude_settings_path is not None:
+        claude_files[:0] = [
+            config.claude_settings_path,
+            config.claude_yolo_path or yolo_path(config.claude_settings_path),
+        ]
     findings = diagnose(config, config_path.parent, claude_files)
     if not findings:
         _success("doctor: no findings")
@@ -681,7 +692,8 @@ def generate(
 
     Agent configs are translated from the canonical config (e.g.
     ~/.srt-settings.json); the agent argument only picks which translations
-    run.
+    run. Agents are opt-in via [targets] in config.toml: `all` skips
+    unconfigured ones with a note, naming one explicitly fails.
 
     Default (no -w): print the agent config to stdout and write nothing.
     The canonical outputs are not printed; use `twsrt show` for those.
@@ -702,7 +714,7 @@ def generate(
         if twsrt_dir is not None:
             agent = _project_agent(agent)
         config, compiled = _compile(ctx.obj["config_path"], profile, yolo, twsrt_dir)
-        generators = _select_generators(agent, config, for_write=write)
+        generators = _select_generators(agent, config)
         log.debug(
             "Generating agents=%s write=%s dry_run=%s",
             ",".join(generator.name for generator in generators),
@@ -757,9 +769,6 @@ def generate(
             _wrote(f"Wrote: {path}")
         if "codex" in rendered:
             _note("Restart Codex to load the updated permission profile and rules.")
-        for generator in generators:
-            if generator.name == "copilot" and _resolve_copilot_target(config) is None:
-                typer.echo(rendered[generator.name])
         return
 
     for name, output in rendered.items():
@@ -820,7 +829,7 @@ def diff(
     """Compare compiled canonical and agent configuration with disk."""
     try:
         config, compiled = _compile(ctx.obj["config_path"], profile, yolo)
-        generators = _select_generators(agent, config, for_write=True)
+        generators = _select_generators(agent, config)
     except (OSError, ValueError) as exc:
         log.debug("Diff setup failed", exc_info=True)
         _error(str(exc))
@@ -840,8 +849,8 @@ def diff(
             _success(f"{kind} canonical: no drift")
 
     for generator in generators:
-        target = _resolve_diff_target(generator.name, config)
-        if target is None or not target.exists():
+        target = _resolve_target(generator.name, config)
+        if not target.exists():
             _error(f"Target file not found for {generator.name}: {target}")
             raise typer.Exit(2)
         if (
@@ -1255,18 +1264,36 @@ def _compile(
     return config, compiled
 
 
-def _select_generators(agent: str, config: AppConfig, for_write: bool) -> list:
+def _select_generators(agent: str, config: AppConfig) -> list:
+    """ "all" means every configured agent; a named agent must be configured.
+
+    An agent is configured by its [targets] key alone, so preview, write and
+    diff all see the same set: an unset key never falls back to a real path.
+    """
     from twsrt.lib.agent import GENERATORS
 
     if agent == "all":
-        generators = list(GENERATORS.values())
-        if for_write and not config.codex_targets_configured:
-            generators = [
-                generator for generator in generators if generator.name != "codex"
-            ]
+        generators = [
+            generator
+            for name, generator in GENERATORS.items()
+            if config.agent_target(name) is not None
+        ]
+        if not generators:
+            _note(
+                "No agents configured: set claude_settings, copilot_output or "
+                "codex_config in [targets] of config.toml"
+            )
+            return []
+        for name in GENERATORS:
+            if config.agent_target(name) is None:
+                _note(
+                    f"{name}: not configured "
+                    f"(set [targets].{AGENT_TARGET_KEYS[name]} to enable)"
+                )
         return generators
     if agent not in GENERATORS:
         raise ValueError(f"Unknown agent {agent!r}. Available: {', '.join(GENERATORS)}")
+    config.require_target(agent)
     return [GENERATORS[agent]]
 
 
@@ -1282,7 +1309,7 @@ def _stage_agent_files(
     staged: dict[Path, str] = {}
     for generator in generators:
         if generator.name == "claude":
-            target = _resolve_claude_target(config)
+            target = _resolve_target("claude", config)
             existing = target
             anchor = config.symlink_anchor
             if anchor.exists() and not anchor.is_symlink() and target.exists():
@@ -1309,9 +1336,8 @@ def _stage_agent_files(
                 document = generated
             staged[target] = json.dumps(document, indent=2) + "\n"
         elif generator.name == "copilot":
-            target = _resolve_copilot_target(config)
-            if target is not None:
-                staged[target] = rendered[generator.name] + "\n"
+            target = _resolve_target("copilot", config)
+            staged[target] = rendered[generator.name] + "\n"
         elif generator.name == "codex":
             assert isinstance(generator, CodexGenerator)
             staged.update(generator.render_write_files(compiled.rules, config))
@@ -1344,7 +1370,7 @@ def _stage_project_claude(
     """
     from twsrt.lib.claude import selective_merge
 
-    base = _resolve_claude_target(config)
+    base = _resolve_target("claude", config)
     if not base.exists():
         mode = " --yolo" if config.yolo else ""
         raise FileNotFoundError(
@@ -1378,14 +1404,18 @@ def _resolve_sync_donor(config: AppConfig, target: Path) -> Path | None:
 def _write_agent_files(staged: dict[Path, str], config: AppConfig) -> None:
     from twsrt.lib.symlink import ensure_symlink, prepare_claude_target
 
-    claude_target = _resolve_claude_target(config)
-    if claude_target in staged:
+    claude_target = (
+        _resolve_target("claude", config)
+        if config.agent_target("claude") is not None
+        else None
+    )
+    if claude_target is not None and claude_target in staged:
         migration_message = prepare_claude_target(config.symlink_anchor, claude_target)
         if migration_message:
             _note(migration_message)
     for path, content in staged.items():
         _atomic_write(path, content)
-    if claude_target in staged:
+    if claude_target is not None and claude_target in staged:
         warning = ensure_symlink(claude_target, config.symlink_anchor)
         if warning:
             _warning(warning)
@@ -1403,30 +1433,18 @@ def _print_generator_warnings(
             _warning(warning)
 
 
-def _resolve_claude_target(config: AppConfig) -> Path:
-    if config.yolo:
-        return config.claude_yolo_path or yolo_path(config.claude_settings_path)
-    return config.claude_settings_path
+def _resolve_target(agent: str, config: AppConfig) -> Path:
+    """The agent's target for the current mode.
 
-
-def _resolve_copilot_target(config: AppConfig) -> Path | None:
-    if config.yolo:
-        if config.copilot_yolo_path:
-            return config.copilot_yolo_path
-        if config.copilot_output_path:
-            return yolo_path(config.copilot_output_path)
-        return None
-    return config.copilot_output_path
-
-
-def _resolve_diff_target(name: str, config: AppConfig) -> Path | None:
-    if name == "claude":
-        return _resolve_claude_target(config)
-    if name == "copilot":
-        return _resolve_copilot_target(config)
-    if name == "codex":
-        return config.codex_config_path
-    return None
+    Codex has a single target: its permission profile serves both modes.
+    """
+    full = config.require_target(agent)
+    if not config.yolo or agent == "codex":
+        return full
+    explicit = (
+        config.claude_yolo_path if agent == "claude" else config.copilot_yolo_path
+    )
+    return explicit or yolo_path(full)
 
 
 # Editors that take one tab per file. `vi` is deliberately absent: it is the

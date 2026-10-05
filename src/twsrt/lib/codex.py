@@ -41,7 +41,7 @@ class CodexGenerator:
         """Render a secret-safe preview of the managed Codex artifacts."""
         config_text = self.generate_config(rules, config)
         preview = (
-            f"--- config: {config.codex_config_path} (managed fragment) ---\n"
+            f"--- config: {config.require_target('codex')} (managed fragment) ---\n"
             f"{config_text.rstrip()}"
         )
         if config.codex_rules_path is not None:
@@ -266,7 +266,7 @@ class CodexGenerator:
         generated = tomlkit.parse(self.generate_config(rules, config))
         generated_permissions = generated["permissions"]
         assert isinstance(generated_permissions, Table)
-        target = config.codex_config_path
+        target = config.require_target("codex")
         if target.exists():
             existing = tomlkit.parse(target.read_text())
         else:

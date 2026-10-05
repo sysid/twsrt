@@ -66,7 +66,6 @@ def load_config(config_path: Path) -> AppConfig:
     # accessors.
     config.srt_path = sources["srt"].output_path
     config.bash_rules_path = sources["bash"].output_path
-    config.codex_targets_configured = "codex_config" in targets
     _apply_target_paths(config, targets, base_dir)
     config.sandbox_overrides = dict(data.get("sandbox_overrides", {}))
     config.claude_sync = _build_claude_sync(data.get("claude_sync"))
@@ -217,6 +216,13 @@ def _validate_profiles(
         visit(name, [])
 
 
+_DEPENDENT_TARGETS = {
+    "claude_settings_yolo": "claude_settings",
+    "copilot_output_yolo": "copilot_output",
+    "codex_rules": "codex_config",
+}
+
+
 def _apply_target_paths(
     config: AppConfig, targets: dict[str, Any], base_dir: Path
 ) -> None:
@@ -228,11 +234,18 @@ def _apply_target_paths(
         "claude_settings_yolo": "claude_yolo_path",
         "copilot_output_yolo": "copilot_yolo_path",
     }
+    # A secondary path refines an agent; alone it would half-configure one.
+    for dependent, primary in _DEPENDENT_TARGETS.items():
+        if dependent in targets and primary not in targets:
+            raise ValueError(f"targets.{dependent} requires {primary}")
     for key, field_name in fields.items():
         if key in targets:
             setattr(config, field_name, _resolve_path(targets[key], base_dir))
 
-    if config.claude_settings_path.name == "settings.json":
+    if (
+        config.claude_settings_path is not None
+        and config.claude_settings_path.name == "settings.json"
+    ):
         raise ValueError(
             "claude_settings must not be 'settings.json' — that path is reserved "
             "for the symlink anchor. Use 'settings.full.json' instead."

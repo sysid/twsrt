@@ -55,15 +55,65 @@ class TestLoadConfig:
         assert "~" not in str(config.sources["srt"].output_path)
         assert config.sources["bash"].output_path == tmp_twsrt_dir / "bash-rules.json"
 
-    def test_codex_targets_have_user_level_defaults(self, tmp_twsrt_dir: Path) -> None:
+    def test_no_targets_table_means_no_agent_is_configured(
+        self, tmp_twsrt_dir: Path
+    ) -> None:
+        """An absent key never falls back to a real path under ~."""
         path = tmp_twsrt_dir / "config.toml"
         path.write_text(base_config())
 
         config = load_config(path)
 
-        assert str(config.codex_config_path).endswith(".codex/config.toml")
+        assert config.agent_target("claude") is None
+        assert config.agent_target("copilot") is None
+        assert config.agent_target("codex") is None
         assert config.codex_rules_path is None
-        assert config.codex_targets_configured is False
+
+    def test_each_primary_target_key_configures_its_agent(
+        self, tmp_twsrt_dir: Path, tmp_path: Path
+    ) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(
+            base_config(
+                "[targets]\n"
+                f'claude_settings = "{tmp_path / "settings.full.json"}"\n'
+                f'copilot_output = "{tmp_path / "copilot-flags.txt"}"\n'
+                f'codex_config = "{tmp_path / "config.toml"}"\n'
+            )
+        )
+
+        config = load_config(path)
+
+        assert config.agent_target("claude") == tmp_path / "settings.full.json"
+        assert config.agent_target("copilot") == tmp_path / "copilot-flags.txt"
+        assert config.agent_target("codex") == tmp_path / "config.toml"
+
+    def test_require_target_names_the_missing_key(self, tmp_twsrt_dir: Path) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(base_config())
+
+        config = load_config(path)
+
+        with pytest.raises(ValueError, match=r"copilot.*\[targets\]\.copilot_output"):
+            config.require_target("copilot")
+
+    @pytest.mark.parametrize(
+        ("dependent", "primary"),
+        [
+            ("claude_settings_yolo", "claude_settings"),
+            ("copilot_output_yolo", "copilot_output"),
+            ("codex_rules", "codex_config"),
+        ],
+    )
+    def test_secondary_target_without_its_primary_is_rejected(
+        self, tmp_twsrt_dir: Path, dependent: str, primary: str
+    ) -> None:
+        """A yolo or rules path alone would half-configure an agent; fail loudly."""
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(base_config(f'[targets]\n{dependent} = "x.txt"\n'))
+
+        with pytest.raises(ValueError, match=rf"{dependent} requires {primary}"):
+            load_config(path)
 
     def test_loads_codex_targets(self, tmp_twsrt_dir: Path, tmp_path: Path) -> None:
         codex_config = tmp_path / ".codex/config.toml"
@@ -80,7 +130,6 @@ class TestLoadConfig:
 
         assert config.codex_config_path == codex_config
         assert config.codex_rules_path == codex_rules
-        assert config.codex_targets_configured is True
 
     def test_codex_rules_target_is_optional(
         self, tmp_twsrt_dir: Path, tmp_path: Path
@@ -92,7 +141,7 @@ class TestLoadConfig:
         config = load_config(path)
 
         assert config.codex_rules_path is None
-        assert config.codex_targets_configured is True
+        assert config.agent_target("codex") == codex_config
 
 
 class TestYoloConfigLoading:
@@ -101,6 +150,8 @@ class TestYoloConfigLoading:
         path.write_text(
             base_config(
                 "[targets]\n"
+                'claude_settings = "~/.claude/settings.full.json"\n'
+                'copilot_output = "~/.config/twsrt/copilot-flags.txt"\n'
                 'claude_settings_yolo = "~/.claude/settings.yolo.json"\n'
                 'copilot_output_yolo = "~/.config/twsrt/copilot-flags.yolo.txt"\n'
             )

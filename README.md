@@ -224,13 +224,14 @@ bash = ["base"]
 extends = ["default"]
 srt = ["work"]
 
-# --- targets ---
+# --- targets: agents are opt-in; an unset key means "agent not configured" ---
 [targets]
 claude_settings = "~/.claude/settings.full.json"   # must not be settings.json (symlink anchor)
 codex_config    = "~/.codex/config.toml"
-codex_rules     = "~/.codex/rules/twsrt.rules"      # optional: omit to skip escalation rules
-copilot_output  = "~/.config/twsrt/copilot-flags.txt"   # optional: stdout if omitted
-# claude_settings_yolo / copilot_output_yolo: optional; default inserts ".yolo" before the suffix
+codex_rules     = "~/.codex/rules/twsrt.rules"      # optional, needs codex_config: escalation rules
+copilot_output  = "~/.config/twsrt/copilot-flags.txt"
+# claude_settings_yolo / copilot_output_yolo: optional, each needs its full-mode key;
+# default inserts ".yolo" before the suffix
 
 # --- Claude: keep unmanaged settings in sync between full and yolo files ---
 [claude_sync]
@@ -245,6 +246,21 @@ allowUnsandboxedCommands = false
 [sandbox_overrides.full]
 enabled = false
 ```
+
+Only `schema_version`, `default_profile`, both `[sources.*]` kinds and one
+profile are required. `config --init` writes exactly that, plus
+`[sandbox_overrides.yolo]`, and leaves every other key commented out with
+its default value.
+
+An agent is configured only when its `[targets]` key is set. `generate` and
+`diff` treat every agent the same way:
+
+| Agent argument | Agent configured | Agent not configured |
+|---|---|---|
+| `all` (default) | previewed / written / diffed | skipped, with a note on stderr |
+| named, e.g. `codex` | previewed / written / diffed | error, exit 1, no output |
+
+If no agent is configured, `generate -w` writes only the canonical outputs.
 
 ### Fragments
 
@@ -395,7 +411,8 @@ is preserved. Restart Codex after generation.
 ### Copilot CLI
 
 twsrt does not manage Copilot's `~/.copilot/settings.json`; it emits a flag
-snippet for the launch command (to stdout, or to `copilot_output`). Nothing kernel-guards Copilot's
+snippet for the launch command (written to `copilot_output`; preview it with
+`twsrt generate copilot`). Nothing kernel-guards Copilot's
 tools, so run it under the SRT wrapper, which enforces the paths and domains:
 
 ```bash

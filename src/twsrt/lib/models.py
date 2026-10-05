@@ -111,6 +111,14 @@ class CompilationResult:
     srt_result: SrtResult
 
 
+# The [targets] key whose presence configures each agent.
+AGENT_TARGET_KEYS = {
+    "claude": "claude_settings",
+    "copilot": "copilot_output",
+    "codex": "codex_config",
+}
+
+
 def yolo_path(original: Path) -> Path:
     """Derive a yolo variant path: replace all suffixes except the last with '.yolo'.
 
@@ -147,16 +155,12 @@ class AppConfig:
     bash_rules_path: Path = field(
         default_factory=lambda: Path("~/.config/twsrt/bash-rules.json").expanduser()
     )
-    claude_settings_path: Path = field(
-        default_factory=lambda: Path("~/.claude/settings.full.json").expanduser()
-    )
+    # Agent targets are opt-in: None = agent not configured ([targets] key unset).
+    claude_settings_path: Path | None = None
     copilot_output_path: Path | None = None
-    codex_config_path: Path = field(
-        default_factory=lambda: Path("~/.codex/config.toml").expanduser()
-    )
+    codex_config_path: Path | None = None
     # None = escalation-rules generation disabled (codex_rules unset in config.toml)
     codex_rules_path: Path | None = None
-    codex_targets_configured: bool = False
     claude_yolo_path: Path | None = None
     copilot_yolo_path: Path | None = None
     network_config: dict[str, Any] = field(default_factory=dict)
@@ -178,10 +182,27 @@ class AppConfig:
         overrides = self.sandbox_overrides.get(mode, {})
         self.sandbox_config.update(overrides)
 
+    def agent_target(self, agent: str) -> Path | None:
+        """The agent's primary target; None means the agent is not configured."""
+        return {
+            "claude": self.claude_settings_path,
+            "copilot": self.copilot_output_path,
+            "codex": self.codex_config_path,
+        }[agent]
+
+    def require_target(self, agent: str) -> Path:
+        target = self.agent_target(agent)
+        if target is None:
+            raise ValueError(
+                f"{agent} is not configured: set [targets].{AGENT_TARGET_KEYS[agent]} "
+                "in config.toml"
+            )
+        return target
+
     @property
     def symlink_anchor(self) -> Path:
         """The fixed path Claude Code reads — always settings.json in the target dir."""
-        return self.claude_settings_path.parent / "settings.json"
+        return self.require_target("claude").parent / "settings.json"
 
 
 @dataclass

@@ -115,24 +115,26 @@ class TestAppConfig:
         config = AppConfig()
         assert str(config.srt_path).endswith(".srt-settings.json")
         assert str(config.bash_rules_path).endswith("bash-rules.json")
-        assert str(config.claude_settings_path).endswith("settings.full.json")
-        assert config.copilot_output_path is None
 
-    def test_symlink_anchor_derived_from_claude_settings_path(self) -> None:
+    def test_no_agent_is_configured_by_default(self) -> None:
         config = AppConfig()
-        assert str(config.symlink_anchor).endswith("settings.json")
-        assert config.symlink_anchor.parent == config.claude_settings_path.parent
+        assert config.claude_settings_path is None
+        assert config.copilot_output_path is None
+        assert config.codex_config_path is None
 
     def test_symlink_anchor_follows_custom_path(self) -> None:
         config = AppConfig(claude_settings_path=Path("/custom/dir/settings.full.json"))
         assert config.symlink_anchor == Path("/custom/dir/settings.json")
+
+    def test_symlink_anchor_requires_claude(self) -> None:
+        with pytest.raises(ValueError, match="claude is not configured"):
+            AppConfig().symlink_anchor
 
     def test_tilde_expansion(self) -> None:
         config = AppConfig()
         # Paths should not contain literal ~
         assert "~" not in str(config.srt_path)
         assert "~" not in str(config.bash_rules_path)
-        assert "~" not in str(config.claude_settings_path)
 
 
 class TestDiffResult:

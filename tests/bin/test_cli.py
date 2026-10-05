@@ -664,7 +664,9 @@ class TestGenerate:
     def test_generate_codex_without_rules_target_writes_config_only(
         self, tmp_path: Path
     ) -> None:
-        config = _make_config(tmp_path, {"enabled": True}, {"deny": ["rm"]})
+        config = _make_config(
+            tmp_path, {"enabled": True}, {"deny": ["rm"]}, targets=False
+        )
         codex_config = tmp_path / ".codex" / "config.toml"
         config.write_text(
             config.read_text() + "\n[targets]\n" + f'codex_config = "{codex_config}"\n'
@@ -705,8 +707,14 @@ class TestGenerate:
 # --- US1 Acceptance Scenario Integration Tests ---
 
 
-def _make_config(tmp_path: Path, srt: dict, bash_rules: dict | None = None) -> Path:
-    """Helper: write SRT + bash_rules + config.toml, return config path."""
+def _make_config(
+    tmp_path: Path, srt: dict, bash_rules: dict | None = None, targets: bool = True
+) -> Path:
+    """Helper: write SRT + bash_rules + config.toml, return config path.
+
+    targets=True configures every agent under tmp_path; pass False when the
+    test appends its own [targets] table.
+    """
     srt_file = tmp_path / "srt.jsonc"
     srt_file.write_text(json.dumps(srt))
 
@@ -731,6 +739,14 @@ def _make_config(tmp_path: Path, srt: dict, bash_rules: dict | None = None) -> P
         'srt = ["base"]\n'
         'bash = ["base"]\n'
     )
+    if targets:
+        config.write_text(
+            config.read_text()
+            + "[targets]\n"
+            + f'claude_settings = "{tmp_path / ".claude" / "settings.full.json"}"\n'
+            + f'copilot_output = "{tmp_path / "copilot-flags.txt"}"\n'
+            + f'codex_config = "{tmp_path / ".codex" / "config.toml"}"\n'
+        )
     return config
 
 
@@ -863,7 +879,7 @@ class TestUS1AcceptanceScenarios:
             },
         }
         bash_rules = {"deny": ["rm"], "ask": ["git push"]}
-        config = _make_config(tmp_path, srt, bash_rules)
+        config = _make_config(tmp_path, srt, bash_rules, targets=False)
 
         # Create existing settings.full.json with hooks, mcp, blanket allows
         settings_path = tmp_path / ".claude" / "settings.full.json"
@@ -933,7 +949,7 @@ class TestSymlinkGenerateClaude:
         """Given settings.json does not exist, generate -w creates target + symlink."""
         srt = {}
         bash_rules = {"deny": ["rm"], "ask": []}
-        config = _make_config(tmp_path, srt, bash_rules)
+        config = _make_config(tmp_path, srt, bash_rules, targets=False)
 
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
@@ -962,7 +978,7 @@ class TestSymlinkGenerateClaude:
         """Given settings.json is a regular file and target missing, migrate + symlink."""
         srt = {}
         bash_rules = {"deny": ["rm"], "ask": []}
-        config = _make_config(tmp_path, srt, bash_rules)
+        config = _make_config(tmp_path, srt, bash_rules, targets=False)
 
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
@@ -997,7 +1013,7 @@ class TestSymlinkGenerateClaude:
         """Given settings.json is a regular file AND target exists, error out."""
         srt = {}
         bash_rules = {"deny": ["rm"], "ask": []}
-        config = _make_config(tmp_path, srt, bash_rules)
+        config = _make_config(tmp_path, srt, bash_rules, targets=False)
 
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
@@ -1025,7 +1041,7 @@ class TestSymlinkGenerateClaude:
         """Given settings.json is already symlink to target, merge and keep symlink."""
         srt = {}
         bash_rules = {"deny": ["rm"], "ask": []}
-        config = _make_config(tmp_path, srt, bash_rules)
+        config = _make_config(tmp_path, srt, bash_rules, targets=False)
 
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
@@ -1058,7 +1074,7 @@ class TestSymlinkGenerateClaude:
         """Given settings.json symlinks to yolo target, generate claude -w re-points to full."""
         srt = {}
         bash_rules = {"deny": ["rm"], "ask": []}
-        config = _make_config(tmp_path, srt, bash_rules)
+        config = _make_config(tmp_path, srt, bash_rules, targets=False)
 
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
@@ -1095,7 +1111,7 @@ class TestSymlinkYoloGenerateClaude:
         """Given settings.json does not exist, generate --yolo -w creates yolo target + symlink."""
         srt = {}
         bash_rules = {"deny": ["rm"], "ask": ["git push"]}
-        config = _make_config(tmp_path, srt, bash_rules)
+        config = _make_config(tmp_path, srt, bash_rules, targets=False)
 
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
@@ -1124,7 +1140,7 @@ class TestSymlinkYoloGenerateClaude:
         """Given settings.json is a regular file and yolo target missing, migrate."""
         srt = {}
         bash_rules = {"deny": ["rm"], "ask": []}
-        config = _make_config(tmp_path, srt, bash_rules)
+        config = _make_config(tmp_path, srt, bash_rules, targets=False)
 
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
@@ -1156,7 +1172,7 @@ class TestSymlinkYoloGenerateClaude:
         """Given settings.json is regular file AND yolo target exists, error out."""
         srt = {}
         bash_rules = {"deny": ["rm"], "ask": []}
-        config = _make_config(tmp_path, srt, bash_rules)
+        config = _make_config(tmp_path, srt, bash_rules, targets=False)
 
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
@@ -1182,7 +1198,7 @@ class TestSymlinkYoloGenerateClaude:
         """Given settings.json symlinks to full target, --yolo re-points to yolo target."""
         srt = {}
         bash_rules = {"deny": ["rm"], "ask": []}
-        config = _make_config(tmp_path, srt, bash_rules)
+        config = _make_config(tmp_path, srt, bash_rules, targets=False)
 
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
@@ -1230,7 +1246,7 @@ class TestYoloGenerateClaude:
         """generate --yolo -w claude writes to settings.yolo.json and symlinks settings.json."""
         srt = {}
         bash_rules = {"deny": ["rm"], "ask": ["git push"]}
-        config = _make_config(tmp_path, srt, bash_rules)
+        config = _make_config(tmp_path, srt, bash_rules, targets=False)
 
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
@@ -1263,7 +1279,7 @@ class TestYoloGenerateClaude:
         """generate --yolo -w claude merges into existing settings.yolo.json, preserving user keys."""
         srt = {}
         bash_rules = {"deny": ["rm"], "ask": ["git push"]}
-        config = _make_config(tmp_path, srt, bash_rules)
+        config = _make_config(tmp_path, srt, bash_rules, targets=False)
 
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
@@ -1307,7 +1323,7 @@ class TestYoloGenerateClaude:
         """generate --yolo -w -n claude shows dry run with yolo path."""
         srt = {}
         bash_rules = {"deny": ["rm"], "ask": []}
-        config = _make_config(tmp_path, srt, bash_rules)
+        config = _make_config(tmp_path, srt, bash_rules, targets=False)
 
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
@@ -1347,7 +1363,7 @@ class TestYoloGenerateAll:
         """generate --yolo -w writes both agents to yolo-specific paths."""
         srt = {}
         bash_rules = {"deny": ["rm"], "ask": []}
-        config = _make_config(tmp_path, srt, bash_rules)
+        config = _make_config(tmp_path, srt, bash_rules, targets=False)
 
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
@@ -1379,7 +1395,9 @@ class TestYoloGenerateAll:
     def test_yolo_generate_all_writes_codex_and_yolo_targets(
         self, tmp_path: Path
     ) -> None:
-        config = _make_config(tmp_path, {}, {"deny": ["rm"], "ask": ["git push"]})
+        config = _make_config(
+            tmp_path, {}, {"deny": ["rm"], "ask": ["git push"]}, targets=False
+        )
         claude_target = tmp_path / ".claude" / "settings.full.json"
         codex_config = tmp_path / ".codex" / "config.toml"
         codex_rules = tmp_path / ".codex" / "rules" / "twsrt.rules"
@@ -1432,7 +1450,7 @@ class TestYoloGenerateCopilot:
         """generate --yolo -w copilot writes to copilot-flags.yolo.txt (no symlink for copilot)."""
         srt = {}
         bash_rules = {"deny": ["rm"], "ask": []}
-        config = _make_config(tmp_path, srt, bash_rules)
+        config = _make_config(tmp_path, srt, bash_rules, targets=False)
 
         copilot_path = tmp_path / "copilot-flags.txt"
         yolo_copilot_path = tmp_path / "copilot-flags.yolo.txt"
@@ -1696,7 +1714,7 @@ class TestDiffCommand:
     def test_diff_all_skips_codex_when_targets_are_not_configured(
         self, tmp_path: Path
     ) -> None:
-        config = _make_config(tmp_path, {"enabled": True})
+        config = _make_config(tmp_path, {"enabled": True}, targets=False)
         claude_target = tmp_path / ".claude" / "settings.full.json"
         copilot_target = tmp_path / "copilot-flags.txt"
         config.write_text(
@@ -1720,10 +1738,11 @@ class TestDiffCommand:
         assert result.exit_code == 0, result.output
         assert "claude: no drift" in result.output
         assert "copilot: no drift" in result.output
-        assert "codex" not in result.output.lower()
+        assert "codex: no drift" not in result.stdout
+        assert "codex: not configured" in result.stderr
 
     def test_diff_codex_no_drift_exits_0(self, tmp_path: Path) -> None:
-        config = _make_config(tmp_path, {"enabled": True})
+        config = _make_config(tmp_path, {"enabled": True}, targets=False)
         codex_config = tmp_path / ".codex" / "config.toml"
         codex_rules = tmp_path / ".codex" / "rules" / "twsrt.rules"
         config.write_text(
@@ -1744,7 +1763,7 @@ class TestDiffCommand:
         assert "sandbox_mode" in result.output
 
     def test_diff_codex_yolo_matches_written_config(self, tmp_path: Path) -> None:
-        config = _make_config(tmp_path, {"enabled": True})
+        config = _make_config(tmp_path, {"enabled": True}, targets=False)
         codex_config = tmp_path / ".codex" / "config.toml"
         codex_rules = tmp_path / ".codex" / "rules" / "twsrt.rules"
         config.write_text(
@@ -1764,7 +1783,7 @@ class TestDiffCommand:
         assert "codex: no drift" in result.output
 
     def test_diff_codex_missing_rules_exits_2(self, tmp_path: Path) -> None:
-        config = _make_config(tmp_path, {"enabled": True})
+        config = _make_config(tmp_path, {"enabled": True}, targets=False)
         codex_config = tmp_path / ".codex" / "config.toml"
         codex_config.parent.mkdir(parents=True)
         codex_config.write_text("")
@@ -2079,7 +2098,9 @@ def _sync_fixture(
 ) -> tuple[Path, Path, Path, Path]:
     """Config with [targets] and optional [claude_sync]; returns
     (config, full_target, yolo_target, anchor)."""
-    config = _make_config(tmp_path, {}, {"deny": ["rm"], "ask": ["git push"]})
+    config = _make_config(
+        tmp_path, {}, {"deny": ["rm"], "ask": ["git push"]}, targets=False
+    )
     claude_dir = tmp_path / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
     full_target = claude_dir / "settings.full.json"
@@ -2249,3 +2270,190 @@ class TestInvariantSyncGenerateClaude:
         import os
 
         assert os.readlink(str(anchor)) == "settings.yolo.json"
+
+
+# --- Agents are opt-in: a missing [targets] key means "not configured" ---
+
+
+def _make_config_for_agents(tmp_path: Path, *agents: str) -> Path:
+    """Config whose [targets] configures exactly the named agents."""
+    config = _make_config(tmp_path, {}, {"deny": ["rm"], "ask": []}, targets=False)
+    keys = {
+        "claude": f'claude_settings = "{tmp_path / ".claude" / "settings.full.json"}"',
+        "copilot": f'copilot_output = "{tmp_path / "copilot-flags.txt"}"',
+        "codex": f'codex_config = "{tmp_path / ".codex" / "config.toml"}"',
+    }
+    lines = "".join(f"{keys[agent]}\n" for agent in agents)
+    config.write_text(config.read_text() + "[targets]\n" + lines)
+    return config
+
+
+class TestUnconfiguredAgents:
+    @pytest.mark.parametrize(
+        ("agent", "key"),
+        [
+            ("claude", "claude_settings"),
+            ("copilot", "copilot_output"),
+            ("codex", "codex_config"),
+        ],
+    )
+    @pytest.mark.parametrize("write", [False, True])
+    def test_naming_an_unconfigured_agent_fails_without_output(
+        self, tmp_path: Path, agent: str, key: str, write: bool
+    ) -> None:
+        """Same rule for every agent, preview or write: no output, exit 1."""
+        config = _make_config_for_agents(tmp_path)
+        argv = ["-c", str(config), "generate", agent] + (["-w"] if write else [])
+
+        result = runner.invoke(app, argv, env={"HOME": str(tmp_path / "home")})
+
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert f"{agent} is not configured" in result.stderr
+        assert f"[targets].{key}" in result.stderr
+        assert not (tmp_path / "home").exists()
+
+    def test_generate_all_previews_only_configured_agents(self, tmp_path: Path) -> None:
+        config = _make_config_for_agents(tmp_path, "claude")
+
+        result = runner.invoke(app, ["-c", str(config), "generate"])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["permissions"]["deny"]
+        assert "--deny-tool" not in result.stdout
+        assert "default_permissions" not in result.stdout
+        assert "copilot: not configured" in result.stderr
+        assert "codex: not configured" in result.stderr
+
+    def test_generate_all_write_writes_only_configured_agents(
+        self, tmp_path: Path
+    ) -> None:
+        """An unconfigured copilot no longer dumps its flags to stdout."""
+        config = _make_config_for_agents(tmp_path, "codex")
+
+        result = runner.invoke(
+            app,
+            ["-c", str(config), "generate", "-w"],
+            env={"HOME": str(tmp_path / "home")},
+        )
+
+        assert result.exit_code == 0, result.output
+        assert result.stdout == ""
+        assert (tmp_path / ".codex" / "config.toml").exists()
+        assert not (tmp_path / ".claude").exists()
+        assert not (tmp_path / "copilot-flags.txt").exists()
+        assert not (tmp_path / "home").exists()
+
+    def test_generate_all_without_any_agent_writes_only_canonical(
+        self, tmp_path: Path
+    ) -> None:
+        config = _make_config_for_agents(tmp_path)
+
+        result = runner.invoke(
+            app,
+            ["-c", str(config), "generate", "-w"],
+            env={"HOME": str(tmp_path / "home")},
+        )
+
+        assert result.exit_code == 0, result.output
+        assert result.stdout == ""
+        assert "No agents configured" in result.stderr
+        assert (tmp_path / ".srt-settings.json").exists()
+        assert not (tmp_path / "home").exists()
+
+    def test_generate_all_preview_without_any_agent_prints_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        config = _make_config_for_agents(tmp_path)
+
+        result = runner.invoke(app, ["-c", str(config), "generate"])
+
+        assert result.exit_code == 0, result.output
+        assert result.stdout == ""
+        assert "No agents configured" in result.stderr
+
+    def test_diff_all_skips_unconfigured_agents_with_a_note(
+        self, tmp_path: Path
+    ) -> None:
+        config = _make_config_for_agents(tmp_path, "copilot")
+        written = runner.invoke(app, ["-c", str(config), "generate", "-w"])
+        assert written.exit_code == 0, written.output
+
+        result = runner.invoke(app, ["-c", str(config), "diff"])
+
+        assert result.exit_code == 0, result.output
+        assert "copilot: no drift" in result.stdout
+        assert "claude: not configured" in result.stderr
+        assert "codex: not configured" in result.stderr
+
+    def test_diff_of_an_unconfigured_agent_fails(self, tmp_path: Path) -> None:
+        config = _make_config_for_agents(tmp_path)
+
+        result = runner.invoke(app, ["-c", str(config), "diff", "claude"])
+
+        assert result.exit_code == 1
+        assert "claude is not configured" in result.stderr
+
+    def test_project_mode_requires_claude(self, tmp_path: Path) -> None:
+        config = _make_config_for_agents(tmp_path)
+
+        result = runner.invoke(app, ["-c", str(config), "generate", "-w", "--project"])
+
+        assert result.exit_code == 1
+        assert "claude is not configured" in result.stderr
+
+    def test_doctor_runs_without_a_claude_target(self, tmp_path: Path) -> None:
+        config = _make_config_for_agents(tmp_path)
+
+        result = runner.invoke(app, ["-c", str(config), "doctor"])
+
+        assert result.exit_code == 0, result.output
+
+
+class TestInitMinimalConfig:
+    def _init(self, tmp_path: Path) -> Path:
+        config = tmp_path / "config" / "twsrt" / "config.toml"
+        with patch("twsrt.bin.cli.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0)
+            result = runner.invoke(app, ["-c", str(config), "config", "--init"])
+        assert result.exit_code == 0, result.output
+        return config
+
+    def test_every_target_key_is_commented_out_with_a_default(
+        self, tmp_path: Path
+    ) -> None:
+        content = self._init(tmp_path).read_text()
+
+        for line in (
+            '# claude_settings = "~/.claude/settings.full.json"',
+            '# claude_settings_yolo = "~/.claude/settings.yolo.json"',
+            '# copilot_output = "copilot-flags.txt"',
+            '# copilot_output_yolo = "copilot-flags.yolo.txt"',
+            '# codex_config = "~/.codex/config.toml"',
+            '# codex_rules = "~/.codex/rules/twsrt.rules"',
+        ):
+            assert line in content
+
+    def test_the_initial_config_configures_no_agent(self, tmp_path: Path) -> None:
+        from twsrt.lib.config import load_config
+
+        config = load_config(self._init(tmp_path))
+
+        assert config.agent_target("claude") is None
+        assert config.agent_target("copilot") is None
+        assert config.agent_target("codex") is None
+        assert config.claude_sync is None
+
+    def test_only_the_yolo_safety_override_stays_active(self, tmp_path: Path) -> None:
+        """Yolo skips confirmation: its sandbox hardening is kept on by default."""
+        from twsrt.lib.config import load_config
+
+        config = load_config(self._init(tmp_path))
+
+        assert config.sandbox_overrides == {
+            "yolo": {
+                "enabled": True,
+                "autoAllowBashIfSandboxed": True,
+                "allowUnsandboxedCommands": False,
+            }
+        }

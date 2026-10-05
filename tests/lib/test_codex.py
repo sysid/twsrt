@@ -301,8 +301,12 @@ class TestCodexExecutionRules:
 
 
 class TestCodexOptionalRules:
-    def test_generate_without_rules_path_omits_rules_section(self) -> None:
-        config = AppConfig(codex_rules_path=None)
+    def test_generate_without_rules_path_omits_rules_section(
+        self, tmp_path: Path
+    ) -> None:
+        config = AppConfig(
+            codex_config_path=tmp_path / "config.toml", codex_rules_path=None
+        )
         rules = [_rule(Scope.EXECUTE, Action.DENY, "rm")]
 
         preview = CodexGenerator().generate(rules, config)
@@ -320,7 +324,7 @@ class TestCodexOptionalRules:
 
         CodexGenerator().write(rules, config)
 
-        assert config.codex_config_path.exists()
+        assert config.require_target("codex").exists()
         assert not (tmp_path / "rules").exists()
 
     def test_diff_without_rules_path_ignores_rules(self, tmp_path: Path) -> None:
@@ -332,7 +336,7 @@ class TestCodexOptionalRules:
         generator = CodexGenerator()
         generator.write(rules, config)
 
-        result = generator.diff(rules, config.codex_config_path, config)
+        result = generator.diff(rules, config.require_target("codex"), config)
 
         assert result.matched is True
 
@@ -401,11 +405,14 @@ class TestCodexMergeAndDrift:
         generator = CodexGenerator()
         generator.write(rules, config)
 
-        with config.codex_config_path.open("a") as stream:
+        with config.require_target("codex").open("a") as stream:
             stream.write('\n[foreign]\nmodel = "foreign"\n')
-        assert generator.diff(rules, config.codex_config_path, config).matched is True
+        assert (
+            generator.diff(rules, config.require_target("codex"), config).matched
+            is True
+        )
 
         rules_path.write_text("")
-        drift = generator.diff(rules, config.codex_config_path, config)
+        drift = generator.diff(rules, config.require_target("codex"), config)
         assert drift.matched is False
         assert any("twsrt.rules" in entry for entry in drift.missing)

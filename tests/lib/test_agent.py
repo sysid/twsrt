@@ -21,8 +21,13 @@ class TestAgentGeneratorContract:
             assert isinstance(gen.name, str)
             assert gen.name == name
 
-    def test_generate_returns_string(self) -> None:
-        config = AppConfig()
+    def test_generate_returns_string(self, tmp_path: Path) -> None:
+        """Generators only run for configured agents, so every target is set."""
+        config = AppConfig(
+            claude_settings_path=tmp_path / "settings.full.json",
+            copilot_output_path=tmp_path / "copilot-flags.txt",
+            codex_config_path=tmp_path / "config.toml",
+        )
         for gen in GENERATORS.values():
             result = gen.generate([], config)
             assert isinstance(result, str)
