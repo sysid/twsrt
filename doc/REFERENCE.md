@@ -11,6 +11,7 @@ rationale are in [SECURITY_CONCEPT.md](../SECURITY_CONCEPT.md).
 - [Rule mapping per agent](#rule-mapping-per-agent)
 - [Claude sandbox key mapping](#claude-sandbox-key-mapping)
 - [Claude merge example](#claude-merge-example)
+- [Claude settings symlink](#claude-settings-symlink)
 - [Claude full and yolo sync](#claude-full-and-yolo-sync)
 - [Claude per-project launch premise](#claude-per-project-launch-premise)
 - [Codex translation rules](#codex-translation-rules)
@@ -319,6 +320,44 @@ What changed and what did not:
 
 In yolo mode the merge is the same except `permissions.ask` is removed and
 `[sandbox_overrides.yolo]` applies.
+
+## Claude settings symlink
+
+Claude Code reads exactly one user settings file, `settings.json` in its
+config directory. twsrt never writes that file. It writes one file per mode
+and makes `settings.json` a symlink (the *anchor*) to the active one:
+
+```
+ ~/.claude/
+   settings.json ──symlink──► settings.full.json    after  generate -w claude
+                 ──symlink──► settings.yolo.json    after  generate --yolo -w claude
+```
+
+The anchor is always `settings.json` in the directory of `claude_settings`,
+which is why `claude_settings` itself must not be named `settings.json`. The
+last `-w` decides which mode the next `claude` start gets; the usual launch
+functions (`claude-full`, `claude-yolo`) regenerate on every start, so the
+link always matches the mode launched.
+
+`generate -w claude`, step by step (`cli._write_agent_files`,
+`lib/symlink.py`):
+
+| Step | What happens |
+|---|---|
+| 1. Stage (preview too) | Read the mode's target, merge the managed sections into it; with `[claude_sync]` the current link target is the donor ([sync](#claude-full-and-yolo-sync)) |
+| 2. Migrate | `settings.json` is a regular file and the target is missing: it is moved to the target (`Migrated: …`). Both exist: stop with an error, nothing is guessed. Already a symlink: nothing to do |
+| 3. Write | The target is written atomically |
+| 4. Link | `settings.json` is repointed atomically (temporary symlink, then `os.replace`), so Claude never sees a missing file. Same directory: relative link (`settings.full.json`); otherwise absolute |
+
+- **Windows without symlink rights:** the target is copied over
+  `settings.json` and a warning is printed. Mode switching still works, but
+  settings Claude changes at runtime land in the copy, not the mode file.
+- **If `settings.json` stops being a symlink** (a tool replaced it with a
+  regular file), the next `-w` stops at step 2 instead of overwriting either
+  file. Check with `ls -l ~/.claude/settings.json`.
+- **Not linked:** `diff` reads the mode files directly, never the link.
+  `--project` leaves the link alone and launches with `--settings` instead
+  ([per-project launch premise](#claude-per-project-launch-premise)).
 
 ## Claude full and yolo sync
 

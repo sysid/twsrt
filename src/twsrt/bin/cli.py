@@ -27,8 +27,8 @@ app = typer.Typer(
     name="twsrt",
     help="Agent security configuration generator.\n\n"
     "Two stages. (1) A profile's fragments compile into the canonical config "
-    "(~/.srt-settings.json and bash-rules.json): the single source of truth, "
-    "read directly by SRT and the input for every agent translation. "
+    "(the \\[sources] outputs, srt settings and bash rules): the single source "
+    "of truth, read by SRT and the input for every agent translation. "
     "(2) Each agent's native config (Claude settings, Codex config/rules, "
     "Copilot flags) is translated from it. Inspect stage 1 with `show`, "
     "stage 2 with `generate <agent>`.",
@@ -665,54 +665,65 @@ def _report_stale_targets(config_path: Path, profile: str | None) -> None:
 def generate(
     ctx: typer.Context,
     agent: str = typer.Argument(
-        "all", help="Target agent: claude, copilot, codex, or all"
+        "all",
+        help="claude, copilot, codex, or all (every agent set in \\[targets])",
     ),
     write: bool = typer.Option(
         False,
         "--write",
         "-w",
-        help="Write the canonical outputs (e.g. ~/.srt-settings.json) and the "
-        "agent targets. Without -w nothing is written",
+        help="Write every file the preview lists. Without -w nothing is written",
     ),
-    dry_run: bool = typer.Option(
+    yolo: bool = typer.Option(
         False,
-        "--dry-run",
-        "-n",
-        help="Only with -w: list the files -w would write, write nothing. "
-        "Without -w, alone it changes nothing",
+        "--yolo",
+        help="Yolo mode: drop ask rules and use the *.yolo.* agent targets",
     ),
-    yolo: bool = typer.Option(False, "--yolo", help="Deny-only agent mode"),
     profile: str | None = typer.Option(
-        None, "--profile", "-p", help="Canonical-source profile"
+        None,
+        "--profile",
+        "-p",
+        help="Profile to compile (default: default_profile in config.toml)",
     ),
     project: bool = typer.Option(
         False,
         "--project",
-        help="Write the canonical outputs and the Claude target to ./.twsrt "
-        "(current directory) instead of the global paths; no symlink, global "
-        "files untouched. With -w, stdout is that directory",
+        help="Claude only: target ./.twsrt/ in the current directory instead "
+        "of the global paths. With -w, stdout is that directory",
     ),
 ) -> None:
-    """Compile canonical sources and generate agent-specific configuration.
+    """Compile the policy and translate it into agent configs.
 
-    Agent configs are translated from the canonical config (e.g.
-    ~/.srt-settings.json); the agent argument only picks which translations
-    run. Agents are opt-in via [targets] in config.toml: `all` skips
-    unconfigured ones with a note, naming one explicitly fails.
+    Without -w (preview): print each agent's config to stdout, list on stderr
+    every file -w would write, and write nothing.
 
-    Default (no -w): print the agent config to stdout and write nothing.
-    The canonical outputs are not printed; use `twsrt show` for those.
+    Both modes stage first. Staging builds in memory the exact files -w writes:
+    each agent's managed sections merged into its existing target file (your
+    hooks, MCP servers and other keys are kept), plus \\[claude_sync] settings
+    taken from the other mode's file. Staging only reads, so a conflicting or
+    unparsable target fails the preview before -w would write anything.
 
-    -w: write the canonical outputs AND the agent targets. The canonical
-    outputs are rewritten whichever agent is named, so `generate copilot -w`
-    also rewrites ~/.srt-settings.json; hand edits there are overwritten.
+    With -w: write those files, the canonical outputs (\\[sources] srt and bash
+    output) and the agent targets (\\[targets]). The canonical outputs are
+    rewritten whichever agent is named: `generate copilot -w` also rewrites the
+    srt settings, overwriting hand edits there.
 
-    -w -n: dry run of -w; list the paths it would write.
+    Agent configs are translated from the canonical config; the agent argument
+    only picks which translations run. `all` skips agents without a \\[targets]
+    key; naming one explicitly fails. The preview does not print the canonical
+    outputs: use `twsrt show`.
 
-    --project: same compile, but every output lands in ./.twsrt (current
-    directory) and that directory itself is added to denyWrite. Launch with
-    `claude --setting-sources project,local --settings .twsrt/claude-settings.json`
-    or `srt -s .twsrt/srt-settings.json`.
+    Claude modes via a symlink: Claude Code reads only settings.json next to
+    the claude_settings target (usually ~/.claude). -w writes the mode's own
+    file (settings.full.json, or settings.yolo.json with --yolo) and then
+    points settings.json at it, so the last -w decides which mode Claude starts
+    in. A regular settings.json found on the first -w is moved to the target;
+    if both exist, -w stops. Settings Claude changes at runtime land in the
+    linked file; \\[claude_sync] carries them over on the next mode switch.
+
+    --project: write into ./.twsrt/ and add that directory to denyWrite. Launch
+    with `claude --setting-sources project,local --settings
+    .twsrt/claude-settings.json` or `srt -s .twsrt/srt-settings.json`.
     """
     try:
         twsrt_dir = Path.cwd().resolve() / ".twsrt" if project else None
@@ -721,18 +732,16 @@ def generate(
         config, compiled = _compile(ctx.obj["config_path"], profile, yolo, twsrt_dir)
         generators = _select_generators(agent, config)
         log.debug(
-            "Generating agents=%s write=%s dry_run=%s",
+            "Generating agents=%s write=%s",
             ",".join(generator.name for generator in generators),
             write,
-            dry_run,
         )
         rendered = {
             generator.name: generator.generate(compiled.rules, config)
             for generator in generators
         }
-        if not write:
-            staged = {}
-        elif twsrt_dir is not None:
+        # Staged in both modes: the preview hits every error -w would.
+        if twsrt_dir is not None:
             staged = _stage_project_claude(rendered, config, twsrt_dir)
         else:
             staged = _stage_agent_files(generators, rendered, compiled, config)
@@ -743,15 +752,6 @@ def generate(
 
     log.debug("Prepared generated artifacts: staged_targets=%d", len(staged))
     _print_generator_warnings(generators, compiled, config)
-    if write and dry_run:
-        for document in compiled.documents.values():
-            _note(f"Would write canonical: {document.output_path}")
-        for path in staged:
-            _note(f"Would write agent target: {path}")
-        for name, output in rendered.items():
-            _info(f"--- Dry run: {name} ---")
-            typer.echo(output)
-        return
 
     if write and twsrt_dir is not None:
         for document in compiled.documents.values():
@@ -781,12 +781,12 @@ def generate(
             _info(f"--- {name} ---")
         typer.echo(output)
 
-    canonical = ", ".join(
-        str(document.output_path) for document in compiled.documents.values()
-    )
+    for document in compiled.documents.values():
+        _note(f"Would write canonical: {document.output_path}")
+    for path in staged:
+        _note(f"Would write agent target: {path}")
     _alert(
-        f"Nothing written: preview only. Re-run with -w/--write to update "
-        f"{canonical} and the agent targets."
+        "Nothing written: preview only. Re-run with -w/--write to write the files above."
     )
 
 

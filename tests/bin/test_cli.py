@@ -518,15 +518,32 @@ class TestGenerate:
         written = json.loads(claude_settings_file.read_text())
         assert "permissions" in written
 
-    def test_generate_claude_dry_run(
+    def test_generate_preview_lists_every_file_write_would_write(
         self, srt_file: Path, bash_rules_file: Path, config_toml_file: Path
     ) -> None:
-        result = runner.invoke(
-            app,
-            ["-c", str(config_toml_file), "generate", "claude", "--dry-run", "--write"],
-        )
+        result = runner.invoke(app, ["-c", str(config_toml_file), "generate", "claude"])
+
         assert result.exit_code == 0, result.output
-        assert "dry run" in result.output.lower() or "would" in result.output.lower()
+        assert "Would write canonical:" in result.stderr
+        assert "Would write agent target:" in result.stderr
+        assert "settings.full.json" in result.stderr
+        assert "Would write" not in result.stdout
+
+    def test_generate_preview_fails_where_write_would_fail(
+        self, tmp_path: Path
+    ) -> None:
+        """Staging runs in the preview, so -w holds no surprises."""
+        config = _make_config(tmp_path, {}, {"deny": ["rm"], "ask": []})
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "settings.json").write_text("{}")
+        (claude_dir / "settings.full.json").write_text("{}")
+
+        result = runner.invoke(app, ["-c", str(config), "generate", "claude"])
+
+        assert result.exit_code == 1
+        assert "both" in result.stderr
+        assert (claude_dir / "settings.full.json").read_text() == "{}"
 
     def test_generate_all_agents(
         self, srt_file: Path, bash_rules_file: Path, config_toml_file: Path
@@ -569,26 +586,37 @@ class TestGenerate:
         assert "Nothing written" not in result.output
         assert "Nothing written" not in result.stderr
 
-    def test_generate_dry_run_without_write_warns_that_nothing_was_written(
+    def test_generate_has_no_dry_run_option(
         self, srt_file: Path, bash_rules_file: Path, config_toml_file: Path
     ) -> None:
-        """-n alone previews without writing — the same gotcha as bare generate."""
+        """The preview is the dry run; a second spelling was a no-op trap."""
         result = runner.invoke(
-            app, ["-c", str(config_toml_file), "generate", "claude", "--dry-run"]
+            app, ["-c", str(config_toml_file), "generate", "claude", "-n"]
         )
 
-        assert result.exit_code == 0, result.output
-        assert "Nothing written" in result.stderr
+        assert result.exit_code == 2
+        assert "No such option" in result.output
 
-    def test_generate_help_says_preview_is_default_and_dry_run_needs_write(
-        self,
-    ) -> None:
-        """-n alone is a no-op; the help must not let users believe otherwise."""
+    def test_generate_help_names_exactly_two_modes(self) -> None:
         help_text = _help_text("generate")
 
         assert "Without -w nothing is written" in help_text
-        assert "Only with -w" in help_text
-        assert "alone it changes nothing" in help_text
+        assert "every file -w would write" in help_text
+        assert "--dry-run" not in help_text
+
+    def test_generate_help_explains_the_claude_settings_link(self) -> None:
+        """Claude reads only settings.json; which mode it gets must be obvious."""
+        help_text = _help_text("generate")
+
+        assert "Claude Code reads only settings.json" in help_text
+        assert "the last -w decides which mode Claude starts in" in help_text
+
+    def test_generate_help_explains_staging(self) -> None:
+        """The preview's strength is staging; the help must say what it is."""
+        help_text = _help_text("generate")
+
+        assert "Staging builds in memory the exact files -w writes" in help_text
+        assert "only reads" in help_text
 
     def test_generate_help_says_write_also_rewrites_canonical_for_any_agent(
         self,
@@ -685,7 +713,7 @@ class TestGenerate:
         assert diff_result.exit_code == 0, diff_result.output
         assert "codex: no drift" in diff_result.output
 
-    def test_generate_codex_dry_run_does_not_write(
+    def test_generate_codex_preview_does_not_write(
         self, config_toml_file: Path, tmp_path: Path
     ) -> None:
         result = runner.invoke(
@@ -695,14 +723,12 @@ class TestGenerate:
                 str(config_toml_file),
                 "generate",
                 "codex",
-                "--write",
-                "--dry-run",
             ],
         )
 
         assert result.exit_code == 0, result.output
-        assert "Would write canonical:" in result.output
-        assert "Would write agent target:" in result.output
+        assert "Would write canonical:" in result.stderr
+        assert "Would write agent target:" in result.stderr
         assert not (tmp_path / ".codex" / "config.toml").exists()
 
 
@@ -1327,8 +1353,10 @@ class TestYoloGenerateClaude:
         assert "mcp__my_server" in written["permissions"]["allow"]
         assert "WebFetch(domain:stale.com)" not in written["permissions"]["allow"]
 
-    def test_yolo_generate_claude_dry_run(self, tmp_path: Path) -> None:
-        """generate --yolo -w -n claude shows dry run with yolo path."""
+    def test_yolo_generate_claude_preview_names_the_yolo_target(
+        self, tmp_path: Path
+    ) -> None:
+        """generate --yolo claude lists the yolo path it would write."""
         srt = {}
         bash_rules = {"deny": ["rm"], "ask": []}
         config = _make_config(tmp_path, srt, bash_rules, targets=False)
@@ -1344,10 +1372,11 @@ class TestYoloGenerateClaude:
 
         result = runner.invoke(
             app,
-            ["-c", str(config), "generate", "--yolo", "claude", "--write", "--dry-run"],
+            ["-c", str(config), "generate", "--yolo", "claude"],
         )
         assert result.exit_code == 0, result.output
-        assert "yolo" in result.output.lower()
+        assert "Would write agent target:" in result.stderr
+        assert "settings.yolo.json" in result.stderr
 
 
 class TestYoloGenerateAll:
@@ -2292,15 +2321,13 @@ class TestInvariantSyncGenerateClaude:
         assert "skipDangerousModePermissionPrompt" not in written
         assert "Bash(rm)" in written["permissions"]["deny"]
 
-    def test_dry_run_reports_sync_without_writing(self, tmp_path: Path) -> None:
+    def test_preview_reports_sync_without_writing(self, tmp_path: Path) -> None:
         config, full, yolo, anchor = _sync_fixture(tmp_path, _SYNC_TABLE)
         full.write_text(json.dumps(_FULL_SETTINGS))
         yolo.write_text(json.dumps(_YOLO_SETTINGS))
         anchor.symlink_to("settings.yolo.json")
 
-        result = runner.invoke(
-            app, ["-c", str(config), "generate", "claude", "-w", "-n"]
-        )
+        result = runner.invoke(app, ["-c", str(config), "generate", "claude"])
         assert result.exit_code == 0, result.output
         assert "Synced invariant settings from settings.yolo.json" in result.output
         assert json.loads(full.read_text()) == _FULL_SETTINGS

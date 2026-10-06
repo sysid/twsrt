@@ -300,7 +300,7 @@ def test_project_yolo_uses_the_global_yolo_target_and_yolo_overrides(
     assert not (project / ".twsrt/claude-settings.json").exists()
 
 
-def test_project_dry_run_writes_nothing(
+def test_project_preview_writes_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config, claude_target, project = make_config(tmp_path)
@@ -314,8 +314,6 @@ def test_project_dry_run_writes_nothing(
             str(config),
             "generate",
             "claude",
-            "-w",
-            "-n",
             "--project",
         ],
     )

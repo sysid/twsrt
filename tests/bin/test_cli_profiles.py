@@ -156,14 +156,12 @@ def test_generate_write_reports_written_files_on_stderr_not_stdout(
     assert f"Wrote: {claude_target}" in result.stderr
 
 
-def test_generate_dry_run_lists_planned_writes_on_stderr_and_config_on_stdout(
+def test_generate_preview_lists_planned_writes_on_stderr_and_config_on_stdout(
     tmp_path: Path,
 ) -> None:
     config, claude_target = make_profile_config(tmp_path)
 
-    result = runner.invoke(
-        app, ["-c", str(config), "generate", "claude", "--write", "--dry-run"]
-    )
+    result = runner.invoke(app, ["-c", str(config), "generate", "claude"])
 
     assert result.exit_code == 0, result.output
     assert f"Would write agent target: {claude_target}" in result.stderr

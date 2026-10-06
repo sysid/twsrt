@@ -170,9 +170,10 @@ uv tool install twsrt        # or: pip install twsrt
 
 twsrt config --init          # writes ~/.config/twsrt/config.toml + starter fragments
 twsrt edit                   # opens every fragment: deny paths, domains, command rules
+twsrt config                 # enable agents: [targets] claude_settings = "~/.claude/settings.full.json"
 
-twsrt show                   # print the compiled canonical ~/.srt-settings.json
-twsrt generate claude        # preview the Claude translation; writes nothing
+twsrt show                   # print the compiled canonical srt settings
+twsrt generate claude        # preview the Claude translation and the files -w would write
 twsrt generate claude -w     # write the canonical outputs + ~/.claude/settings.full.json
 twsrt diff                   # exit 0 when every target matches the fragments
 twsrt test                   # prove the sandbox enforces the policy (plain terminal)
@@ -343,7 +344,7 @@ srt-p()    { local p=$1 d; shift; d=$(twsrt generate claude -w -p "$p" --project
 
 **What `--project` changes.** Only where outputs land: `./.twsrt/` of the
 current directory (`cd` first). No symlink flip, no `[claude_sync]` donor,
-no global file touched; preview and `-w -n` work as usual. `all` means
+no global file touched; the preview works as usual. `all` means
 `claude`; Codex and Copilot are rejected because they read no per-launch
 settings file. Omitting `-p` compiles `default_profile`, the full policy.
 `--project` also adds `./.twsrt` to the compiled `denyWrite`, because Claude
@@ -373,10 +374,20 @@ Rule-by-rule translation for all three:
 
 ### Claude Code
 
-- **Files.** twsrt writes `settings.full.json` (or `settings.yolo.json` with
-  `--yolo`) and points the symlink `~/.claude/settings.json` at it. A
-  regular `settings.json` found on first run is moved to the target; both
-  existing at once is an error.
+- **Files and modes.** Claude Code reads only `~/.claude/settings.json`.
+  twsrt writes one file per mode, `settings.full.json` or (with `--yolo`)
+  `settings.yolo.json`, and turns `settings.json` into a symlink to it:
+
+  ```
+  settings.json ──► settings.full.json   after  generate -w claude
+                ──► settings.yolo.json   after  generate --yolo -w claude
+  ```
+
+  The last `-w` decides which mode Claude starts in. A regular
+  `settings.json` found on the first `-w` is moved to the target; both
+  existing at once is an error. Runtime changes Claude makes land in the
+  linked file; `[claude_sync]` carries them to the other mode.
+  [How the link works](doc/REFERENCE.md#claude-settings-symlink).
 - **Selective merge.** `-w` replaces only what twsrt owns:
   `permissions.deny`/`ask`, the `WebFetch(domain:…)` allows, and the
   `sandbox` keys SRT defines. Hooks, plugins, model, other allows and
@@ -517,9 +528,8 @@ Threat model, rationale and every known gap:
 | `twsrt edit [srt\|bash] [-p P] [-n]` | Open every registered fragment (only profile P's with `-p`) in `$EDITOR`, then report whether targets are stale; `-n` only names them |
 | `twsrt profiles` | Table of every profile with its parents and resolved fragments per source kind; `*` marks `default_profile`, inherited fragments are dimmed, `invalid` marks one that cannot compile on its own |
 | `twsrt show [srt\|bash] [-p P]` | Print the compiled canonical document exactly as `-w` would write it. Writes nothing |
-| `twsrt generate [agent] [-p P]` | Print the agent translation (`claude`, `codex`, `copilot`, default `all`). Writes nothing |
-| `twsrt generate [agent] -w` | Write the canonical outputs (always, whichever agent) and the agent target |
-| `twsrt generate [agent] -w -n` | Dry run of `-w`: list the paths it would write. `-n` without `-w` changes nothing |
+| `twsrt generate [agent] [-p P]` | Preview: print the agent translation (`claude`, `codex`, `copilot`, default `all`) to stdout and list every file `-w` would write on stderr. Runs the same compile and merge checks as `-w`. Writes nothing |
+| `twsrt generate [agent] -w` | Write those files: the canonical outputs (always, whichever agent) and the agent targets |
 | `twsrt generate [agent] --yolo` | Yolo mode: no ask rules, `*.yolo.*` targets, yolo sandbox overrides |
 | `twsrt generate claude -w -p P --project` | Write profile `P` to `./.twsrt/`; nothing global is written |
 | `twsrt diff [agent] [--yolo] [-p P]` | Compare compiled policy against the files on disk |
