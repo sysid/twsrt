@@ -173,7 +173,7 @@ source and silently matches nothing.
 
 ## Claude sandbox key mapping
 
-Claude Code's `sandbox` section has 17 configurable keys. twsrt manages a
+Claude Code's `sandbox` section has 19 configurable keys. twsrt manages a
 subset from the compiled SRT document; `[sandbox_overrides.*]` may also set
 the Claude-only keys per mode.
 
@@ -184,12 +184,14 @@ the Claude-only keys per mode.
 | `sandbox.network.allowLocalBinding` | `network.allowLocalBinding` | Managed (pass-through) |
 | `sandbox.network.allowUnixSockets` | `network.allowUnixSockets` | Managed (pass-through) |
 | `sandbox.network.allowAllUnixSockets` | `network.allowAllUnixSockets` | Managed (pass-through) |
+| `sandbox.network.allowMachLookup` | `network.allowMachLookup` | Managed (pass-through) |
 | `sandbox.network.httpProxyPort` | `network.httpProxyPort` | Managed (pass-through) |
 | `sandbox.network.socksProxyPort` | `network.socksProxyPort` | Managed (pass-through) |
 | `sandbox.filesystem.allowWrite` | `filesystem.allowWrite` | Managed-empty; emitted as `Edit` allow rules instead (a raw entry anchors relative paths at the settings-file root, ADR 0002) |
 | `sandbox.filesystem.denyWrite` | `filesystem.denyWrite` | Managed-empty; emitted as `Edit` deny rules instead |
 | `sandbox.filesystem.denyRead` | `filesystem.denyRead` | Managed-empty; emitted as `Read`/`Edit` deny rules instead |
 | `sandbox.enabled` | `enabled` | Managed (pass-through) |
+| `sandbox.allowPty` | `allowPty` | Managed (pass-through) |
 | `sandbox.enableWeakerNetworkIsolation` | `enableWeakerNetworkIsolation` | Managed (pass-through) |
 | `sandbox.enableWeakerNestedSandbox` | `enableWeakerNestedSandbox` | Managed (pass-through) |
 | `sandbox.ignoreViolations` | `ignoreViolations` | Managed (pass-through) |

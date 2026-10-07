@@ -215,6 +215,22 @@ class TestReadSrtNetworkConfig:
         assert result.network_config["httpProxyPort"] == 8080
         assert result.network_config["socksProxyPort"] == 1080
 
+    def test_passes_allow_mach_lookup(self, tmp_path: Path) -> None:
+        """allowMachLookup maps to Claude's sandbox.network.allowMachLookup;
+        without it e.g. pbcopy (com.apple.pasteboard.1) fails inside the sandbox."""
+        srt = {
+            "network": {
+                "allowedDomains": ["github.com"],
+                "allowMachLookup": ["com.apple.pasteboard.1", "org.chromium.*"],
+            },
+        }
+        p = tmp_path / "srt.json"
+        p.write_text(json.dumps(srt))
+        result = read_srt(p)
+        assert result.network_config == {
+            "allowMachLookup": ["com.apple.pasteboard.1", "org.chromium.*"]
+        }
+
     def test_partial_keys(self, tmp_path: Path) -> None:
         """Only present keys appear in network_config."""
         srt = {
@@ -377,8 +393,9 @@ class TestReadSrtSandboxConfig:
         result = read_srt(p)
         assert result.sandbox_config == {}
 
-    def test_excludes_allowpty(self, tmp_path: Path) -> None:
-        """allowPty is NOT in sandbox_config (no Claude counterpart)."""
+    def test_passes_allowpty(self, tmp_path: Path) -> None:
+        """allowPty maps to Claude's sandbox.allowPty; without it tmux, pty.fork()
+        and anything else needing a pseudo-terminal fails inside the sandbox."""
         srt = {
             "enabled": True,
             "allowPty": True,
@@ -386,8 +403,7 @@ class TestReadSrtSandboxConfig:
         p = tmp_path / "srt.json"
         p.write_text(json.dumps(srt))
         result = read_srt(p)
-        assert "allowPty" not in result.sandbox_config
-        assert "enabled" in result.sandbox_config
+        assert result.sandbox_config == {"enabled": True, "allowPty": True}
 
     def test_enabled_false_preserved(self, tmp_path: Path) -> None:
         """enabled: false is a valid value and must be preserved."""

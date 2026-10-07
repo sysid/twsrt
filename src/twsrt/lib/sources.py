@@ -26,12 +26,14 @@ _NETWORK_CONFIG_KEYS = (
     "allowUnixSockets",
     "allowAllUnixSockets",
     "allowLocalBinding",
+    "allowMachLookup",
     "httpProxyPort",
     "socksProxyPort",
 )
 _FILESYSTEM_CONFIG_KEYS = ("allowWrite", "denyWrite", "denyRead")
 _SANDBOX_CONFIG_KEYS = (
     "enabled",
+    "allowPty",
     "enableWeakerNetworkIsolation",
     "enableWeakerNestedSandbox",
     "ignoreViolations",
