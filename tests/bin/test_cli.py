@@ -2520,9 +2520,50 @@ class TestInitMinimalConfig:
         assert config.sources["srt"].output_path == (
             config_path.parent / "srt-settings.json"
         )
+
+    def test_the_bash_source_is_commented_out_with_its_defaults(
+        self, tmp_path: Path
+    ) -> None:
+        content = self._init(tmp_path).read_text()
+
+        for line in (
+            "# [sources.bash]",
+            '# output = "bash-rules.json"',
+            "# [sources.bash.fragments.base]",
+            '# path = "bash/base.jsonc"',
+            '# bash = ["base"]',
+        ):
+            assert line in content
+
+    def test_the_initial_config_configures_no_bash_source(self, tmp_path: Path) -> None:
+        from twsrt.lib.config import load_config
+
+        config = load_config(self._init(tmp_path))
+
+        assert set(config.sources) == {"srt"}
+
+    def test_uncommenting_the_bash_source_enables_it(self, tmp_path: Path) -> None:
+        """The commented defaults are complete: removing `# ` is all it takes."""
+        from twsrt.lib.config import load_config
+
+        config_path = self._init(tmp_path)
+        enabled = (
+            config_path.read_text()
+            .replace("# [sources.bash]\n", "[sources.bash]\n")
+            .replace(
+                "# [sources.bash.fragments.base]\n# path",
+                "[sources.bash.fragments.base]\npath",
+            )
+            .replace('# bash = ["base"]', 'bash = ["base"]', 1)
+        )
+        config_path.write_text(enabled)
+
+        config = load_config(config_path)
+
         assert config.sources["bash"].output_path == (
             config_path.parent / "bash-rules.json"
         )
+        assert (config_path.parent / "bash/base.jsonc").exists()
 
     def test_only_the_yolo_safety_override_stays_active(self, tmp_path: Path) -> None:
         """Yolo skips confirmation: its sandbox hardening is kept on by default."""

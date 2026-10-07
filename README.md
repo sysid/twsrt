@@ -199,7 +199,7 @@ from a plain terminal
 
 | Term | Meaning |
 |---|---|
-| Source kind | A canonical document type: `srt` (filesystem and network policy) and `bash` (command allow/ask/deny lists) |
+| Source kind | A canonical document type: `srt` (filesystem and network policy, required) and `bash` (command allow/ask/deny lists, optional) |
 | Fragment | One named `.jsonc` file holding a slice of policy for one source kind. Fragments never include each other |
 | Profile | An ordered selection of fragments per source kind; may `extend` other profiles. `default_profile` applies when `-p` is omitted |
 | Target | An agent config file translated from the canonical output |
@@ -219,7 +219,7 @@ path = "srt/base.jsonc"
 [sources.srt.fragments.work]
 path = "srt/work.jsonc"
 
-[sources.bash]                    # output omitted: bash-rules.json next to config.toml
+[sources.bash]                    # optional; output omitted: bash-rules.json next to config.toml
 [sources.bash.fragments.base]
 path = "bash/base.jsonc"
 
@@ -255,10 +255,12 @@ allowUnsandboxedCommands = false
 enabled = false
 ```
 
-Only `schema_version`, `default_profile`, both `[sources.*]` kinds and one
-profile are required. `config --init` writes exactly that, plus
-`[sandbox_overrides.yolo]`, and leaves every other key commented out with
-its default value.
+Only `schema_version`, `default_profile`, `[sources.srt]` and one profile are
+required. Without `[sources.bash]` no command rules exist: nothing is compiled
+to `bash-rules.json` and no agent gets Bash allow/ask/deny entries; a profile
+must then not name `bash`. `config --init` writes exactly the required keys,
+plus `[sandbox_overrides.yolo]`, and leaves every other key, `[sources.bash]`
+included, commented out with its default value.
 
 `output` is optional per source kind and defaults to `srt-settings.json` /
 `bash-rules.json` next to `config.toml`. srt itself reads only
@@ -328,7 +330,7 @@ repository and loaded per launch instead of the global files:
 ```
 twsrt generate claude -w -p slim --project
   → ./.twsrt/srt-settings.json            canonical srt  (instead of ~/.srt-settings.json)
-  → ./.twsrt/bash-rules.json              canonical bash
+  → ./.twsrt/bash-rules.json              canonical bash (only with [sources.bash])
   → ./.twsrt/claude-settings[.yolo].json  Claude target  (instead of ~/.claude/settings.full.json)
   → ./.twsrt/.gitignore                   "*"
   stdout: the absolute .twsrt directory

@@ -423,3 +423,31 @@ def test_project_claude_file_grants_writes_via_edit_rules_not_raw_sandbox_paths(
     claude = json.loads((project / ".twsrt/claude-settings.json").read_text())
     assert "Edit(.)" in claude["permissions"]["allow"]
     assert claude["sandbox"]["filesystem"]["allowWrite"] == []
+
+
+def test_project_mode_without_a_bash_source_writes_no_bash_rules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, claude_target, project = make_config(tmp_path)
+    srt_only = (
+        config.read_text()
+        .replace(
+            '[sources.bash]\noutput = "compiled/bash.json"\n'
+            '[sources.bash.fragments.base]\npath = "fragments/bash-base.jsonc"\n',
+            "",
+        )
+        .replace('bash = ["base"]\n', "")
+    )
+    config.write_text(srt_only)
+    monkeypatch.chdir(project)
+    write_global_claude_settings(claude_target)
+
+    result = runner.invoke(
+        app, ["-c", str(config), "generate", "claude", "-w", "--project"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (project / ".twsrt/srt-settings.json").exists()
+    assert not (project / ".twsrt/bash-rules.json").exists()
+    claude = json.loads((project / ".twsrt/claude-settings.json").read_text())
+    assert not any(rule.startswith("Bash(") for rule in claude["permissions"]["deny"])

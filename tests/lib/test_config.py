@@ -228,6 +228,72 @@ class TestLoadConfig:
         assert config.agent_target("codex") == codex_config
 
 
+SRT_ONLY_CONFIG = """schema_version = 1
+default_profile = "default"
+
+[sources.srt]
+[sources.srt.fragments.base]
+path = "srt/base.jsonc"
+
+[profiles.default]
+srt = ["base"]
+"""
+
+
+class TestOptionalBashSource:
+    def test_a_config_without_bash_loads_with_srt_as_its_only_source(
+        self, tmp_twsrt_dir: Path
+    ) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(SRT_ONLY_CONFIG)
+
+        config = load_config(path)
+
+        assert set(config.sources) == {"srt"}
+
+    def test_without_bash_no_bash_path_is_write_protected(
+        self, tmp_twsrt_dir: Path
+    ) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(SRT_ONLY_CONFIG)
+
+        config = load_config(path)
+
+        assert {
+            str(Path(entry).relative_to(tmp_twsrt_dir)) for entry in config.policy_files
+        } == {"config.toml", "srt-settings.json", "srt/base.jsonc"}
+
+    def test_srt_stays_required(self, tmp_twsrt_dir: Path) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(
+            """schema_version = 1
+default_profile = "default"
+
+[sources.bash]
+[sources.bash.fragments.base]
+path = "bash/base.jsonc"
+
+[profiles.default]
+bash = ["base"]
+"""
+        )
+
+        with pytest.raises(ValueError, match="Missing canonical source kind.*srt"):
+            load_config(path)
+
+    def test_a_profile_selecting_bash_without_a_bash_source_is_rejected(
+        self, tmp_twsrt_dir: Path
+    ) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(SRT_ONLY_CONFIG + 'bash = ["base"]\n')
+
+        with pytest.raises(
+            ValueError,
+            match=r"profiles\.default: source kind 'bash' not configured",
+        ):
+            load_config(path)
+
+
 class TestYoloConfigLoading:
     def test_yolo_paths_loaded_when_present(self, tmp_twsrt_dir: Path) -> None:
         path = tmp_twsrt_dir / "config.toml"

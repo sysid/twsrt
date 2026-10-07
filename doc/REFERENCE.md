@@ -40,7 +40,7 @@ rationale are in [SECURITY_CONCEPT.md](../SECURITY_CONCEPT.md).
 
 | Concept | Responsibility |
 |---|---|
-| Source kind | One canonical document type with its fragment registry, compiled output, validation, and rule translation. `srt` and `bash` are registered. |
+| Source kind | One canonical document type with its fragment registry, compiled output, validation, and rule translation. `srt` (required) and `bash` (optional) are registered. |
 | Fragment | A named `.jsonc` object holding one reusable policy slice. Fragments never reference each other. |
 | Profile | Selects ordered fragment names per source kind; may extend other profiles. |
 | Resolved profile | Parent-first, stable-deduplicated fragment order for one invocation. |
@@ -66,7 +66,10 @@ relocatable. An omitted `output` defaults to `srt-settings.json` or
 same names `--project` uses in `./.twsrt/`). srt itself reads only
 `~/.srt-settings.json`, and a missing one runs it with built-in defaults, no
 `denyRead` at all: with the default, launch `srt -s <output>`. Unknown source kinds fail instead of being composed without
-validation or translation semantics.
+validation or translation semantics. `srt` is required (`config.REQUIRED_SOURCE_KINDS`);
+without `bash` its compile, output and `EXECUTE` rules are skipped, and a
+profile, `show` or `edit` naming `bash` fails with "source kind 'bash' not
+configured".
 
 ### Profile resolution
 

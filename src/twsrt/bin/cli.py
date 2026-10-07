@@ -158,9 +158,9 @@ default_profile = "default"
 # -----------------------------------------------------------------------------
 # Canonical source kinds
 # -----------------------------------------------------------------------------
-# Both registered kinds, srt and bash, are required. Each kind has one generated
-# strict-JSON output and one or more named JSONC fragments. Output paths must be
-# distinct and must not be the same path as any input fragment.
+# srt is required; bash is optional. Each kind has one generated strict-JSON
+# output and one or more named JSONC fragments. Output paths must be distinct
+# and must not be the same path as any input fragment.
 # `output` is optional and defaults to a file next to this config.toml.
 
 [sources.srt]
@@ -178,13 +178,17 @@ path = "srt/base.jsonc"
 # [sources.srt.fragments.work]
 # path = "srt/work.jsonc"
 
-[sources.bash]
-# Compiled command-policy JSON consumed by the agent generators.
-# Default: bash-rules.json next to this file.
-# output = "bash-rules.json"
-
-[sources.bash.fragments.base]
-path = "bash/base.jsonc"
+# Optional agent command policy (allow/ask/deny Bash rules). Without it, no
+# command rules are generated. To enable, uncomment this table, its base
+# fragment and `bash = ["base"]` in [profiles.default]; the values shown are
+# the defaults.
+# [sources.bash]
+# # Compiled command-policy JSON consumed by the agent generators.
+# # Default: bash-rules.json next to this file.
+# # output = "bash-rules.json"
+#
+# [sources.bash.fragments.base]
+# path = "bash/base.jsonc"
 
 # Additional Bash fragment example:
 # [sources.bash.fragments.work]
@@ -194,13 +198,14 @@ path = "bash/base.jsonc"
 # -----------------------------------------------------------------------------
 # Profiles
 # -----------------------------------------------------------------------------
-# A resolved profile must select at least one fragment for every source kind.
+# A resolved profile must select at least one fragment for every configured
+# source kind, and may name only configured kinds.
 # Parents resolve before children; repeated fragment names are deduplicated.
 # Inheritance adds compatible fragments—it does not override conflicting values.
 
 [profiles.default]
 srt = ["base"]
-bash = ["base"]
+# bash = ["base"]
 
 # Profile inheritance and additional selection example:
 # [profiles.work]
@@ -408,7 +413,7 @@ def edit(
     Fragments are never compiled before opening, so one with a syntax error
     still opens -- that is exactly when you need an editor.
     """
-    from twsrt.lib.config import load_config
+    from twsrt.lib.config import load_config, source_kind_error
     from twsrt.lib.profiles import resolve_profile
 
     config_path: Path = ctx.obj["config_path"]
@@ -427,8 +432,7 @@ def edit(
         raise typer.Exit(1)
 
     if kind != "all" and kind not in config.sources:
-        available = ", ".join(sorted(config.sources))
-        _error(f"Unknown source kind {kind!r}; available: {available}")
+        _error(source_kind_error(kind, config.sources))
         raise typer.Exit(1)
 
     # config.sources order, so srt precedes bash exactly as config.toml reads.
@@ -805,6 +809,8 @@ def show(
     write for the profile. Agent and --yolo do not change canonical
     documents, so neither is accepted here.
     """
+    from twsrt.lib.config import source_kind_error
+
     try:
         _, compiled = _compile(ctx.obj["config_path"], profile, yolo=False)
     except (OSError, ValueError) as exc:
@@ -813,8 +819,7 @@ def show(
         raise typer.Exit(1)
 
     if kind not in compiled.documents:
-        available = ", ".join(sorted(compiled.documents))
-        _error(f"Unknown source kind {kind!r}; available: {available}")
+        _error(source_kind_error(kind, compiled.documents))
         raise typer.Exit(1)
 
     typer.echo(_serialize(compiled.documents[kind].document), nl=False)
@@ -1242,9 +1247,9 @@ def _compile(
     config = load_config(config_path)
     extra_deny_write: list[str] = []
     if twsrt_dir is not None:
-        for kind, name in DEFAULT_OUTPUT_NAMES.items():
+        for kind, source in list(config.sources.items()):
             config.sources[kind] = replace(
-                config.sources[kind], output_path=twsrt_dir / name
+                source, output_path=twsrt_dir / DEFAULT_OUTPUT_NAMES[kind]
             )
         # Claude hot-reloads --settings: an agent able to write here could
         # loosen its own policy mid-session.

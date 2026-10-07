@@ -416,6 +416,49 @@ def test_show_unknown_kind_exits_1_and_names_the_available_kinds(
     assert "bash, srt" in result.stderr
 
 
+def write_srt_only_config(tmp_path: Path) -> Path:
+    (tmp_path / "srt-base.jsonc").write_text('{"enabled": true}')
+    config = tmp_path / "config.toml"
+    config.write_text(
+        """schema_version = 1
+default_profile = "default"
+
+[sources.srt]
+[sources.srt.fragments.base]
+path = "srt-base.jsonc"
+
+[profiles.default]
+srt = ["base"]
+"""
+    )
+    return config
+
+
+def test_show_a_registered_but_unconfigured_kind_says_it_is_not_configured(
+    tmp_path: Path,
+) -> None:
+    config = write_srt_only_config(tmp_path)
+
+    result = runner.invoke(app, ["-c", str(config), "show", "bash"])
+
+    assert result.exit_code == 1
+    assert "Source kind 'bash' not configured" in result.stderr
+    assert "[sources.bash]" in result.stderr
+    assert "Unknown" not in result.stderr
+
+
+def test_edit_a_registered_but_unconfigured_kind_says_it_is_not_configured(
+    tmp_path: Path,
+) -> None:
+    config = write_srt_only_config(tmp_path)
+
+    result = runner.invoke(app, ["-c", str(config), "edit", "bash", "-n"])
+
+    assert result.exit_code == 1
+    assert "Source kind 'bash' not configured" in result.stderr
+    assert "Unknown" not in result.stderr
+
+
 def test_show_conflicting_fragments_exits_1(tmp_path: Path) -> None:
     config, _ = make_profile_config(tmp_path, conflicting=True)
 

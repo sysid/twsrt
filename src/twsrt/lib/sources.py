@@ -84,7 +84,9 @@ def compile_sources(
         )
 
     srt_result = parse_srt_document(documents["srt"].document)
-    bash_rules = parse_bash_document(documents["bash"].document)
+    bash_rules = (
+        parse_bash_document(documents["bash"].document) if "bash" in documents else []
+    )
     return CompilationResult(
         profile_name=profile.name,
         documents=documents,

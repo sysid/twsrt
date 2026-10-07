@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tomllib
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, cast
 
@@ -16,9 +17,22 @@ from twsrt.lib.models import (
 
 SCHEMA_VERSION = 1
 SOURCE_KINDS = ("srt", "bash")
+# srt is the sandbox itself. bash is optional: without it no command rules
+# exist and every bash code path is skipped.
+REQUIRED_SOURCE_KINDS = ("srt",)
 # Canonical output file names: next to config.toml when [sources.<kind>].output
 # is omitted, and inside ./.twsrt/ under `generate --project`.
 DEFAULT_OUTPUT_NAMES = {"srt": "srt-settings.json", "bash": "bash-rules.json"}
+
+
+def source_kind_error(kind: str, configured: Iterable[str]) -> str:
+    """Why *kind* cannot be used: registered but not configured, or unknown."""
+    if kind in SOURCE_KINDS:
+        return (
+            f"Source kind {kind!r} not configured: add [sources.{kind}] to config.toml"
+        )
+    available = ", ".join(sorted(configured))
+    return f"Unknown source kind {kind!r}; available: {available}"
 
 
 def load_config(config_path: Path) -> AppConfig:
@@ -69,7 +83,8 @@ def load_config(config_path: Path) -> AppConfig:
     # orchestration consumes config.sources instead of these compatibility
     # accessors.
     config.srt_path = sources["srt"].output_path
-    config.bash_rules_path = sources["bash"].output_path
+    if "bash" in sources:
+        config.bash_rules_path = sources["bash"].output_path
     _apply_target_paths(config, targets, base_dir)
     config.sandbox_overrides = dict(data.get("sandbox_overrides", {}))
     config.claude_sync = _build_claude_sync(data.get("claude_sync"))
@@ -148,7 +163,7 @@ def _build_sources(raw: dict[str, Any], base_dir: Path) -> dict[str, CanonicalSo
             fragments=fragments,
         )
 
-    missing = [kind for kind in SOURCE_KINDS if kind not in sources]
+    missing = [kind for kind in REQUIRED_SOURCE_KINDS if kind not in sources]
     if missing:
         raise ValueError(f"Missing canonical source kind(s): {', '.join(missing)}")
     return sources
@@ -196,6 +211,13 @@ def _build_profiles(
         if not isinstance(blob, dict):
             raise ValueError(f"profiles.{name} must be a table")
         profile_blob = cast(dict[str, Any], blob)
+        unconfigured = set(profile_blob) & (set(SOURCE_KINDS) - set(sources))
+        if unconfigured:
+            kind = min(unconfigured)
+            raise ValueError(
+                f"profiles.{name}: source kind {kind!r} not configured; add "
+                f"[sources.{kind}] or remove profiles.{name}.{kind}"
+            )
         unknown = set(profile_blob) - {"extends", *sources}
         if unknown:
             raise ValueError(

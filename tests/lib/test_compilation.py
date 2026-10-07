@@ -317,6 +317,34 @@ def test_every_read_deny_is_also_compiled_as_a_write_deny(tmp_path: Path) -> Non
     assert {"**/.env", "~/.aws", "~/.ssh"} <= write_denies
 
 
+def test_without_a_bash_source_only_srt_compiles_and_no_command_rules_exist(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "srt-base.jsonc").write_text(
+        '{"enabled": true, "filesystem": {"denyRead": ["~/.ssh"]}}'
+    )
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """schema_version = 1
+default_profile = "default"
+
+[sources.srt]
+[sources.srt.fragments.base]
+path = "srt-base.jsonc"
+
+[profiles.default]
+srt = ["base"]
+"""
+    )
+    config = load_config(config_path)
+
+    compiled = compile_sources(config, resolve_profile(config))
+
+    assert set(compiled.documents) == {"srt"}
+    assert not [rule for rule in compiled.rules if rule.scope == Scope.EXECUTE]
+    assert any(rule.pattern == "~/.ssh" for rule in compiled.rules)
+
+
 def test_read_deny_on_a_write_allowed_path_is_a_conflict(tmp_path: Path) -> None:
     # Write-only (denyRead + allowWrite of the same path) contradicts the
     # implied write deny; it must be a loud error, never a silent hole.
