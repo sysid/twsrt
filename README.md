@@ -274,10 +274,15 @@ An agent is configured only when its `[targets]` key is set. `generate` and
 
 | Agent argument | Agent configured | Agent not configured |
 |---|---|---|
-| `all` (default) | previewed / written / diffed | skipped, with a note on stderr |
-| named, e.g. `codex` | previewed / written / diffed | error, exit 1, no output |
+| `all` (default) | previewed / written / diffed | skipped, `Info:` note on stderr, exit 0 |
+| named, e.g. `codex` | previewed / written / diffed | skipped, `Info:` note on stderr, exit 0 |
 
 If no agent is configured, `generate -w` writes only the canonical outputs.
+The one exception is `generate --project`: it copies hooks from the global
+Claude target, so a missing `claude_settings` is an error there.
+
+Likewise `show bash` and `edit bash` without `[sources.bash]` print an
+`Info:` note and exit 0; an unknown source kind is an error.
 
 ### Fragments
 

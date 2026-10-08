@@ -45,11 +45,6 @@ def _warning(message: str) -> None:
     typer.secho(f"Warning: {message}", fg=typer.colors.YELLOW, err=True)
 
 
-def _alert(message: str) -> None:
-    """Red stderr note for a successful run whose outcome is easy to misread."""
-    typer.secho(message, fg=typer.colors.RED, bold=True, err=True)
-
-
 def _info(message: str) -> None:
     typer.secho(message, fg=typer.colors.CYAN)
 
@@ -58,8 +53,17 @@ def _success(message: str) -> None:
     typer.secho(message, fg=typer.colors.GREEN)
 
 
-def _note(message: str) -> None:
-    """Narrate a side effect on stderr; stdout carries only a command's result."""
+def _note(message: str, bold: bool = False) -> None:
+    """Info on stderr: nothing failed, but the user should know.
+
+    Labelled like _error and _warning, so a skipped optional item never reads
+    as a failure. stdout carries only a command's result.
+    """
+    typer.secho(f"Info: {message}", fg=typer.colors.CYAN, bold=bold, err=True)
+
+
+def _would_write(message: str) -> None:
+    """Narrate a file the preview would write, on stderr."""
     typer.secho(message, fg=typer.colors.CYAN, err=True)
 
 
@@ -413,7 +417,7 @@ def edit(
     Fragments are never compiled before opening, so one with a syntax error
     still opens -- that is exactly when you need an editor.
     """
-    from twsrt.lib.config import load_config, source_kind_error
+    from twsrt.lib.config import SOURCE_KINDS, load_config, source_kind_error
     from twsrt.lib.profiles import resolve_profile
 
     config_path: Path = ctx.obj["config_path"]
@@ -431,6 +435,9 @@ def edit(
         _error(str(exc))
         raise typer.Exit(1)
 
+    if kind in SOURCE_KINDS and kind not in config.sources:
+        _note(f"nothing to edit: {_unconfigured_kind(kind)}")
+        return
     if kind != "all" and kind not in config.sources:
         _error(source_kind_error(kind, config.sources))
         raise typer.Exit(1)
@@ -455,7 +462,7 @@ def edit(
             continue
         if absent:
             # Registered but absent: opening it is how a new fragment is created.
-            _warning(f"Fragment does not exist yet: {path}")
+            _note(f"fragment does not exist yet, the editor creates it: {path}")
 
     editor = _resolve_editor()
     argv = _editor_argv(editor, paths)
@@ -713,8 +720,8 @@ def generate(
     srt settings, overwriting hand edits there.
 
     Agent configs are translated from the canonical config; the agent argument
-    only picks which translations run. `all` skips agents without a \\[targets]
-    key; naming one explicitly fails. The preview does not print the canonical
+    only picks which translations run. An agent without a \\[targets] key is
+    skipped with an Info note, whether named or covered by `all`. The preview does not print the canonical
     outputs: use `twsrt show`.
 
     Claude modes via a symlink: Claude Code reads only settings.json next to
@@ -734,6 +741,9 @@ def generate(
         if twsrt_dir is not None:
             agent = _project_agent(agent)
         config, compiled = _compile(ctx.obj["config_path"], profile, yolo, twsrt_dir)
+        if twsrt_dir is not None:
+            # Not optional here: --project copies hooks from the global target.
+            config.require_target("claude")
         generators = _select_generators(agent, config)
         log.debug(
             "Generating agents=%s write=%s",
@@ -786,11 +796,13 @@ def generate(
         typer.echo(output)
 
     for document in compiled.documents.values():
-        _note(f"Would write canonical: {document.output_path}")
+        _would_write(f"Would write canonical: {document.output_path}")
     for path in staged:
-        _note(f"Would write agent target: {path}")
-    _alert(
-        "Nothing written: preview only. Re-run with -w/--write to write the files above."
+        _would_write(f"Would write agent target: {path}")
+    _note(
+        "nothing written (preview only). "
+        "Re-run with -w/--write to write the files above.",
+        bold=True,
     )
 
 
@@ -809,7 +821,7 @@ def show(
     write for the profile. Agent and --yolo do not change canonical
     documents, so neither is accepted here.
     """
-    from twsrt.lib.config import source_kind_error
+    from twsrt.lib.config import SOURCE_KINDS, source_kind_error
 
     try:
         _, compiled = _compile(ctx.obj["config_path"], profile, yolo=False)
@@ -818,6 +830,9 @@ def show(
         _error(str(exc))
         raise typer.Exit(1)
 
+    if kind in SOURCE_KINDS and kind not in compiled.documents:
+        _note(f"nothing to show: {_unconfigured_kind(kind)}")
+        return
     if kind not in compiled.documents:
         _error(source_kind_error(kind, compiled.documents))
         raise typer.Exit(1)
@@ -1275,36 +1290,40 @@ def _compile(
 
 
 def _select_generators(agent: str, config: AppConfig) -> list:
-    """ "all" means every configured agent; a named agent must be configured.
+    """The configured agents among those requested ("all" or one name).
 
-    An agent is configured by its [targets] key alone, so preview, write and
-    diff all see the same set: an unset key never falls back to a real path.
+    Agents are optional: an unconfigured one is skipped with an Info note,
+    whether named or covered by "all". An agent is configured by its [targets]
+    key alone, so preview, write and diff all see the same set: an unset key
+    never falls back to a real path.
     """
     from twsrt.lib.agent import GENERATORS
 
-    if agent == "all":
-        generators = [
-            generator
-            for name, generator in GENERATORS.items()
-            if config.agent_target(name) is not None
-        ]
-        if not generators:
-            _note(
-                "No agents configured: set claude_settings, copilot_output or "
-                "codex_config in [targets] of config.toml"
-            )
-            return []
-        for name in GENERATORS:
-            if config.agent_target(name) is None:
-                _note(
-                    f"{name}: not configured "
-                    f"(set [targets].{AGENT_TARGET_KEYS[name]} to enable)"
-                )
-        return generators
-    if agent not in GENERATORS:
+    if agent != "all" and agent not in GENERATORS:
         raise ValueError(f"Unknown agent {agent!r}. Available: {', '.join(GENERATORS)}")
-    config.require_target(agent)
-    return [GENERATORS[agent]]
+    requested = list(GENERATORS) if agent == "all" else [agent]
+    configured = [name for name in requested if config.agent_target(name) is not None]
+    if agent == "all" and not configured:
+        _note(
+            "no agent targets set in [targets] of config.toml, so only the "
+            "canonical outputs are handled. To add an agent, set "
+            "claude_settings, copilot_output or codex_config."
+        )
+        return []
+    for name in requested:
+        if name not in configured:
+            _note(
+                f"{name} skipped: [targets].{AGENT_TARGET_KEYS[name]} "
+                "is not set in config.toml"
+            )
+    return [GENERATORS[name] for name in configured]
+
+
+def _unconfigured_kind(kind: str) -> str:
+    return (
+        f"source kind {kind!r} is not configured "
+        f"(add [sources.{kind}] to config.toml to enable it)"
+    )
 
 
 def _stage_agent_files(

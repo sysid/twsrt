@@ -26,11 +26,10 @@ DEFAULT_OUTPUT_NAMES = {"srt": "srt-settings.json", "bash": "bash-rules.json"}
 
 
 def source_kind_error(kind: str, configured: Iterable[str]) -> str:
-    """Why *kind* cannot be used: registered but not configured, or unknown."""
-    if kind in SOURCE_KINDS:
-        return (
-            f"Source kind {kind!r} not configured: add [sources.{kind}] to config.toml"
-        )
+    """Why *kind* cannot be used: it is not a source kind at all.
+
+    A known but unconfigured kind is not an error: the CLI reports it as Info.
+    """
     available = ", ".join(sorted(configured))
     return f"Unknown source kind {kind!r}; available: {available}"
 

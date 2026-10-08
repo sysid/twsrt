@@ -333,7 +333,7 @@ class TestEdit:
         assert result.exit_code == 1
         assert "definitely-not-an-editor" in result.stderr
 
-    def test_a_registered_fragment_missing_on_disk_warns_but_still_opens(
+    def test_a_registered_fragment_missing_on_disk_is_info_and_still_opens(
         self, srt_file: Path, bash_rules_file: Path, config_toml_file: Path
     ) -> None:
         """Opening a not-yet-existing fragment is how you create one."""
@@ -343,7 +343,7 @@ class TestEdit:
             run.return_value = MagicMock(returncode=0)
             result = runner.invoke(app, ["-c", str(config_toml_file), "edit"])
 
-        assert "Warning" in result.stderr
+        assert "Info: fragment does not exist yet" in result.stderr
         assert str(srt_file) in run.call_args[0][0]
         # The editor was mocked, so the fragment is still absent afterwards and
         # the policy still does not compile -- which the report must say.
@@ -553,7 +553,7 @@ class TestGenerate:
         # Should produce valid output (JSON for claude at minimum)
         assert "permissions" in result.output
 
-    def test_generate_without_write_warns_in_red_that_nothing_was_written(
+    def test_generate_without_write_says_as_info_that_nothing_was_written(
         self, srt_file: Path, bash_rules_file: Path, config_toml_file: Path
     ) -> None:
         result = runner.invoke(
@@ -564,11 +564,14 @@ class TestGenerate:
         )
 
         assert result.exit_code == 0, result.output
-        assert "Nothing written" in result.stderr
+        assert "Info: nothing written (preview only)" in result.stderr
         assert "--write" in result.stderr
-        assert "\x1b[31m" in result.stderr
+        # Bold cyan like every Info line; red would read as an error.
+        assert "\x1b[36m" in result.stderr
+        assert "\x1b[1m" in result.stderr
+        assert "\x1b[31m" not in result.stderr
         # The preview itself stays machine-readable on stdout.
-        assert "Nothing written" not in result.stdout
+        assert "nothing written" not in result.stdout
         assert json.loads(result.stdout)["permissions"]
 
     def test_generate_with_write_does_not_warn_about_nothing_written(
@@ -583,8 +586,8 @@ class TestGenerate:
         )
 
         assert result.exit_code == 0, result.output
-        assert "Nothing written" not in result.output
-        assert "Nothing written" not in result.stderr
+        assert "nothing written" not in result.output
+        assert "nothing written" not in result.stderr
 
     def test_generate_has_no_dry_run_option(
         self, srt_file: Path, bash_rules_file: Path, config_toml_file: Path
@@ -1801,7 +1804,7 @@ class TestDiffCommand:
         assert "claude: no drift" in result.output
         assert "copilot: no drift" in result.output
         assert "codex: no drift" not in result.stdout
-        assert "codex: not configured" in result.stderr
+        assert "Info: codex skipped" in result.stderr
 
     def test_diff_codex_no_drift_exits_0(self, tmp_path: Path) -> None:
         config = _make_config(tmp_path, {"enabled": True}, targets=False)
@@ -2362,19 +2365,23 @@ class TestUnconfiguredAgents:
         ],
     )
     @pytest.mark.parametrize("write", [False, True])
-    def test_naming_an_unconfigured_agent_fails_without_output(
+    def test_naming_an_unconfigured_agent_is_info_not_an_error(
         self, tmp_path: Path, agent: str, key: str, write: bool
     ) -> None:
-        """Same rule for every agent, preview or write: no output, exit 1."""
+        """Agents are optional: naming an absent one skips it, exit 0, for
+        every agent, preview or write. No agent output is produced."""
         config = _make_config_for_agents(tmp_path)
         argv = ["-c", str(config), "generate", agent] + (["-w"] if write else [])
 
         result = runner.invoke(app, argv, env={"HOME": str(tmp_path / "home")})
 
-        assert result.exit_code == 1
+        assert result.exit_code == 0, result.output
         assert result.stdout == ""
-        assert f"{agent} is not configured" in result.stderr
-        assert f"[targets].{key}" in result.stderr
+        assert (
+            f"Info: {agent} skipped: [targets].{key} is not set in config.toml"
+            in result.stderr
+        )
+        assert "Error" not in result.stderr
         assert not (tmp_path / "home").exists()
 
     def test_generate_all_previews_only_configured_agents(self, tmp_path: Path) -> None:
@@ -2386,8 +2393,8 @@ class TestUnconfiguredAgents:
         assert json.loads(result.stdout)["permissions"]["deny"]
         assert "--deny-tool" not in result.stdout
         assert "default_permissions" not in result.stdout
-        assert "copilot: not configured" in result.stderr
-        assert "codex: not configured" in result.stderr
+        assert "Info: copilot skipped" in result.stderr
+        assert "Info: codex skipped" in result.stderr
 
     def test_generate_all_write_writes_only_configured_agents(
         self, tmp_path: Path
@@ -2421,7 +2428,9 @@ class TestUnconfiguredAgents:
 
         assert result.exit_code == 0, result.output
         assert result.stdout == ""
-        assert "No agents configured" in result.stderr
+        assert "Info: no agent targets set" in result.stderr
+        assert "only the canonical outputs" in result.stderr
+        assert "Error" not in result.stderr
         assert (tmp_path / ".srt-settings.json").exists()
         assert not (tmp_path / "home").exists()
 
@@ -2434,7 +2443,7 @@ class TestUnconfiguredAgents:
 
         assert result.exit_code == 0, result.output
         assert result.stdout == ""
-        assert "No agents configured" in result.stderr
+        assert "Info: no agent targets set" in result.stderr
 
     def test_diff_all_skips_unconfigured_agents_with_a_note(
         self, tmp_path: Path
@@ -2447,24 +2456,32 @@ class TestUnconfiguredAgents:
 
         assert result.exit_code == 0, result.output
         assert "copilot: no drift" in result.stdout
-        assert "claude: not configured" in result.stderr
-        assert "codex: not configured" in result.stderr
+        assert "Info: claude skipped" in result.stderr
+        assert "Info: codex skipped" in result.stderr
 
-    def test_diff_of_an_unconfigured_agent_fails(self, tmp_path: Path) -> None:
+    def test_diff_of_an_unconfigured_agent_is_info_not_an_error(
+        self, tmp_path: Path
+    ) -> None:
         config = _make_config_for_agents(tmp_path)
+        written = runner.invoke(app, ["-c", str(config), "generate", "-w"])
+        assert written.exit_code == 0, written.output
 
         result = runner.invoke(app, ["-c", str(config), "diff", "claude"])
 
-        assert result.exit_code == 1
-        assert "claude is not configured" in result.stderr
+        assert result.exit_code == 0, result.output
+        assert "Info: claude skipped" in result.stderr
+        assert "Error" not in result.stderr
 
     def test_project_mode_requires_claude(self, tmp_path: Path) -> None:
         config = _make_config_for_agents(tmp_path)
 
         result = runner.invoke(app, ["-c", str(config), "generate", "-w", "--project"])
 
+        # Unlike a plain skip, --project cannot run at all: it copies hooks
+        # from the global Claude target.
         assert result.exit_code == 1
-        assert "claude is not configured" in result.stderr
+        assert "Error: claude is not configured" in result.stderr
+        assert "Info:" not in result.stderr
 
     def test_doctor_runs_without_a_claude_target(self, tmp_path: Path) -> None:
         config = _make_config_for_agents(tmp_path)

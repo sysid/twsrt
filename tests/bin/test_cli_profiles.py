@@ -434,29 +434,33 @@ srt = ["base"]
     return config
 
 
-def test_show_a_registered_but_unconfigured_kind_says_it_is_not_configured(
+def test_show_an_unconfigured_optional_kind_is_info_not_an_error(
     tmp_path: Path,
 ) -> None:
+    """bash is optional: asking for it when absent is not a failure."""
     config = write_srt_only_config(tmp_path)
 
     result = runner.invoke(app, ["-c", str(config), "show", "bash"])
 
-    assert result.exit_code == 1
-    assert "Source kind 'bash' not configured" in result.stderr
+    assert result.exit_code == 0
+    assert result.stdout == ""
+    assert result.stderr.startswith("Info: nothing to show: source kind 'bash'")
     assert "[sources.bash]" in result.stderr
-    assert "Unknown" not in result.stderr
+    assert "Error" not in result.stderr
 
 
-def test_edit_a_registered_but_unconfigured_kind_says_it_is_not_configured(
+def test_edit_an_unconfigured_optional_kind_is_info_not_an_error(
     tmp_path: Path,
 ) -> None:
     config = write_srt_only_config(tmp_path)
 
     result = runner.invoke(app, ["-c", str(config), "edit", "bash", "-n"])
 
-    assert result.exit_code == 1
-    assert "Source kind 'bash' not configured" in result.stderr
-    assert "Unknown" not in result.stderr
+    assert result.exit_code == 0
+    assert result.stdout == ""
+    assert result.stderr.startswith("Info: nothing to edit: source kind 'bash'")
+    assert "[sources.bash]" in result.stderr
+    assert "Error" not in result.stderr
 
 
 def test_show_conflicting_fragments_exits_1(tmp_path: Path) -> None:

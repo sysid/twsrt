@@ -966,11 +966,18 @@ effects goes to stderr, so `generate -w` leaves stdout capturable
 warnings as data and never write to the terminal; the CLI owns severity,
 stream and color.
 
+Every stderr notice starts with its severity, so color is never the only
+signal: `Error:` means the command failed (non-zero exit), `Warning:` means
+it succeeded but something looks wrong, `Info:` means nothing is wrong.
+Optional items that are not configured (an agent without a `[targets]` key,
+a source kind without `[sources.<kind>]`) are `Info:`, never `Error:`.
+
 | Kind | Color | Stream |
 |---|---|---|
-| Error | red, bold | stderr |
-| Warning | yellow | stderr |
-| Write narration: `Wrote …`, `Would write …`, sync and migration notes, restart hints | green (done) / cyan | stderr |
+| `Error:` | red, bold | stderr |
+| `Warning:` | yellow | stderr |
+| `Info:` skipped agents or kinds, sync and migration notes, restart hints, the preview's "nothing written" footer (bold) | cyan | stderr |
+| Write narration: `Wrote …`, `Would write …` | green (done) / cyan | stderr |
 | Report info: `test` header and summary, `edit -n` paths, preview section headers | cyan | stdout |
 | Clean diff | green | stdout |
 | Drift (canonical, agent target header) | yellow | stdout |
