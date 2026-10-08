@@ -393,9 +393,9 @@ class TestReadSrtSandboxConfig:
         result = read_srt(p)
         assert result.sandbox_config == {}
 
-    def test_passes_allowpty(self, tmp_path: Path) -> None:
-        """allowPty maps to Claude's sandbox.allowPty; without it tmux, pty.fork()
-        and anything else needing a pseudo-terminal fails inside the sandbox."""
+    def test_excludes_allowpty(self, tmp_path: Path) -> None:
+        """allowPty is NOT in sandbox_config: Claude Code ignores
+        sandbox.allowPty, so forwarding it only adds a dead key."""
         srt = {
             "enabled": True,
             "allowPty": True,
@@ -403,7 +403,7 @@ class TestReadSrtSandboxConfig:
         p = tmp_path / "srt.json"
         p.write_text(json.dumps(srt))
         result = read_srt(p)
-        assert result.sandbox_config == {"enabled": True, "allowPty": True}
+        assert result.sandbox_config == {"enabled": True}
 
     def test_enabled_false_preserved(self, tmp_path: Path) -> None:
         """enabled: false is a valid value and must be preserved."""

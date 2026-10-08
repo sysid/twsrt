@@ -22,6 +22,13 @@ from twsrt.lib.models import (
     SrtResult,
 )
 
+# Allowlists of SRT keys that read_srt copies verbatim into SrtResult's
+# *_config dicts. Each key has a same-named counterpart in Claude Code's
+# sandbox section; ClaudeGenerator merges the dicts in, and ClaudeGenerator.diff
+# compares exactly these keys. Any other SRT key is dropped here, so a key
+# Claude Code does not honour (e.g. allowPty) stays out: forwarding it would
+# only add a dead setting. The doctor's schema check is separate (doctor.py).
+# Pass-through keys under sandbox.network.
 _NETWORK_CONFIG_KEYS = (
     "allowUnixSockets",
     "allowAllUnixSockets",
@@ -30,18 +37,25 @@ _NETWORK_CONFIG_KEYS = (
     "httpProxyPort",
     "socksProxyPort",
 )
+# Keys under sandbox.filesystem. Read so the diff can see them, but the
+# generator empties all three (ADR 0002): their paths go out as Read/Edit
+# permission rules instead.
 _FILESYSTEM_CONFIG_KEYS = ("allowWrite", "denyWrite", "denyRead")
+# Pass-through keys at the top level of sandbox. "enabled" is twsrt's own key
+# (not in srt's schema) for Claude's sandbox.enabled.
 _SANDBOX_CONFIG_KEYS = (
     "enabled",
-    "allowPty",
     "enableWeakerNetworkIsolation",
     "enableWeakerNestedSandbox",
     "ignoreViolations",
 )
+# SRT path/domain lists that become SecurityRules (not pass-through config).
+# Validated as string lists and sorted on compile.
 _SRT_LISTS = {
     "filesystem": ("allowWrite", "denyWrite", "denyRead"),
     "network": ("allowedDomains", "deniedDomains"),
 }
+# The only top-level keys a Bash source document may carry.
 _BASH_ACTIONS = ("allow", "ask", "deny")
 # Lists whose order carries no meaning, sorted on compile for stable output.
 # Anything else -- notably unknown pass-through keys -- keeps fragment order.
