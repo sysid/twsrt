@@ -21,7 +21,7 @@ from twsrt.lib.models import (
     yolo_path,
 )
 
-__version__ = "3.3.1"
+__version__ = "3.3.2"
 
 app = typer.Typer(
     name="twsrt",
