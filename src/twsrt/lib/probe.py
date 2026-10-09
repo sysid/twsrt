@@ -30,6 +30,10 @@ Runner = Callable[..., subprocess.CompletedProcess]
 ScratchFactory = Callable[[Path], Path]
 
 _CURL = "curl -sS -m 10 -o /dev/null -I https://{host}/"
+# Prints srt's answer to the CONNECT: the filter decides on the hostname before
+# any DNS lookup, so the answer is a verdict even for a host that does not exist.
+_CONNECT = "curl -sS -m 10 -o /dev/null -w '%{{http_connect}}' https://{host}/"
+_WILDCARD_LABEL = "twsrt-probe"
 _CANARY_DOMAINS = ("example.com", "example.org", "example.net")
 _WALK_DEPTH = 4
 _STDERR_LIMIT = 400
@@ -72,6 +76,8 @@ class Probe:
     # The .srt-settings.json key this probe verifies; derived from kind unless
     # given (the allowlist canary is a net-deny probe of allowedDomains).
     section: str = ""
+    # Judged by the srt proxy's CONNECT status on stdout, not by exit codes.
+    proxy_verdict: bool = False
 
     def __post_init__(self) -> None:
         if not self.section:
@@ -94,7 +100,8 @@ class ProbeResult:
     status: Status
     control_exit: int | None = None
     sandbox_exit: int | None = None
-    # stderr only, last 400 chars; stdout of either run is never captured.
+    # stderr only, last 400 chars; stdout is never kept (a proxy-verdict probe
+    # reads its CONNECT status from stdout, which ends up in reason).
     control_stderr: str = ""
     sandbox_stderr: str = ""
     duration_ms: int = 0
@@ -394,6 +401,20 @@ def _concrete_write_probe(
 
 
 def _network(host: str, kind: str, expect: Expect) -> Probe:
+    if host.startswith("*.") and not _is_glob(host[2:]):
+        # *.x matches any subdomain of x (never x itself); a made-up label
+        # stands in for all of them. No control run: outside the sandbox the
+        # host does not resolve, and the proxy's answer is the witness.
+        concrete = f"{_WILDCARD_LABEL}.{host[2:]}"
+        log.debug("%s %s: probing synthetic subdomain %s", kind, host, concrete)
+        return Probe(
+            kind,
+            host,
+            _CONNECT.format(host=concrete),
+            expect,
+            control=False,
+            proxy_verdict=True,
+        )
     if _is_glob(host):
         return _skip(kind, host, expect, "wildcard domain: no concrete host")
     return Probe(kind, host, _CURL.format(host=host), expect)
@@ -473,10 +494,32 @@ def judge(
     return Status.PASS, ""
 
 
+def judge_proxy(expect: Expect, code: str) -> tuple[Status, str]:
+    """Verdict from srt's answer to the CONNECT, as printed by curl.
+
+    403 is srt's policy denial; any other answer means the filter let the
+    request through (502: the upstream did not resolve). Without an answer
+    (000, empty) curl never reached the proxy and nothing was judged.
+    """
+    code = code.strip()
+    if code in ("", "000"):
+        return Status.ERROR, "no proxy answer: curl did not reach the srt proxy"
+    blocked = code == "403"
+    if expect is Expect.DENY and not blocked:
+        return Status.FAIL, f"not blocked: proxy answered {code}"
+    if expect is Expect.ALLOW and blocked:
+        return Status.FAIL, "blocked but should be allowed: proxy answered 403"
+    return Status.PASS, f"proxy answered {code}"
+
+
 def run_probe(
     probe: Probe, settings: Path, timeout: float, run: Runner | None = None
 ) -> ProbeResult:
-    """Execute control and sandboxed run; stdout is discarded, never captured."""
+    """Execute control and sandboxed run.
+
+    stdout is discarded, except the sandboxed run of a proxy-verdict probe:
+    there it carries only curl's three-digit CONNECT status.
+    """
     run = run or subprocess.run
     if probe.skip_reason is not None:
         return ProbeResult(probe, Status.SKIP, reason=probe.skip_reason)
@@ -502,6 +545,7 @@ def run_probe(
             ["srt", "-s", str(settings), "-c", probe.command],
             timeout,
             capture=True,
+            stdout=probe.proxy_verdict,
         )
         _remove(artifact)
     except subprocess.TimeoutExpired:
@@ -518,6 +562,8 @@ def run_probe(
     stderr = (completed.stderr or "")[-_STDERR_LIMIT:]
     if "sandbox_apply" in stderr:
         status, reason = Status.ERROR, "srt could not apply the sandbox"
+    elif probe.proxy_verdict:
+        status, reason = judge_proxy(probe.expect, completed.stdout or "")
     else:
         status, reason = judge(
             probe.expect,
@@ -597,7 +643,7 @@ def _srt_version(run: Runner, which: Callable[[str], str | None]) -> str:
 
 
 def _execute(
-    run: Runner, argv: list[str], timeout: float, capture: bool
+    run: Runner, argv: list[str], timeout: float, capture: bool, stdout: bool = False
 ) -> subprocess.CompletedProcess:
     log.debug("exec: %s", shlex.join(argv))
     started = time.monotonic()
@@ -605,7 +651,7 @@ def _execute(
         completed = run(
             argv,
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE if stdout else subprocess.DEVNULL,
             stderr=subprocess.PIPE if capture else subprocess.DEVNULL,
             text=True,
             timeout=timeout,

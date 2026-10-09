@@ -489,8 +489,8 @@ otherwise `default_profile` is compared and reports drift.
 
 **How `test` works.** Each effective SRT rule becomes a probe command
 (`head -c 1` on a denied file, an append-open that writes nothing on a
-write rule, `curl -I` per domain, plus a canary host outside the
-allowlist). Each probe runs twice: plainly as a control, then under
+write rule, `curl -I` per domain, srt's proxy answer for a made-up
+subdomain of each `*.` wildcard, plus a canary host outside the allowlist). Each probe runs twice: plainly as a control, then under
 `srt -s <settings> -c`. A deny rule passes when the control succeeds and the
 sandboxed run fails, so a missing file can never count as protected. The
 probe set is derived from the compiled file, never authored: change the

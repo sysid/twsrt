@@ -353,8 +353,10 @@ def _check_profile_lists(
                         tuple(items),
                     )
                 )
-            if key == "allowedDomains":
-                _check_wildcard_apex(list_name, values, ignores, base_dir, findings)
+            if key in _DOMAIN_LISTS:
+                _check_wildcard_apex(
+                    key, list_name, values, ignores, base_dir, findings
+                )
 
 
 def _profile_lists(
@@ -418,8 +420,10 @@ def _domain_covers(parent: str, child: str) -> bool:
     if ":" in parent or ":" in child:
         return False  # ponytail: port-qualified entries are not compared
     if not child.startswith("*"):
-        # `twsrt test` cannot dial a wildcard: a concrete host below one is
-        # that rule's only live probe, so it is never dead weight.
+        # A concrete host below a wildcard is never dead weight: `twsrt test`
+        # probes the wildcard only via srt's filter decision for a made-up
+        # subdomain; the concrete host is its only end-to-end probe (a real
+        # connection, judged against a control run).
         return False
     if parent == "*":
         return True
@@ -427,7 +431,25 @@ def _domain_covers(parent: str, child: str) -> bool:
     return parent.startswith("*.") and child.endswith(parent[1:])
 
 
+# list key -> (severity, code, description after "<n> wildcards ").
+_WILDCARD_APEX = {
+    "allowedDomains": (
+        "info",
+        "wildcard-apex",
+        "not matching the bare apex domain (add it where needed)",
+    ),
+    # A deny leaves the apex open: Claude's WebFetch deny skips it, and srt
+    # blocks it only while no allowedDomains entry (e.g. "*") admits it.
+    "deniedDomains": (
+        "warning",
+        "wildcard-deny-apex",
+        "leaving the bare apex domain not denied; list it too",
+    ),
+}
+
+
 def _check_wildcard_apex(
+    key: str,
     list_name: str,
     values: dict[str, list[Path]],
     ignores: Ignores,
@@ -435,6 +457,7 @@ def _check_wildcard_apex(
     findings: list[Finding],
 ) -> None:
     """Grouped by the wildcard's fragment, so profiles sharing it dedup."""
+    severity, code, description = _WILDCARD_APEX[key]
     missing: dict[Path, list[str]] = {}
     for value, origins in values.items():
         if _ignored(ignores, origins, value):
@@ -444,11 +467,10 @@ def _check_wildcard_apex(
     for origin, items in missing.items():
         findings.append(
             Finding(
-                "info",
-                "wildcard-apex",
+                severity,
+                code,
                 _show(origin, base_dir),
-                f"{list_name}: {_count(items, 'wildcard', 'wildcards')} not "
-                "matching the bare apex domain (add it where needed)",
+                f"{list_name}: {_count(items, 'wildcard', 'wildcards')} {description}",
                 tuple(items),
             )
         )

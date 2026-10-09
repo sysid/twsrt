@@ -19,6 +19,7 @@ from twsrt.lib.probe import (
     Status,
     derive_probes,
     judge,
+    judge_proxy,
     preflight,
     run_probe,
     scratch_root,
@@ -127,6 +128,36 @@ class TestJudge:
 
         assert verdict is Status.PASS
         assert "OS" in reason or "permission" in reason
+
+
+class TestJudgeProxy:
+    """Verdict from srt's answer to curl's CONNECT (curl -w %{http_connect})."""
+
+    @pytest.mark.parametrize(
+        ("expect", "code", "status", "reason_part"),
+        [
+            # 403 is srt's policy denial (X-Proxy-Error: blocked-by-allowlist)
+            (Expect.DENY, "403", Status.PASS, "proxy answered 403"),
+            (Expect.ALLOW, "403", Status.FAIL, "blocked but should be allowed"),
+            # 502: the filter let it through, the made-up host just does not exist
+            (Expect.DENY, "502", Status.FAIL, "not blocked"),
+            (Expect.ALLOW, "502", Status.PASS, "proxy answered 502"),
+            # 200: the subdomain happens to exist
+            (Expect.DENY, "200", Status.FAIL, "not blocked"),
+            (Expect.ALLOW, "200", Status.PASS, "proxy answered 200"),
+            # 000: curl never got an answer from the proxy, so nothing was judged
+            (Expect.DENY, "000", Status.ERROR, "no proxy answer"),
+            (Expect.ALLOW, "000", Status.ERROR, "no proxy answer"),
+            (Expect.DENY, "", Status.ERROR, "no proxy answer"),
+        ],
+    )
+    def test_truth_table(
+        self, expect: Expect, code: str, status: Status, reason_part: str
+    ) -> None:
+        verdict, reason = judge_proxy(expect, code)
+
+        assert verdict is status
+        assert reason_part in reason
 
 
 class TestDeriveReadDeny:
@@ -590,7 +621,11 @@ class TestDeriveNetwork:
         assert probe.command == "curl -sS -m 10 -o /dev/null -I https://github.com/"
         assert probe.expect is Expect.ALLOW
 
-    def test_wildcard_domain_is_skipped(self, tmp_path: Path) -> None:
+    def test_allowed_wildcard_domain_is_probed_via_a_synthetic_subdomain(
+        self, tmp_path: Path
+    ) -> None:
+        # The subdomain need not exist: srt's proxy decides on the hostname
+        # before any DNS lookup, and its CONNECT answer is the witness.
         probes = derive_probes(
             _srt(network={"allowedDomains": ["*.github.com"]}),
             tmp_path,
@@ -599,8 +634,69 @@ class TestDeriveNetwork:
         )
 
         [probe] = _by_kind(probes, "net-allow")
+        assert probe.skip_reason is None
+        assert probe.rule == "*.github.com"
+        assert probe.command == (
+            "curl -sS -m 10 -o /dev/null -w '%{http_connect}' "
+            "https://twsrt-probe.github.com/"
+        )
+        assert probe.expect is Expect.ALLOW
+        assert probe.proxy_verdict is True
+        assert probe.control is False
+
+    def test_denied_wildcard_domain_is_probed_via_a_synthetic_subdomain(
+        self, tmp_path: Path
+    ) -> None:
+        probes = derive_probes(
+            _srt(network={"deniedDomains": ["*.ngrok.io"]}),
+            tmp_path,
+            tmp_path,
+            tmp_path / "s",
+        )
+
+        [probe] = [p for p in _by_kind(probes, "net-deny") if p.rule == "*.ngrok.io"]
+        assert "https://twsrt-probe.ngrok.io/" in probe.command
+        assert probe.expect is Expect.DENY
+        assert probe.proxy_verdict is True
+        assert probe.control is False
+
+    def test_port_qualified_wildcard_keeps_its_port(self, tmp_path: Path) -> None:
+        probes = derive_probes(
+            _srt(network={"allowedDomains": ["*.corp.example:8443"]}),
+            tmp_path,
+            tmp_path,
+            tmp_path / "s",
+        )
+
+        [probe] = _by_kind(probes, "net-allow")
+        assert "https://twsrt-probe.corp.example:8443/" in probe.command
+
+    @pytest.mark.parametrize("pattern", ["*", "api.*.example.com", "*example.com"])
+    def test_wildcard_without_a_concrete_base_domain_is_skipped(
+        self, tmp_path: Path, pattern: str
+    ) -> None:
+        probes = derive_probes(
+            _srt(network={"allowedDomains": [pattern]}),
+            tmp_path,
+            tmp_path,
+            tmp_path / "s",
+        )
+
+        [probe] = _by_kind(probes, "net-allow")
         assert probe.skip_reason is not None
         assert "wildcard" in probe.skip_reason
+
+    def test_concrete_domains_keep_the_differential_probe(self, tmp_path: Path) -> None:
+        probes = derive_probes(
+            _srt(network={"allowedDomains": ["github.com"]}),
+            tmp_path,
+            tmp_path,
+            tmp_path / "s",
+        )
+
+        [probe] = _by_kind(probes, "net-allow")
+        assert probe.proxy_verdict is False
+        assert probe.control is True
 
     def test_denied_domain_expects_failure(self, tmp_path: Path) -> None:
         probes = derive_probes(
@@ -794,6 +890,75 @@ class TestRunProbe:
         assert runner.calls[0][0][0] == "srt"
         assert result.control_exit is None
         assert result.status is Status.PASS
+
+    def _proxy_probe(self, expect: Expect) -> Probe:
+        return Probe(
+            kind="net-deny" if expect is Expect.DENY else "net-allow",
+            rule="*.ngrok.io",
+            command="curl -sS -m 10 -o /dev/null -w '%{http_connect}' "
+            "https://twsrt-probe.ngrok.io/",
+            expect=expect,
+            control=False,
+            proxy_verdict=True,
+        )
+
+    @staticmethod
+    def _proxy_answers(code: str, exit_code: int = 56):
+        calls: list[tuple[list[str], dict]] = []
+
+        def runner(argv: list[str], **kwargs) -> subprocess.CompletedProcess:
+            calls.append((list(argv), kwargs))
+            return subprocess.CompletedProcess(
+                argv, exit_code, stdout=code, stderr="curl: (56) CONNECT tunnel failed"
+            )
+
+        return runner, calls
+
+    def test_proxy_denial_passes_a_deny_probe_despite_curl_failing(self) -> None:
+        runner, calls = self._proxy_answers("403")
+
+        result = run_probe(self._proxy_probe(Expect.DENY), SETTINGS, 5, run=runner)
+
+        assert result.status is Status.PASS
+        assert result.sandbox_exit == 56
+        assert result.control_exit is None
+        assert [argv[0] for argv, _ in calls] == ["srt"]
+
+    def test_bad_gateway_passes_an_allow_probe_despite_curl_failing(self) -> None:
+        # The synthetic subdomain does not resolve; what matters is that the
+        # proxy tried, i.e. the filter let it through.
+        runner, _ = self._proxy_answers("502")
+
+        result = run_probe(self._proxy_probe(Expect.ALLOW), SETTINGS, 5, run=runner)
+
+        assert result.status is Status.PASS
+
+    def test_proxy_probe_captures_stdout_of_the_sandboxed_run(self) -> None:
+        runner, calls = self._proxy_answers("403")
+
+        run_probe(self._proxy_probe(Expect.DENY), SETTINGS, 5, run=runner)
+
+        [(_, kwargs)] = calls
+        assert kwargs["stdout"] is subprocess.PIPE
+
+    def test_proxy_probe_without_proxy_answer_is_an_error(self) -> None:
+        # e.g. curl missing in the sandbox: a failing exit must not read as
+        # "blocked".
+        runner, _ = self._proxy_answers("", exit_code=127)
+
+        result = run_probe(self._proxy_probe(Expect.DENY), SETTINGS, 5, run=runner)
+
+        assert result.status is Status.ERROR
+
+    def test_proxy_probe_still_reports_a_sandbox_apply_failure(self) -> None:
+        runner = FakeRunner(
+            srt_failure=(71, "sandbox-exec: sandbox_apply: Operation not permitted\n")
+        )
+
+        result = run_probe(self._proxy_probe(Expect.DENY), SETTINGS, 5, run=runner)
+
+        assert result.status is Status.ERROR
+        assert "could not apply" in result.reason
 
     def test_skipped_probe_is_not_executed(self) -> None:
         runner = FakeRunner()

@@ -478,6 +478,48 @@ def test_wildcard_domain_without_its_apex_is_noted(tmp_path: Path) -> None:
     )
 
 
+def test_denied_wildcard_without_its_apex_is_a_warning(tmp_path: Path) -> None:
+    # *.pastebin.com does not deny pastebin.com: Claude's WebFetch deny skips
+    # it, and srt blocks it only while no allowedDomains entry admits it.
+    config = write_config(
+        tmp_path,
+        srt={
+            "base": (
+                '{"enabled": true, "network": '
+                '{"deniedDomains": ["*.pastebin.com", "*.ngrok.io", "ngrok.io"]}}'
+            )
+        },
+        bash={"base": BASH_BASE},
+        profiles='[profiles.default]\nsrt = ["base"]\nbash = ["base"]\n',
+    )
+
+    findings = run(config)
+
+    assert [(f.severity, f.code) for f in findings] == [
+        ("warning", "wildcard-deny-apex")
+    ]
+    assert findings[0].items == ("'*.pastebin.com' (pastebin.com)",)
+    assert "network.deniedDomains" in findings[0].message
+    assert "not denied" in findings[0].message
+
+
+def test_denied_wildcard_apex_gap_can_be_silenced(tmp_path: Path) -> None:
+    config = write_config(
+        tmp_path,
+        srt={
+            "base": (
+                '{"enabled": true, "network": {"deniedDomains": [\n'
+                '  "*.pastebin.com"  // doctor-ignore: apex blocked upstream\n'
+                "]}}"
+            )
+        },
+        bash={"base": BASH_BASE},
+        profiles='[profiles.default]\nsrt = ["base"]\nbash = ["base"]\n',
+    )
+
+    assert run(config) == []
+
+
 def test_findings_are_ordered_errors_first(tmp_path: Path) -> None:
     config = write_config(
         tmp_path,

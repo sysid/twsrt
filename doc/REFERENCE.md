@@ -606,7 +606,7 @@ redundant copy, and names the earlier one.
 | `fragment-load` | error | A registered fragment is missing or not valid JSONC, used or not |
 | `profile-compile` | error | A profile fails to compile: scalar conflict, opposing allow/deny, a write-only path, invalid shape. Profiles using a broken fragment are not reported again |
 | `profile-incomplete` | warning | A profile selects no fragment for some source kind, so `-p NAME` fails. Legitimate for mixins used only via `extends` |
-| `subsumed-rule` | warning | An entry is already covered by another entry in the same list: a path below a listed directory (`dir` and `dir/**` count as equal; `.` covers every relative path), a wildcard domain below a broader `*.` wildcard or `*` (a concrete host is never flagged: it is the only host `twsrt test` can probe for that wildcard), a Bash command extending a listed command (`rm -rf` under `rm`; Claude emits `Bash(rm *)`) |
+| `subsumed-rule` | warning | An entry is already covered by another entry in the same list: a path below a listed directory (`dir` and `dir/**` count as equal; `.` covers every relative path), a wildcard domain below a broader `*.` wildcard or `*` (a concrete host is never flagged: `twsrt test` checks a wildcard only by srt's filter decision, the concrete host is its only end-to-end probe), a Bash command extending a listed command (`rm -rf` under `rm`; Claude emits `Bash(rm *)`) |
 | `duplicate-rule` | warning | The same entry appears in two fragments of one profile |
 | `inherited-fragment` | warning | A profile selects a fragment its `extends` chain already selects |
 | `redundant-extends` | warning | A profile extends a parent it already reaches through another parent |
@@ -619,7 +619,8 @@ redundant copy, and names the earlier one.
 | `cwd-anchored-glob` | warning | A relative `**/x` entry protects or grants only below the directory the agent was launched in, not everywhere |
 | `linux-drops-write-glob` | info | A glob in `denyWrite` holds on macOS only; srt drops write globs on Linux |
 | `noop-glob-suffix` | info | A trailing `/**` is stripped by srt; the bare directory is the same rule |
-| `wildcard-apex` | info | `*.x.com` without `x.com` in the same list: the apex is not matched |
+| `wildcard-apex` | info | `*.x.com` in `allowedDomains` without `x.com`: the apex is not matched |
+| `wildcard-deny-apex` | warning | `*.x.com` in `deniedDomains` without `x.com`: the apex is not denied. Claude's `WebFetch` deny skips it, and srt blocks it only while no `allowedDomains` entry (such as `*`) admits it |
 
 ### Silencing a finding
 
@@ -641,7 +642,7 @@ a colon is a free-text reason for the reader; doctor does not interpret it:
 - Only the entries on the comment's own line; a directive on a line of its
   own covers nothing.
 - Applies to entry-level codes: `subsumed-rule`, `duplicate-rule`,
-  `wildcard-apex`, `symlinked-deny-path`, `broad-allow-write` and the pattern
+  `wildcard-apex`, `wildcard-deny-apex`, `symlinked-deny-path`, `broad-allow-write` and the pattern
   traps. Errors and profile or fragment findings cannot be silenced; Claude
   settings files are JSON and carry no comments.
 - All of an entry's findings go silent together; there is no per-code choice.
@@ -676,6 +677,7 @@ Bash deny/ask rules. Design rationale: [ADR 0007](adr/0007-probes-are-derived-an
 | Append-open write | write denies are proven without truncating or touching mtime | [Write probes](#write-probes) |
 | Glob witness | a deny glob is observed on a matching file inside a writable root, below the glob's prefix | [Write probes](#write-probes) |
 | HEAD request | domain rules are proven by connecting, regardless of HTTP status | [Network probes](#network-probes) |
+| Proxy verdict | a wildcard domain is proven by srt's answer to a made-up subdomain, no DNS needed | [Network probes](#network-probes) |
 | Allowlist canary | allowlist mode itself is on: a non-allowlisted host is blocked | [Network probes](#network-probes) |
 | Section options | `--denyRead`, `--denyWrite`, … run one settings key's probes | below |
 | Artifact cleanup | created files and witness directories are removed; pre-existing files never | [Write probes](#write-probes), [Known limits](#known-limits) |
@@ -709,6 +711,10 @@ refused by the OS itself (its stderr says `Operation not permitted`,
 probe passes with the reason "denied outside the sandbox too". Any other
 control failure stays `INVALID`.
 
+Wildcard domain probes are the exception to the two-run model: they have no
+control run and are judged by srt's proxy answer, see
+[Network probes](#network-probes).
+
 | expect | control C | sandbox S | status | meaning |
 |---|---|---|---|---|
 | deny | ≠ 0, other error | any | `INVALID` | the probe proves nothing (file absent, host unreachable) |
@@ -721,6 +727,11 @@ control failure stays `INVALID`.
 | allow | 0 | 0 | `PASS` | |
 | any | — | — | `SKIP` | no concrete command could be derived (never executed) |
 | any | — | — | `ERROR` | timeout, or `sandbox_apply` refused mid-run |
+| deny, wildcard | — | proxy `403` | `PASS` | srt's filter refused the host |
+| deny, wildcard | — | proxy other | `FAIL` | not blocked: the filter let it through |
+| allow, wildcard | — | proxy `403` | `FAIL` | blocked although allowed |
+| allow, wildcard | — | proxy other (`200`, `502`) | `PASS` | the filter let it through; `502` only means the made-up host does not resolve |
+| any, wildcard | — | proxy `000` or none | `ERROR` | curl never reached the proxy, nothing was judged |
 
 Probes run sequentially in a fixed order: read-deny, write-deny,
 write-allow, net-allow, net-deny, then the allowlist canary. Each row is
@@ -753,8 +764,9 @@ probes and combine; without any, all run. `-k` narrows further.
 | `denyWrite` path | existing file | `: >> <file>` | deny | nothing | path absent |
 | `allowWrite` path | directory (`.` = cwd) | `: >> <dir>/.twsrt-probe-<pid>` | allow | file removed after each run | glob; path absent |
 | `allowWrite` path | existing file | `: >> <file>` | allow | nothing | glob; path absent |
-| `allowedDomains` host | — | `curl -sS -m 10 -o /dev/null -I https://<host>/` | allow | nothing | wildcard (`*.`) |
-| `deniedDomains` host | — | same curl | deny | nothing | wildcard |
+| `allowedDomains` host | — | `curl -sS -m 10 -o /dev/null -I https://<host>/` | allow | nothing | other wildcard shapes (`*`, `api.*.x`) |
+| `deniedDomains` host | — | same curl | deny | nothing | as above |
+| `allowedDomains` / `deniedDomains` `*.x` | — | `curl -sS -m 10 -o /dev/null -w '%{http_connect}' https://twsrt-probe.x/`, sandboxed run only | allow / deny | nothing | never |
 | allowlist canary | — | same curl against `example.com`, `.org`, or `.net`, whichever is not allowlisted | deny | nothing | never |
 
 ### Read probes
@@ -823,8 +835,17 @@ probes and combine; without any, all run. `-k` narrows further.
   the connection was established; the HTTP status is irrelevant, so a 403
   or 405 still counts as reachable. Under srt the proxy refuses the
   `CONNECT` for a non-allowlisted host and curl exits non-zero.
-- Wildcard entries (`*.github.com`) have no concrete host to dial and are
-  skipped. Add the bare domain to the allowlist if you want it probed.
+- **Wildcard entries** (`*.github.com`) are probed with the made-up
+  subdomain `twsrt-probe.github.com` (a port suffix is kept). srt's proxy
+  decides on the hostname before any DNS lookup, so the host need not exist.
+  curl prints the proxy's answer to its `CONNECT` (`%{http_connect}`): `403`
+  is srt's policy denial (`X-Proxy-Error: blocked-by-allowlist`), anything
+  else means the filter let it through (`502` when the host does not
+  resolve). That answer is the witness, so there is no control run, and
+  curl's exit code is ignored: a missing curl or a broken sandbox yields
+  `ERROR` (`000`), never a false `PASS`. `*.x` never matches the apex `x`;
+  `twsrt doctor` reports a deny wildcard without its apex
+  (`wildcard-deny-apex`). `*` and mid-label wildcards stay `SKIP`.
 - The canary proves allowlist mode is active at all: it dials the first of
   `example.com`, `example.org`, `example.net` that is not allowlisted and
   expects the sandbox to block it. Without it, an empty or ignored allowlist
@@ -845,7 +866,9 @@ probes and combine; without any, all run. `-k` narrows further.
   probed, because that is what srt enforces. An unapplied fragment edit can
   therefore never pass as a green run.
 - Command stdout is sent to `/dev/null` for both runs and never captured, so
-  a failing deny probe cannot leak the secret it just read. Only stderr is
+  a failing deny probe cannot leak the secret it just read. The one
+  exception is a wildcard domain probe, whose stdout is curl's three-digit
+  `CONNECT` status and nothing else (the body goes to `/dev/null`). Only stderr is
   kept, truncated to 400 characters; the control run's stderr is what
   distinguishes an OS permission denial from a broken probe.
 - The control run executes each command as your user with full privileges:

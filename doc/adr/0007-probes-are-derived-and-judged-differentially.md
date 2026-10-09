@@ -1,6 +1,7 @@
 # ADR 0007: Sandbox probes are derived from the settings and judged differentially
 
-- **Status:** Accepted (records the existing `twsrt test` design, extended 2026-10-03)
+- **Status:** Accepted (records the existing `twsrt test` design, extended 2026-10-03,
+  amended 2026-10-09: proxy-witnessed wildcard domains)
 - **Date:** 2026-10-03
 - **Deciders:** Tom
 - **Implementation:** `src/twsrt/lib/probe.py` (`derive_probes`, `run_probe`, `judge`);
@@ -38,6 +39,15 @@ runs of the same command.
 5. **One assertion is not derived from the settings**: the allowlist canary, a host that is not
    allowlisted and must be blocked, proves allowlist mode is on at all.
 6. **Scope is the srt wrapper.** Claude Code's native sandbox and Codex are not probed.
+7. **Wildcard domains are witnessed by the proxy, not differentially** (amendment 2026-10-09).
+   `*.x` has no concrete host, but srt's proxy filters on the hostname before any DNS lookup
+   (sandbox-runtime 0.0.79, `http-proxy.js`). The probe dials the made-up `twsrt-probe.x` and
+   reads the proxy's answer to the `CONNECT` (`curl -w '%{http_connect}'`): `403` is the policy
+   denial, any other answer (`502` for the unresolvable host) means the filter admitted it, `000`
+   is an `ERROR`. There is no control run: outside the sandbox the host does not resolve, so a
+   control would only ever be `INVALID`. Exit codes are ignored, because curl fails for both 403
+   and 502 and a broken sandbox must not read as a block. Verified manually by Tom on 2026-10-09
+   (`403` for a denied, `502` for an allowed wildcard).
 
 ## Alternatives considered
 
@@ -49,6 +59,8 @@ runs of the same command.
 | `touch`, `>` or real content as write probe | `touch` bumps mtime, `>` truncates; a wrong path could destroy data |
 | Witness globs in any directory | Outside every write root the allowlist blocks the write, so the deny is never observed |
 | Also drive Claude Code / Codex | Needs an agent run per probe; non-deterministic, slow, billed |
+| Wildcards: probe a real subdomain (`www.x`, a configured host) | Not every base has one (`*.amazonaws.com`); a per-wildcard host list is maintenance |
+| Wildcards: judge by curl's exit code | 403 and 502 both exit 56; a missing curl would pass every deny |
 
 ## Consequences
 
@@ -64,7 +76,11 @@ runs of the same command.
 - The control run executes every command with full user rights, and network probes really connect,
   `deniedDomains` included.
 - Unconvertible shapes stay `SKIP`: `denyRead` globs, mid-path wildcards, single-segment globs,
-  wildcard domains.
+  the bare `*` domain and mid-label domain wildcards.
+- A wildcard probe proves srt's filter decision, not an end-to-end connection, and it relies on the
+  proxy's `403` staying the denial signal. If srt changed it, every wildcard deny would `FAIL`
+  (loud), but a blocked wildcard allow would read as `PASS`. It also proves one subdomain level; `*.x` matching deeper
+  levels rests on srt's suffix match.
 - A glob is witnessed at one location; that root-anchoring covers every writable tree rests on srt's
   regex semantics (bkmr 3743), not on a probe per root.
 - **Cleanup gap:** cleanup runs after each run and on timeout, not on Ctrl-C or a crash. An
