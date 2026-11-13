@@ -420,6 +420,17 @@ Rule-by-rule translation for all three:
   `[claude_sync]`, every mode switch first copies those unmanaged keys from
   the current file into the target, so both converge.
   [Sync rules](doc/REFERENCE.md#claude-full-and-yolo-sync).
+- **Adding your own settings.** Keys outside twsrt's sections (hooks,
+  plugins, `env`, `statusLine`, non-`WebFetch`/`Edit` allows, Claude-only
+  sandbox keys) survive every `-w`. Edit them in the file `settings.json`
+  links to, through the link itself: with `[claude_sync]` that file is the
+  donor on the next mode switch and overwrites the other mode's unmanaged
+  keys, so edits made only in the inactive file are lost. Without
+  `[claude_sync]`, add the key to both mode files. A key that should differ
+  per mode goes into `[claude_sync] mode_specific`. Keep `settings.json` a
+  symlink; a tool that replaces it with a regular file makes `-w` stop.
+  Anything in twsrt's sections belongs in the policy: hand edits there are
+  replaced. Preview the merged result with `twsrt generate claude` (no `-w`).
 - **Gotcha.** Relative entries in a hand-written `sandbox.filesystem`
   (e.g. a repo's `.claude/settings.json`) anchor at that file's root, not
   the launch cwd; `twsrt doctor` reports them as `claude-relative-sandbox-path`.
