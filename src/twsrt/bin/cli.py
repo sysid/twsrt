@@ -41,8 +41,11 @@ def _error(message: str) -> None:
     typer.secho(f"Error: {message}", fg=typer.colors.RED, bold=True, err=True)
 
 
-def _warning(message: str) -> None:
-    typer.secho(f"Warning: {message}", fg=typer.colors.YELLOW, err=True)
+def _warning(message: str, urgent: bool = False) -> None:
+    """urgent: still a Warning (exit 0), but red, for a target left on an old
+    policy; red alone does not mean failure, the "Error:" label does."""
+    color = typer.colors.RED if urgent else typer.colors.YELLOW
+    typer.secho(f"Warning: {message}", fg=color, bold=urgent, err=True)
 
 
 def _info(message: str) -> None:
@@ -796,7 +799,8 @@ def generate(
         _warning(
             f"JetBrains IDE is running (lock found), so -w will skip {path}; "
             "close the IDE and re-run generate -w (a stale lock left by a "
-            f"crashed IDE must be removed: {path.parent.parent / '.lock'})"
+            f"crashed IDE must be removed: {path.parent.parent / '.lock'})",
+            urgent=True,
         )
         del staged[path]
 

@@ -2788,3 +2788,26 @@ class TestCopilotNativeTargets:
 
         assert result.exit_code == 0, result.output
         assert "copilot: no drift" in result.stdout
+
+    def test_locked_ide_warning_is_red_unlike_other_warnings(
+        self, tmp_path: Path
+    ) -> None:
+        """The skipped IDE keeps its old policy: make it stand out (still a
+        Warning, exit 0), while ordinary warnings stay yellow."""
+        config = _make_copilot_native_config(tmp_path, ides=("IdeaA",))
+        (tmp_path / "IdeaA").mkdir()
+        (tmp_path / "IdeaA" / ".lock").write_text("")
+
+        result = runner.invoke(
+            app,
+            ["-c", str(config), "generate", "copilot-jetbrains"],
+            env={"NO_COLOR": None},
+            color=True,
+        )
+
+        assert result.exit_code == 0, result.output
+        lock_line = next(ln for ln in result.stderr.splitlines() if ".lock" in ln)
+        assert "Warning:" in lock_line
+        assert "\x1b[31m" in lock_line
+        other = [ln for ln in result.stderr.splitlines() if "in-process" in ln]
+        assert other and "\x1b[33m" in other[0]

@@ -517,8 +517,9 @@ version, e.g. IntelliJ IDEA, PyCharm, RustRover); agent name
 `github-copilot` and keeps everything else (terminal rules, auth provider).
 
 - **Close the IDE before `-w`.** A running IDE holds `<config>/.lock` and
-  overrides external edits; `-w` skips that file with a warning and writes
-  everything else. `twsrt diff copilot-jetbrains` then shows it as drift.
+  overrides external edits; `-w` skips that file with a warning shown in red
+  (the IDE keeps its previous policy) and writes everything else; exit is 0.
+  `twsrt diff copilot-jetbrains` then shows it as drift.
 - **New IDE version, new path.** After an IDE upgrade, add the new config
   directory's file to `copilot_jetbrains_xml`; twsrt does not discover them.
 - The plugin has no URL rules, no LSP/extension switch and no environment
