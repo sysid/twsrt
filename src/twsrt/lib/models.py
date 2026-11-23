@@ -114,8 +114,10 @@ class CompilationResult:
 # The [targets] key whose presence configures each agent.
 AGENT_TARGET_KEYS = {
     "claude": "claude_settings",
-    "copilot": "copilot_output",
+    # Either key configures Copilot: flags-only stays supported (ADR 0009).
+    "copilot": "copilot_output or copilot_settings",
     "codex": "codex_config",
+    "copilot-jetbrains": "copilot_jetbrains_xml",
 }
 
 
@@ -162,6 +164,10 @@ class AppConfig:
     # Agent targets are opt-in: None = agent not configured ([targets] key unset).
     claude_settings_path: Path | None = None
     copilot_output_path: Path | None = None
+    # Copilot CLI native sandbox: settings.json, independent of the flags file.
+    copilot_settings_path: Path | None = None
+    # One github-copilot.xml per JetBrains product and version; empty = unset.
+    copilot_jetbrains_xml_paths: list[Path] = field(default_factory=list)
     codex_config_path: Path | None = None
     # None = escalation-rules generation disabled (codex_rules unset in config.toml)
     codex_rules_path: Path | None = None
@@ -170,6 +176,8 @@ class AppConfig:
     network_config: dict[str, Any] = field(default_factory=dict)
     filesystem_config: dict[str, Any] = field(default_factory=dict)
     sandbox_config: dict[str, Any] = field(default_factory=dict)
+    # The compiled srt sandbox fields before [sandbox_overrides.*] are merged.
+    srt_sandbox_config: dict[str, Any] = field(default_factory=dict)
     srt_sandbox_enabled: bool | None = None
     sandbox_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
     # None = [claude_sync] absent: invariant sync between full/yolo disabled.
@@ -190,8 +198,9 @@ class AppConfig:
         """The agent's primary target; None means the agent is not configured."""
         return {
             "claude": self.claude_settings_path,
-            "copilot": self.copilot_output_path,
+            "copilot": self.copilot_output_path or self.copilot_settings_path,
             "codex": self.codex_config_path,
+            "copilot-jetbrains": next(iter(self.copilot_jetbrains_xml_paths), None),
         }[agent]
 
     def require_target(self, agent: str) -> Path:

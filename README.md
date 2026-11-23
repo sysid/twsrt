@@ -36,9 +36,9 @@ policy once and compiles it into every agent:
                                │ twsrt generate -w
           ┌──────────────┬─────┴────────┬────────────────┐
           ▼              ▼              ▼                ▼
-   ~/.srt-settings   Claude Code      Codex          Copilot CLI
-   (SRT sandbox)     settings.json    config.toml    launch flags
-                                      + .rules
+   ~/.srt-settings   Claude Code      Codex          Copilot CLI + JetBrains
+   (SRT sandbox)     settings.json    config.toml    settings.json, flags,
+                                      + .rules       github-copilot.xml
 ```
 
 ## How it works
@@ -61,8 +61,9 @@ Three ideas explain the whole tool.
  ───────────────────────────────────────────────────────────────────────
               ┌──────────────────────────┼──────────────────────────┐
               ▼                          ▼                          ▼
-       Claude generator           Codex generator           Copilot generator
-       settings.full.json         config.toml + .rules      CLI flags
+       Claude generator           Codex generator           Copilot generators
+       settings.full.json         config.toml + .rules      settings.json + flags,
+                                                            github-copilot.xml
 
  twsrt show            prints stage 1      generate <agent>      prints stage 2
  generate <agent> -w   writes stage 1 (all of it) + stage 2 (that agent)
@@ -78,7 +79,7 @@ Three ideas explain the whole tool.
 
 | | Canonical config | Agent configs |
 |---|---|---|
-| Files | `~/.srt-settings.json`, `bash-rules.json` | Claude `settings.full.json`, Codex `config.toml` + `.rules`, Copilot flags |
+| Files | `~/.srt-settings.json`, `bash-rules.json` | Claude `settings.full.json`, Codex `config.toml` + `.rules`, Copilot `settings.json` + flags, JetBrains `github-copilot.xml` |
 | Role | Source of truth; SRT enforcement file | Lossy translations into each agent's native model |
 | Depends on | Profile only | Canonical config + agent + `--yolo` |
 | Inspect | `twsrt show [srt\|bash]` | `twsrt generate <agent>` |
@@ -237,7 +238,11 @@ srt = ["work"]
 claude_settings = "~/.claude/settings.full.json"   # must not be settings.json (symlink anchor)
 codex_config    = "~/.codex/config.toml"
 codex_rules     = "~/.codex/rules/twsrt.rules"      # optional, needs codex_config: escalation rules
-copilot_output  = "~/.config/twsrt/copilot-flags.txt"
+copilot_settings = "~/.copilot/settings.json"      # Copilot CLI native sandbox (ADR 0009)
+copilot_output  = "~/.config/twsrt/copilot-flags.txt"  # optional, independent of copilot_settings
+copilot_jetbrains_xml = [                          # one file per JetBrains product and version
+  "~/Library/Application Support/JetBrains/IntelliJIdea2026.2/options/github-copilot.xml",
+]
 # claude_settings_yolo / copilot_output_yolo: optional, each needs its full-mode key;
 # default inserts ".yolo" before the suffix
 
@@ -352,8 +357,8 @@ srt-p()    { local p=$1 d; shift; d=$(twsrt generate claude -w -p "$p" --project
 **What `--project` changes.** Only where outputs land: `./.twsrt/` of the
 current directory (`cd` first). No symlink flip, no `[claude_sync]` donor,
 no global file touched; the preview works as usual. `all` means
-`claude`; Codex and Copilot are rejected because they read no per-launch
-settings file. Omitting `-p` compiles `default_profile`, the full policy.
+`claude`; Codex, Copilot and Copilot JetBrains are rejected because they read
+no per-launch settings file. Omitting `-p` compiles `default_profile`, the full policy.
 `--project` also adds `./.twsrt` to the compiled `denyWrite`, because Claude
 reloads settings mid-session and an agent able to write them could loosen
 its own policy. `config.toml`, the fragments and the global outputs stay
@@ -366,17 +371,17 @@ Security properties and the residual gap:
 
 ## Agents
 
-| | Claude Code | Codex | Copilot CLI |
-|---|---|---|---|
-| twsrt writes | `~/.claude/settings.full.json` (+ symlink) | `~/.codex/config.toml` profile + `.rules` | flag snippet |
-| Kernel layer | native sandbox, opt-in | native sandbox, always on | none: run it under `srt` |
-| App layer | permission rules | escalation rules | CLI flags per launch |
-| Built-in tools | in-process, app rules only | sandboxed subprocesses | in-process, flags only |
-| `ask` tier | native | Codex default, not restated | absent: mapped to deny (warned) |
-| Full vs yolo output | differs | identical | differs |
-| Known trap | relative `sandbox.filesystem` paths anchor at the settings-file root, not the cwd | `sandbox_mode` in any layer disables the profile | ask → deny fidelity loss |
+| | Claude Code | Codex | Copilot CLI | Copilot in JetBrains |
+|---|---|---|---|---|
+| twsrt writes | `~/.claude/settings.full.json` (+ symlink) | `~/.codex/config.toml` profile + `.rules` | `settings.json` `sandbox`/`allowedUrls`/`deniedUrls` + flag snippet | `github-copilot.xml` sandbox options, per IDE |
+| Kernel layer | native sandbox, opt-in | native sandbox, always on | native sandbox (`copilot_settings`); flags-only mode: run it under `srt` | native sandbox |
+| App layer | permission rules | escalation rules | CLI flags per launch, URL rules | — |
+| Built-in tools | in-process, app rules only | sandboxed subprocesses | in-process, checked in software | in-process, checked in software |
+| `ask` tier | native | Codex default, not restated | absent: mapped to deny (warned) | — |
+| Full vs yolo output | differs | identical | `settings.json` identical, flags differ | identical |
+| Known trap | relative `sandbox.filesystem` paths anchor at the settings-file root, not the cwd | `sandbox_mode` in any layer disables the profile | path globs are lost (warned) | a running IDE's file is skipped; new IDE versions need a new path |
 
-Rule-by-rule translation for all three:
+Rule-by-rule translation:
 [Rule mapping per agent](doc/REFERENCE.md#rule-mapping-per-agent).
 
 ### Claude Code
@@ -454,19 +459,71 @@ is preserved. Restart Codex after generation.
 
 ### Copilot CLI
 
-twsrt does not manage Copilot's `~/.copilot/settings.json`; it emits a flag
-snippet for the launch command (written to `copilot_output`; preview it with
-`twsrt generate copilot`). Nothing kernel-guards Copilot's
-tools, so run it under the SRT wrapper, which enforces the paths and domains:
+Two modes, chosen by the `[targets]` keys
+([ADR 0009](doc/adr/0009-copilot-native-sandbox.md)):
+
+| Mode | Keys | Paths and domains enforced by |
+|---|---|---|
+| **Native sandbox** (recommended) | `copilot_settings`, optionally `copilot_output` | Copilot's own sandbox, from `settings.json` |
+| Flags only | `copilot_output` | the SRT wrapper (`srt -c "copilot …"`) |
+
+Never combine the two: run Copilot either with its native sandbox or under
+srt.
+
+**Native sandbox.** twsrt merges three keys into `~/.copilot/settings.json`:
+`sandbox` (paths, hosts, fixed hardening such as `enabled: true` and
+`allowBypass: false`), `allowedUrls` and `deniedUrls`. Every other key
+(model, theme, …) is kept. twsrt owns these three keys outright: a URL you
+approve permanently inside Copilot shows up in `twsrt diff` and disappears on
+the next `-w`, so add it to the policy instead. The same file serves full and
+yolo mode. What does not translate is warned on every `generate`:
+
+- Path wildcards: Copilot paths are literal. A glob below a fixed prefix
+  (`~/.rsenv/vaults/*/envs`) is expanded once at generate time; `/**/.env`,
+  `**/*.pem` and cwd-relative entries are dropped. Copilot itself keeps
+  `.git/hooks` and `.git/config` read-only.
+- srt-only fields: `allowUnixSockets`, `allowMachLookup`,
+  `enableWeakerNetworkIsolation`, `ignoreViolations`. Copilot's own Seatbelt
+  profile decides; docker.sock, ssh-agent and the pasteboard were blocked in
+  probes.
+- In-process tools: Copilot confines shell, MCP and LSP processes at OS
+  level; its file tools and web fetch are checked in software only. The
+  flag snippet's `--allow-tool 'read'`, `'edit'`, `'write'` therefore rely on
+  that software check.
+
+**Flags only.** Without `copilot_settings`, twsrt does not touch
+`settings.json` and the snippet also carries `--allow-url`/`--deny-url`. Run
+Copilot under the SRT wrapper, which enforces the paths and domains:
 
 ```bash
 srt -c "copilot --allow-tool 'shell' --deny-tool 'shell(rm)' --allow-url 'github.com' ..."
 ```
 
-Ask rules become `--deny-tool` with a warning. With `--yolo` the snippet
-starts with `--yolo` and keeps only `--deny-tool` and `--deny-url`; deny
-flags still take precedence over `--yolo`.
-[Copilot flags](doc/REFERENCE.md#copilot-flags).
+In the flags file, ask rules become `--deny-tool` with a warning. Bash
+deny and ask rules exist only as `--deny-tool` flags, so with
+`copilot_settings` alone (no `copilot_output`) they are not enforced for
+Copilot CLI, and twsrt warns. With `--yolo`
+the snippet starts with `--yolo` and keeps only `--deny-tool` (and
+`--deny-url` in flags-only mode); deny flags still take precedence over
+`--yolo`. [Copilot flags](doc/REFERENCE.md#copilot-flags),
+[Copilot native sandbox](doc/REFERENCE.md#copilot-native-sandbox).
+
+### Copilot in JetBrains IDEs
+
+The JetBrains plugin reads its own settings, not `~/.copilot/settings.json`.
+List every IDE's file in `copilot_jetbrains_xml` (one per product and
+version, e.g. IntelliJ IDEA, PyCharm, RustRover); agent name
+`copilot-jetbrains`. twsrt replaces only the `sandbox*` options in component
+`github-copilot` and keeps everything else (terminal rules, auth provider).
+
+- **Close the IDE before `-w`.** A running IDE holds `<config>/.lock` and
+  overrides external edits; `-w` skips that file with a warning shown in red
+  (the IDE keeps its previous policy) and writes everything else; exit is 0.
+  `twsrt diff copilot-jetbrains` then shows it as drift.
+- **New IDE version, new path.** After an IDE upgrade, add the new config
+  directory's file to `copilot_jetbrains_xml`; twsrt does not discover them.
+- The plugin has no URL rules, no LSP/extension switch and no environment
+  masking; those parts of the policy do not reach the IDE (warned).
 
 **`--add-dir` is a trust grant.** Besides file access, Copilot loads the added
 directory's `.github/skills` and `.github/agents` as trusted configuration.
@@ -546,7 +603,7 @@ Threat model, rationale and every known gap:
 | `twsrt edit [srt\|bash] [-p P] [-n]` | Open every registered fragment (only profile P's with `-p`) in `$EDITOR`, then report whether targets are stale; `-n` only names them |
 | `twsrt profiles` | Table of every profile with its parents and resolved fragments per source kind; `*` marks `default_profile`, inherited fragments are dimmed, `invalid` marks one that cannot compile on its own |
 | `twsrt show [srt\|bash] [-p P]` | Print the compiled canonical document exactly as `-w` would write it. Writes nothing |
-| `twsrt generate [agent] [-p P]` | Preview: print the agent translation (`claude`, `codex`, `copilot`, default `all`) to stdout and list every file `-w` would write on stderr. Runs the same compile and merge checks as `-w`. Writes nothing |
+| `twsrt generate [agent] [-p P]` | Preview: print the agent translation (`claude`, `codex`, `copilot`, `copilot-jetbrains`, default `all`) to stdout and list every file `-w` would write on stderr. Runs the same compile and merge checks as `-w`. Writes nothing |
 | `twsrt generate [agent] -w` | Write those files: the canonical outputs (always, whichever agent) and the agent targets |
 | `twsrt generate [agent] --yolo` | Yolo mode: no ask rules, `*.yolo.*` targets, yolo sandbox overrides |
 | `twsrt generate claude -w -p P --project` | Write profile `P` to `./.twsrt/`; nothing global is written |

@@ -41,8 +41,11 @@ def _error(message: str) -> None:
     typer.secho(f"Error: {message}", fg=typer.colors.RED, bold=True, err=True)
 
 
-def _warning(message: str) -> None:
-    typer.secho(f"Warning: {message}", fg=typer.colors.YELLOW, err=True)
+def _warning(message: str, urgent: bool = False) -> None:
+    """urgent: still a Warning (exit 0), but red, for a target left on an old
+    policy; red alone does not mean failure, the "Error:" label does."""
+    color = typer.colors.RED if urgent else typer.colors.YELLOW
+    typer.secho(f"Warning: {message}", fg=color, bold=urgent, err=True)
 
 
 def _info(message: str) -> None:
@@ -240,8 +243,19 @@ srt = ["base"]
 # anchor, pointed at the full or yolo file by `generate -w claude`.
 # claude_settings = "~/.claude/settings.full.json"
 
-# GitHub Copilot CLI flags file.
+# GitHub Copilot CLI native sandbox (ADR 0009): twsrt owns the keys sandbox,
+# allowedUrls and deniedUrls in this file and always writes enabled = true.
+# copilot_settings = "~/.copilot/settings.json"
+
+# GitHub Copilot CLI flags file. Independent of copilot_settings; without
+# copilot_settings it also carries --allow-url/--deny-url (SRT-wrapper mode).
 # copilot_output = "copilot-flags.txt"
+
+# Copilot in JetBrains IDEs: one github-copilot.xml per product and version.
+# Add new IDE versions by hand. Files of a running IDE are skipped by -w.
+# copilot_jetbrains_xml = [
+#   "~/Library/Application Support/JetBrains/IntelliJIdea2026.2/options/github-copilot.xml",
+# ]
 
 # Codex user config; twsrt merges only its own permission profile into it.
 # codex_config = "~/.codex/config.toml"
@@ -677,7 +691,8 @@ def generate(
     ctx: typer.Context,
     agent: str = typer.Argument(
         "all",
-        help="claude, copilot, codex, or all (every agent set in \\[targets])",
+        help="claude, copilot, codex, copilot-jetbrains, or all "
+        "(every agent set in \\[targets])",
     ),
     write: bool = typer.Option(
         False,
@@ -779,6 +794,16 @@ def generate(
         typer.echo(str(twsrt_dir))
         return
 
+    locked = _locked_jetbrains_files(staged, config)
+    for path in locked:
+        _warning(
+            f"JetBrains IDE is running (lock found), so -w will skip {path}; "
+            "close the IDE and re-run generate -w (a stale lock left by a "
+            f"crashed IDE must be removed: {path.parent.parent / '.lock'})",
+            urgent=True,
+        )
+        del staged[path]
+
     if write:
         for document in compiled.documents.values():
             _atomic_write(document.output_path, _serialize(document.document))
@@ -844,7 +869,7 @@ def show(
 def diff(
     ctx: typer.Context,
     agent: str = typer.Argument(
-        "all", help="Target agent: claude, copilot, codex, or all"
+        "all", help="Target agent: claude, copilot, codex, copilot-jetbrains, or all"
     ),
     yolo: bool = typer.Option(False, "--yolo", help="Diff yolo agent targets"),
     profile: str | None = typer.Option(
@@ -875,7 +900,8 @@ def diff(
 
     for generator in generators:
         target = _resolve_target(generator.name, config)
-        if not target.exists():
+        # copilot-jetbrains reports each missing file as drift (FR-030).
+        if generator.name != "copilot-jetbrains" and not target.exists():
             _error(f"Target file not found for {generator.name}: {target}")
             raise typer.Exit(2)
         if (
@@ -1282,7 +1308,9 @@ def _compile(
     srt = compiled.srt_result
     config.network_config = srt.network_config
     config.filesystem_config = srt.filesystem_config
-    config.sandbox_config = srt.sandbox_config
+    config.srt_sandbox_config = dict(srt.sandbox_config)
+    # A copy: apply_sandbox_overrides updates sandbox_config in place.
+    config.sandbox_config = dict(srt.sandbox_config)
     config.srt_sandbox_enabled = srt.sandbox_config.get("enabled")
     config.yolo = yolo
     config.apply_sandbox_overrides()
@@ -1307,7 +1335,8 @@ def _select_generators(agent: str, config: AppConfig) -> list:
         _note(
             "no agent targets set in [targets] of config.toml, so only the "
             "canonical outputs are handled. To add an agent, set "
-            "claude_settings, copilot_output or codex_config."
+            "claude_settings, copilot_settings, copilot_output, codex_config or "
+            "copilot_jetbrains_xml."
         )
         return []
     for name in requested:
@@ -1334,6 +1363,8 @@ def _stage_agent_files(
 ) -> dict[Path, str]:
     from twsrt.lib.claude import selective_merge
     from twsrt.lib.codex import CodexGenerator
+    from twsrt.lib.copilot import CopilotGenerator
+    from twsrt.lib.copilot_jetbrains import CopilotJetbrainsGenerator
 
     staged: dict[Path, str] = {}
     for generator in generators:
@@ -1365,17 +1396,34 @@ def _stage_agent_files(
                 document = generated
             staged[target] = json.dumps(document, indent=2) + "\n"
         elif generator.name == "copilot":
-            target = _resolve_target("copilot", config)
-            staged[target] = rendered[generator.name] + "\n"
+            assert isinstance(generator, CopilotGenerator)
+            if config.copilot_output_path is not None:
+                target = _resolve_target("copilot", config)
+                staged[target] = generator.generate_flags(compiled.rules, config) + "\n"
+            staged.update(generator.render_settings(compiled.rules, config))
         elif generator.name == "codex":
             assert isinstance(generator, CodexGenerator)
+            staged.update(generator.render_write_files(compiled.rules, config))
+        elif generator.name == "copilot-jetbrains":
+            assert isinstance(generator, CopilotJetbrainsGenerator)
             staged.update(generator.render_write_files(compiled.rules, config))
     return staged
 
 
+def _locked_jetbrains_files(staged: dict[Path, str], config: AppConfig) -> list[Path]:
+    """Staged JetBrains XML files whose IDE is running (ADR 0009 decision 5)."""
+    from twsrt.lib.copilot_jetbrains import locked
+
+    return [
+        path
+        for path in config.copilot_jetbrains_xml_paths
+        if path in staged and locked(path)
+    ]
+
+
 def _project_agent(agent: str) -> str:
     """Project mode serves agents that take a settings file per launch."""
-    if agent in ("codex", "copilot"):
+    if agent in ("codex", "copilot", "copilot-jetbrains"):
         raise ValueError(
             f"agent {agent!r} is not supported with --project: only Claude "
             "(--settings) and srt (-s) read a per-launch settings file"
@@ -1450,22 +1498,30 @@ def _write_agent_files(staged: dict[Path, str], config: AppConfig) -> None:
 def _print_generator_warnings(
     generators: list, compiled: CompilationResult, config: AppConfig
 ) -> None:
+    # Both Copilot generators share build_policy, hence its warnings: print once.
+    seen: set[str] = set()
     for generator in generators:
         warnings = generator.compatibility_warnings(compiled.rules, config)
         log.debug(
             "Compatibility warnings agent=%s count=%d", generator.name, len(warnings)
         )
         for warning in warnings:
-            _warning(warning)
+            if warning not in seen:
+                seen.add(warning)
+                _warning(warning)
 
 
 def _resolve_target(agent: str, config: AppConfig) -> Path:
     """The agent's target for the current mode.
 
-    Codex has a single target: its permission profile serves both modes.
+    Codex has a single target: its permission profile serves both modes. So do
+    Copilot's settings.json and the JetBrains XML files (ADR 0009); only the
+    Copilot flags file has a yolo variant.
     """
     full = config.require_target(agent)
-    if not config.yolo or agent == "codex":
+    if not config.yolo or agent in ("codex", "copilot-jetbrains"):
+        return full
+    if agent == "copilot" and config.copilot_output_path is None:
         return full
     explicit = (
         config.claude_yolo_path if agent == "claude" else config.copilot_yolo_path

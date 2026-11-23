@@ -32,11 +32,13 @@ def _build_registry() -> dict[str, AgentGenerator]:
     from twsrt.lib.claude import ClaudeGenerator
     from twsrt.lib.codex import CodexGenerator
     from twsrt.lib.copilot import CopilotGenerator
+    from twsrt.lib.copilot_jetbrains import CopilotJetbrainsGenerator
 
     return {
         "claude": ClaudeGenerator(),
         "copilot": CopilotGenerator(),
         "codex": CodexGenerator(),
+        "copilot-jetbrains": CopilotJetbrainsGenerator(),
     }
 
 

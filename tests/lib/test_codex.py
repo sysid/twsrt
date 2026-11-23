@@ -203,6 +203,29 @@ class TestCodexProfileGeneration:
         assert any("allowLocalBinding" in warning for warning in warnings)
         assert any("httpProxyPort" in warning for warning in warnings)
 
+    def test_untranslated_srt_sandbox_fields_are_named(self) -> None:
+        config = AppConfig(
+            srt_sandbox_config={"enabled": True, "ignoreViolations": {"*": ["/x"]}}
+        )
+
+        warnings = CodexGenerator().compatibility_warnings([], config)
+
+        untranslated = [w for w in warnings if "SRT sandbox fields" in w]
+        assert len(untranslated) == 1
+        assert "ignoreViolations" in untranslated[0]
+        assert "enabled" not in untranslated[0]
+
+    def test_mode_overrides_are_not_reported_as_srt_fields(self) -> None:
+        """[sandbox_overrides.*] configure Claude, not the canonical srt policy."""
+        config = AppConfig(
+            sandbox_config={"enabled": True, "enableWeakerNestedSandbox": True},
+            srt_sandbox_config={"enabled": True},
+        )
+
+        warnings = CodexGenerator().compatibility_warnings([], config)
+
+        assert not any("SRT sandbox fields" in w for w in warnings)
+
     def test_rejects_literal_root_tilde_path(self) -> None:
         rules = [_rule(Scope.WRITE, Action.DENY, "/~/dev/private")]
 

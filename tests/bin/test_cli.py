@@ -2360,7 +2360,8 @@ class TestUnconfiguredAgents:
         ("agent", "key"),
         [
             ("claude", "claude_settings"),
-            ("copilot", "copilot_output"),
+            # Either key configures Copilot (FR-026), so the note names both.
+            ("copilot", "copilot_output or copilot_settings"),
             ("codex", "codex_config"),
         ],
     )
@@ -2595,3 +2596,218 @@ class TestInitMinimalConfig:
                 "allowUnsandboxedCommands": False,
             }
         }
+
+
+def _make_copilot_native_config(
+    tmp_path: Path, flags: bool = True, ides: tuple[str, ...] = ()
+) -> Path:
+    """Config with the Copilot CLI settings target and optional JetBrains IDEs."""
+    srt = {
+        "filesystem": {"denyRead": ["/secrets"], "allowWrite": ["."], "denyWrite": []},
+        "network": {"allowedDomains": ["github.com"], "deniedDomains": ["evil.com"]},
+    }
+    config = _make_config(tmp_path, srt, {"deny": ["rm"], "ask": []}, targets=False)
+    lines = f'copilot_settings = "{tmp_path / ".copilot" / "settings.json"}"\n'
+    if flags:
+        lines += f'copilot_output = "{tmp_path / "copilot-flags.txt"}"\n'
+    if ides:
+        xml_paths = ", ".join(
+            f'"{tmp_path / ide / "options" / "github-copilot.xml"}"' for ide in ides
+        )
+        lines += f"copilot_jetbrains_xml = [{xml_paths}]\n"
+    config.write_text(config.read_text() + "[targets]\n" + lines)
+    return config
+
+
+class TestCopilotNativeTargets:
+    """ADR 0009: settings.json and github-copilot.xml through the CLI."""
+
+    def test_write_merges_settings_and_drops_url_flags(self, tmp_path: Path) -> None:
+        """FR-021, FR-023: foreign settings survive; URLs leave the flags."""
+        config = _make_copilot_native_config(tmp_path)
+        settings = tmp_path / ".copilot" / "settings.json"
+        settings.parent.mkdir()
+        settings.write_text(json.dumps({"model": "keep-me"}))
+
+        result = runner.invoke(app, ["-c", str(config), "generate", "copilot", "-w"])
+
+        assert result.exit_code == 0, result.output
+        written = json.loads(settings.read_text())
+        assert written["model"] == "keep-me"
+        assert written["sandbox"]["userPolicy"]["filesystem"]["deniedPaths"] == [
+            "/secrets"
+        ]
+        assert written["allowedUrls"] == ["github.com"]
+        flags = (tmp_path / "copilot-flags.txt").read_text()
+        assert "--deny-tool 'shell(rm)'" in flags
+        assert "--allow-url" not in flags
+        assert "settings:" not in flags
+
+    def test_settings_only_config_writes_no_flags_file(self, tmp_path: Path) -> None:
+        """FR-026."""
+        config = _make_copilot_native_config(tmp_path, flags=False)
+
+        result = runner.invoke(app, ["-c", str(config), "generate", "copilot", "-w"])
+
+        assert result.exit_code == 0, result.output
+        written = json.loads((tmp_path / ".copilot" / "settings.json").read_text())
+        assert written["sandbox"]["enabled"] is True
+        assert not (tmp_path / "copilot-flags.txt").exists()
+
+    def test_yolo_writes_the_same_settings_file(self, tmp_path: Path) -> None:
+        """FR-025: no settings.yolo.json; only the flags get a yolo variant."""
+        config = _make_copilot_native_config(tmp_path)
+
+        result = runner.invoke(
+            app, ["-c", str(config), "generate", "copilot", "-w", "--yolo"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / ".copilot" / "settings.json").exists()
+        assert not (tmp_path / ".copilot" / "settings.yolo.json").exists()
+        assert (tmp_path / "copilot-flags.yolo.txt").exists()
+
+    def test_all_writes_flags_settings_and_every_ide_file(self, tmp_path: Path) -> None:
+        """FR-030."""
+        config = _make_copilot_native_config(tmp_path, ides=("IdeaA", "PyCharmB"))
+
+        result = runner.invoke(app, ["-c", str(config), "generate", "all", "-w"])
+
+        assert result.exit_code == 0, result.output
+        for ide in ("IdeaA", "PyCharmB"):
+            xml = (tmp_path / ide / "options" / "github-copilot.xml").read_text()
+            assert '<option name="sandboxEnabled" value="true" />' in xml
+
+    def test_locked_ide_is_skipped_and_everything_else_written(
+        self, tmp_path: Path
+    ) -> None:
+        """FR-033: a running IDE overrides external edits; skip it, warn, exit 0."""
+        config = _make_copilot_native_config(tmp_path, ides=("IdeaA", "PyCharmB"))
+        (tmp_path / "PyCharmB").mkdir()
+        (tmp_path / "PyCharmB" / ".lock").write_text("")
+
+        result = runner.invoke(app, ["-c", str(config), "generate", "all", "-w"])
+
+        assert result.exit_code == 0, result.output
+        locked_xml = tmp_path / "PyCharmB" / "options" / "github-copilot.xml"
+        assert not locked_xml.exists()
+        assert (tmp_path / "IdeaA" / "options" / "github-copilot.xml").exists()
+        assert (tmp_path / ".srt-settings.json").exists()
+        assert (tmp_path / ".copilot" / "settings.json").exists()
+        assert "Warning" in result.stderr
+        assert str(locked_xml) in result.stderr
+        # A crashed IDE leaves its lock behind; the user must learn that too.
+        assert "stale" in result.stderr
+
+    def test_preview_names_the_ide_file_it_would_skip(self, tmp_path: Path) -> None:
+        """FR-033: preview tells what -w would leave alone."""
+        config = _make_copilot_native_config(tmp_path, ides=("IdeaA",))
+        (tmp_path / "IdeaA").mkdir()
+        (tmp_path / "IdeaA" / ".lock").write_text("")
+
+        result = runner.invoke(
+            app, ["-c", str(config), "generate", "copilot-jetbrains"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "skip" in result.stderr
+        assert str(tmp_path / "IdeaA" / "options" / "github-copilot.xml") in (
+            result.stderr
+        )
+
+    def test_diff_after_write_reports_no_drift(self, tmp_path: Path) -> None:
+        """FR-024, FR-034 end to end."""
+        config = _make_copilot_native_config(tmp_path, ides=("IdeaA",))
+        runner.invoke(app, ["-c", str(config), "generate", "all", "-w"])
+
+        result = runner.invoke(app, ["-c", str(config), "diff", "all"])
+
+        assert result.exit_code == 0, result.output
+        assert "copilot: no drift" in result.stdout
+        assert "copilot-jetbrains: no drift" in result.stdout
+
+    def test_diff_reports_a_missing_first_ide_file_as_drift(
+        self, tmp_path: Path
+    ) -> None:
+        """FR-030: every listed file is compared, whatever its position."""
+        config = _make_copilot_native_config(tmp_path, ides=("IdeaA", "PyCharmB"))
+        runner.invoke(app, ["-c", str(config), "generate", "all", "-w"])
+        missing = tmp_path / "IdeaA" / "options" / "github-copilot.xml"
+        missing.unlink()
+
+        result = runner.invoke(app, ["-c", str(config), "diff", "copilot-jetbrains"])
+
+        assert result.exit_code == 1, result.output
+        assert "Target file not found" not in result.stderr
+        assert str(missing) in result.output
+
+    def test_shared_policy_warnings_are_printed_once(self, tmp_path: Path) -> None:
+        """Both Copilot generators build the same policy; one warning each."""
+        config = _make_copilot_native_config(tmp_path, ides=("IdeaA",))
+
+        result = runner.invoke(app, ["-c", str(config), "generate", "all"])
+
+        assert result.exit_code == 0, result.output
+        assert result.stderr.count("in-process") == 1
+
+    def test_mode_override_is_not_warned_as_an_srt_field(self, tmp_path: Path) -> None:
+        """FR-040: [sandbox_overrides.*] configure Claude, not srt."""
+        config = _make_copilot_native_config(tmp_path)
+        config.write_text(
+            config.read_text()
+            + "[sandbox_overrides.yolo]\nenableWeakerNestedSandbox = true\n"
+        )
+
+        result = runner.invoke(
+            app, ["-c", str(config), "generate", "copilot", "--yolo"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "enableWeakerNestedSandbox" not in result.stderr
+
+    def test_project_mode_rejects_copilot_jetbrains(self, tmp_path: Path) -> None:
+        """FR-041: JetBrains settings are global to the IDE."""
+        config = _make_copilot_native_config(tmp_path, ides=("IdeaA",))
+
+        result = runner.invoke(
+            app, ["-c", str(config), "generate", "--project", "copilot-jetbrains"]
+        )
+
+        assert result.exit_code == 1
+        assert "copilot-jetbrains" in result.stderr
+        assert "--project" in result.stderr
+
+    def test_yolo_diff_with_settings_only_reads_the_one_settings_file(
+        self, tmp_path: Path
+    ) -> None:
+        """FR-025: no settings.yolo.json exists or is looked for."""
+        config = _make_copilot_native_config(tmp_path, flags=False)
+        runner.invoke(app, ["-c", str(config), "generate", "copilot", "-w"])
+
+        result = runner.invoke(app, ["-c", str(config), "diff", "copilot", "--yolo"])
+
+        assert result.exit_code == 0, result.output
+        assert "copilot: no drift" in result.stdout
+
+    def test_locked_ide_warning_is_red_unlike_other_warnings(
+        self, tmp_path: Path
+    ) -> None:
+        """The skipped IDE keeps its old policy: make it stand out (still a
+        Warning, exit 0), while ordinary warnings stay yellow."""
+        config = _make_copilot_native_config(tmp_path, ides=("IdeaA",))
+        (tmp_path / "IdeaA").mkdir()
+        (tmp_path / "IdeaA" / ".lock").write_text("")
+
+        result = runner.invoke(
+            app,
+            ["-c", str(config), "generate", "copilot-jetbrains"],
+            env={"NO_COLOR": None},
+            color=True,
+        )
+
+        assert result.exit_code == 0, result.output
+        lock_line = next(ln for ln in result.stderr.splitlines() if ".lock" in ln)
+        assert "Warning:" in lock_line
+        assert "\x1b[31m" in lock_line
+        other = [ln for ln in result.stderr.splitlines() if "in-process" in ln]
+        assert other and "\x1b[33m" in other[0]
