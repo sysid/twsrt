@@ -172,6 +172,82 @@ class TestLoadConfig:
         assert config.agent_target("copilot") == tmp_path / "copilot-flags.txt"
         assert config.agent_target("codex") == tmp_path / "config.toml"
 
+    def test_copilot_settings_alone_configures_copilot(
+        self, tmp_twsrt_dir: Path, tmp_path: Path
+    ) -> None:
+        """The native-sandbox target works without the flags file (FR-026)."""
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(
+            base_config(
+                f'[targets]\ncopilot_settings = "{tmp_path / "settings.json"}"\n'
+            )
+        )
+
+        config = load_config(path)
+
+        assert config.copilot_settings_path == tmp_path / "settings.json"
+        assert config.copilot_output_path is None
+        assert config.agent_target("copilot") == tmp_path / "settings.json"
+
+    def test_copilot_flags_alone_still_configure_copilot(
+        self, tmp_twsrt_dir: Path, tmp_path: Path
+    ) -> None:
+        """The flags-only mode stays supported (FR-026)."""
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(
+            base_config(
+                f'[targets]\ncopilot_output = "{tmp_path / "copilot-flags.txt"}"\n'
+            )
+        )
+
+        config = load_config(path)
+
+        assert config.copilot_settings_path is None
+        assert config.agent_target("copilot") == tmp_path / "copilot-flags.txt"
+
+    def test_jetbrains_xml_list_configures_copilot_jetbrains(
+        self, tmp_twsrt_dir: Path, tmp_path: Path
+    ) -> None:
+        """Every listed IDE file is a target; relative entries resolve like others."""
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(
+            base_config(
+                "[targets]\n"
+                f'copilot_jetbrains_xml = ["{tmp_path / "idea.xml"}", "pycharm.xml"]\n'
+            )
+        )
+
+        config = load_config(path)
+
+        assert config.copilot_jetbrains_xml_paths == [
+            tmp_path / "idea.xml",
+            tmp_twsrt_dir / "pycharm.xml",
+        ]
+        assert config.agent_target("copilot-jetbrains") == tmp_path / "idea.xml"
+
+    def test_copilot_jetbrains_unconfigured_names_its_key(
+        self, tmp_twsrt_dir: Path
+    ) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(base_config())
+
+        config = load_config(path)
+
+        assert config.agent_target("copilot-jetbrains") is None
+        with pytest.raises(ValueError, match=r"\[targets\]\.copilot_jetbrains_xml"):
+            config.require_target("copilot-jetbrains")
+
+    @pytest.mark.parametrize("value", ['"idea.xml"', "[]", '[""]', "[1]"])
+    def test_malformed_jetbrains_xml_value_is_rejected(
+        self, tmp_twsrt_dir: Path, value: str
+    ) -> None:
+        """FR-042: anything but a non-empty list of path strings fails loudly."""
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(base_config(f"[targets]\ncopilot_jetbrains_xml = {value}\n"))
+
+        with pytest.raises(ValueError, match="copilot_jetbrains_xml"):
+            load_config(path)
+
     def test_require_target_names_the_missing_key(self, tmp_twsrt_dir: Path) -> None:
         path = tmp_twsrt_dir / "config.toml"
         path.write_text(base_config())

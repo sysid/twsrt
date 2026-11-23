@@ -286,6 +286,7 @@ def _apply_target_paths(
     fields = {
         "claude_settings": "claude_settings_path",
         "copilot_output": "copilot_output_path",
+        "copilot_settings": "copilot_settings_path",
         "codex_config": "codex_config_path",
         "codex_rules": "codex_rules_path",
         "claude_settings_yolo": "claude_yolo_path",
@@ -298,6 +299,10 @@ def _apply_target_paths(
     for key, field_name in fields.items():
         if key in targets:
             setattr(config, field_name, _resolve_path(targets[key], base_dir))
+    if "copilot_jetbrains_xml" in targets:
+        config.copilot_jetbrains_xml_paths = _resolve_path_list(
+            "copilot_jetbrains_xml", targets["copilot_jetbrains_xml"], base_dir
+        )
 
     if (
         config.claude_settings_path is not None
@@ -307,6 +312,15 @@ def _apply_target_paths(
             "claude_settings must not be 'settings.json' — that path is reserved "
             "for the symlink anchor. Use 'settings.full.json' instead."
         )
+
+
+def _resolve_path_list(key: str, value: Any, base_dir: Path) -> list[Path]:
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"targets.{key} must be a non-empty list of paths")
+    try:
+        return [_resolve_path(item, base_dir) for item in value]
+    except ValueError as exc:
+        raise ValueError(f"targets.{key}: {exc}") from exc
 
 
 def _resolve_path(value: Any, base_dir: Path) -> Path:

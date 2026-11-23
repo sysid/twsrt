@@ -225,8 +225,9 @@ the single-source model with drift detection removes the configuration
 mistakes that in practice cause most gaps.
 
 **Native-sandbox convergence (2026).** All supported agents now ship native
-OS sandboxes (Claude Code: Seatbelt/bwrap, opt-in; Copilot CLI: local
-sandbox in public preview; Codex: always on). twsrt's durable core is
+OS sandboxes (Claude Code: Seatbelt/bwrap, opt-in; Copilot CLI and
+JetBrains: local sandbox, GA, compiled by twsrt since ADR 0009; Codex:
+always on). twsrt's durable core is
 therefore compiling deny paths and domains into each agent's native sandbox,
 a high-fidelity translation everywhere; the Bash-rules app layer stays a
 best-effort supplement ([roadmap](doc/REFERENCE.md#scope-and-roadmap)).
@@ -421,7 +422,8 @@ derives a write probe for each.
 
 | Agent | Result |
 |---|---|
-| srt wrapper (`srt -s`, Copilot, pi) | blocked by the implied `denyWrite`; allowed for a policy compiled without it |
+| srt wrapper (`srt -s`, Copilot flags-only mode, pi) | blocked by the implied `denyWrite`; allowed for a policy compiled without it |
+| Copilot native sandbox (CLI, JetBrains) | literal paths: `deniedPaths` blocks reads (probed, CLI 1.0.114) and writes (the generated Seatbelt rule denies `file-write*`; not probed); glob paths are not translated (warned), so a glob-only deny does not protect here |
 | Claude Code | Edit and Write tools blocked by the `Edit(...)` deny; Bash under Claude's native sandbox: not verified whether the `Edit` deny reaches the sandbox's write rules |
 | Codex | filesystem `deny`, which outranks `read`; not runtime-verified |
 

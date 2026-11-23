@@ -184,8 +184,10 @@ class CodexGenerator:
         for key in ("httpProxyPort", "socksProxyPort"):
             if key in config.network_config:
                 warnings.append(f"Codex has no equivalent integer {key}; skipped {key}")
+        # The compiled srt fields, not sandbox_config: [sandbox_overrides.*]
+        # target Claude and are no srt policy Codex could miss.
         ignored_sandbox_keys = sorted(
-            key for key in config.sandbox_config if key != "enabled"
+            key for key in config.srt_sandbox_config if key != "enabled"
         )
         if ignored_sandbox_keys:
             warnings.append(

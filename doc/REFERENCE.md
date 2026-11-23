@@ -16,6 +16,7 @@ rationale are in [SECURITY_CONCEPT.md](../SECURITY_CONCEPT.md).
 - [Claude per-project launch premise](#claude-per-project-launch-premise)
 - [Codex translation rules](#codex-translation-rules)
 - [Copilot flags](#copilot-flags)
+- [Copilot native sandbox](#copilot-native-sandbox)
 - [Doctor checks](#doctor-checks)
 - [Sandbox probes](#sandbox-probes)
 - [Diagnostic output](#diagnostic-output)
@@ -135,9 +136,12 @@ Enforced at construction: `NETWORK` takes only `ALLOW` or `DENY`;
 
 ## Rule mapping per agent
 
-`—` = no output; for Copilot the SRT wrapper enforces paths and domains.
+`—` = no output. The Copilot column shows the flag snippet. With
+`copilot_settings`, paths and domains go into Copilot's native sandbox instead
+([Copilot native sandbox](#copilot-native-sandbox)) and the URL flags are not
+emitted; in flags-only mode the SRT wrapper enforces paths and domains.
 
-| Canonical rule | Claude Code | Copilot CLI | Codex |
+| Canonical rule | Claude Code | Copilot flags | Codex |
 |---|---|---|---|
 | `denyRead` directory | `Read(p)`, `Read(p/**)`, `Edit(p)`, `Edit(p/**)` deny | — | filesystem `deny` |
 | `denyRead` file | `Read(p)`, `Edit(p)` deny | — | filesystem `deny` |
@@ -549,11 +553,11 @@ credentials are never printed.
 | Canonical rule | Flag | Full | Yolo |
 |---|---|---|---|
 | any `allowWrite` | `--allow-tool 'shell'`, `'read'`, `'edit'`, `'write'`, emitted once | ✓ | — |
-| `allowedDomains` | `--allow-url 'X'` | ✓ | — |
-| `deniedDomains` | `--deny-url 'X'` | ✓ | ✓ |
+| `allowedDomains` | `--allow-url 'X'`, only without `copilot_settings` | ✓ | — |
+| `deniedDomains` | `--deny-url 'X'`, only without `copilot_settings` | ✓ | ✓ |
 | Bash `deny` | `--deny-tool 'shell(c)'` | ✓ | ✓ |
 | Bash `ask` | `--deny-tool 'shell(c)'` + warning | ✓ | — |
-| `denyRead`, `denyWrite` | — (SRT wrapper enforces) | | |
+| `denyRead`, `denyWrite` | — (native sandbox or SRT wrapper enforces) | | |
 
 Yolo output starts with `--yolo`; deny flags still take precedence over it.
 Copilot has no "ask before running" tier, so an ask rule becomes a deny, the
@@ -562,6 +566,56 @@ fail-safe direction:
 ```
 Warning: Bash ask rule 'git push' mapped to --deny-tool for copilot (no ask equivalent)
 ```
+
+These flags exist only in the `copilot_output` file. With `copilot_settings`
+alone, Bash deny (and, in full mode, ask) rules reach no Copilot CLI file;
+twsrt warns that they are not enforced instead.
+
+## Copilot native sandbox
+
+One policy builder (`src/twsrt/lib/copilot_sandbox.py`) feeds two targets
+([ADR 0009](adr/0009-copilot-native-sandbox.md)): `copilot` merges keys into
+`~/.copilot/settings.json`, `copilot-jetbrains` merges options into each
+`github-copilot.xml`. Every path is emitted absolute (`~` expanded, one
+trailing `/**` removed); lists are deduplicated and sorted.
+
+| Canonical | `settings.json` | `github-copilot.xml` |
+|---|---|---|
+| `denyRead` literal (existing or not) | `sandbox.userPolicy.filesystem.deniedPaths` | `<sandboxDeniedPaths>` |
+| `denyWrite` literal, not also `denyRead` | `…readonlyPaths` | `<sandboxReadonlyPaths>` |
+| `allowWrite` literal | `…readwritePaths` (dropped and warned if equal to a deny) | `<sandboxReadwritePaths>` |
+| `allowWrite` `.` / `.git` | `addCurrentWorkingDirectory: true` / nothing (granted natively) | `sandboxAddCurrentWorkingDirectory` |
+| glob below a fixed prefix (`~/x/*/y`) | expanded at generate time (warned snapshot) | same |
+| other globs, cwd-relative entries | dropped, one warning | same |
+| `allowedDomains` non-empty | `…network.allowedHosts` (`:port` stripped, warned), `allowOutbound: true` | `<sandboxAllowedHosts>`, `sandboxAllowOutboundNetwork` |
+| no `allowedDomains` | `allowOutbound: false`, empty `allowedHosts` | `sandboxAllowOutboundNetwork=false` |
+| `deniedDomains` | `…network.blockedHosts` | `<sandboxBlockedHosts>` |
+| `allowLocalBinding` | `allowLocalNetwork` (always written; warned when true) | `sandboxAllowLocalNetwork` (IDE default is `true`) |
+| `allowedDomains` / `deniedDomains` | top-level `allowedUrls` / `deniedUrls` | — (no URL rules) |
+| twsrt targets themselves | added to `readonlyPaths`, link and real spelling | same |
+| canonical `enabled: false` | error | error |
+
+Fixed values: `enabled`/`sandboxEnabled` true, MCP servers sandboxed, bypass
+off, keychain off, dev-tool access on, git and gh authentication on; CLI only
+also LSP servers and extensions sandboxed.
+
+**Why an empty allowlist turns the network off.** srt reads an empty
+`allowedDomains` as "no network"; Copilot reads an empty `allowedHosts` as "no
+restriction". Emitting the empty list would invert the policy.
+
+**Ownership and drift.** `settings.json`: twsrt owns `sandbox`,
+`allowedUrls`, `deniedUrls` and compares them by JSON value; everything else is
+ignored. `github-copilot.xml`: twsrt owns the ten `sandbox*` options and five
+lists of component `github-copilot`; `diff` treats an absent option as its
+IntelliJ default (the IDE omits defaults when it saves), so an IDE save is not
+drift. `sandboxProxyUrl` and `enableCloudSandbox` stay the user's.
+
+**Writes.** Both files are written atomically. A JetBrains file whose IDE
+holds `<config>/.lock` is skipped with a warning; everything else is still
+written and the command exits 0. A lock left behind by a crashed IDE has the
+same effect until it is removed. XML comments in the file are preserved.
+`diff` reports a missing JetBrains file as drift, whichever position it has in
+`copilot_jetbrains_xml`.
 
 ## Doctor checks
 
@@ -1134,7 +1188,7 @@ JSON objects.
 ## Scope and roadmap
 
 All three agents ship native OS sandboxes (Claude Code: built-in
-Seatbelt/bwrap, opt-in; Copilot CLI: local sandbox in public preview; Codex:
+Seatbelt/bwrap, opt-in; Copilot CLI and JetBrains: local sandbox, GA since October 2026; Codex:
 kernel sandbox always-on). The durable core, deny paths and domains,
 compiles into each of them with high fidelity. The Bash-rules app layer is
 the per-agent best-effort supplement:
@@ -1143,9 +1197,11 @@ the per-agent best-effort supplement:
   Claude gets full deny/ask fidelity; Copilot keeps deny-only flags (deny
   takes precedence over `--yolo`); Codex gets forbidden-only escalation
   rules. New agents get restrictions-only compilation by default.
-- **Copilot native sandbox** (`sandbox` key in Copilot settings.json) is the
-  intended replacement for the flag-snippet generator, deferred while the
-  feature is in public preview with an undocumented backend.
+- **Copilot native sandbox** is compiled for the CLI (`settings.json`) and
+  JetBrains IDEs (`github-copilot.xml`); the flag snippet stays for Bash
+  rules, and the flags-only mode under srt stays supported
+  ([ADR 0009](adr/0009-copilot-native-sandbox.md),
+  [details](#copilot-native-sandbox)).
 - **pi-mono** runs under the SRT wrapper today
   ([pi-extensions/sandbox](https://github.com/sysid/pi-extensions/tree/main/packages/sandbox));
   a native generator follows the [extension path](#extending-twsrt).
