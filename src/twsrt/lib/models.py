@@ -121,31 +121,6 @@ AGENT_TARGET_KEYS = {
 }
 
 
-def yolo_path(original: Path) -> Path:
-    """Derive a yolo variant path: replace all suffixes except the last with '.yolo'.
-
-    settings.full.json → settings.yolo.json
-    settings.json      → settings.yolo.json
-    copilot-flags.txt  → copilot-flags.yolo.txt
-    config             → config.yolo
-    """
-    if not original.suffix:
-        return original.with_name(f"{original.name}.yolo")
-    root_stem = original.name.removesuffix("".join(original.suffixes))
-    return original.with_name(f"{root_stem}.yolo{original.suffix}")
-
-
-@dataclass
-class ClaudeSync:
-    """[claude_sync] table: sync unmanaged Claude settings between full and yolo.
-
-    Extension point for further sync policy; today only the exclusion list.
-    """
-
-    # Dotted key paths that legitimately differ per mode and are never synced.
-    mode_specific: list[str] = field(default_factory=list)
-
-
 @dataclass
 class AppConfig:
     sources: dict[str, CanonicalSource] = field(default_factory=dict)
@@ -171,28 +146,17 @@ class AppConfig:
     codex_config_path: Path | None = None
     # None = escalation-rules generation disabled (codex_rules unset in config.toml)
     codex_rules_path: Path | None = None
-    claude_yolo_path: Path | None = None
-    copilot_yolo_path: Path | None = None
     network_config: dict[str, Any] = field(default_factory=dict)
     filesystem_config: dict[str, Any] = field(default_factory=dict)
     sandbox_config: dict[str, Any] = field(default_factory=dict)
-    # The compiled srt sandbox fields before [sandbox_overrides.*] are merged.
-    srt_sandbox_config: dict[str, Any] = field(default_factory=dict)
-    srt_sandbox_enabled: bool | None = None
-    sandbox_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
-    # None = [claude_sync] absent: invariant sync between full/yolo disabled.
-    claude_sync: ClaudeSync | None = None
-    yolo: bool = False
 
-    def apply_sandbox_overrides(self) -> None:
-        """Merge mode-specific sandbox overrides into sandbox_config.
-
-        Selects "yolo" or "full" overrides based on self.yolo flag,
-        then updates sandbox_config so overrides take precedence over SRT values.
-        """
-        mode = "yolo" if self.yolo else "full"
-        overrides = self.sandbox_overrides.get(mode, {})
-        self.sandbox_config.update(overrides)
+    def require_sandbox(self, agent: str) -> None:
+        """No agent gets a config for a policy that switches the sandbox off."""
+        if self.sandbox_config.get("enabled") is False:
+            raise ValueError(
+                "Canonical SRT sandbox is disabled; refusing to generate an "
+                f"unsandboxed {agent} config"
+            )
 
     def agent_target(self, agent: str) -> Path | None:
         """The agent's primary target; None means the agent is not configured."""
@@ -211,11 +175,6 @@ class AppConfig:
                 "in config.toml"
             )
         return target
-
-    @property
-    def symlink_anchor(self) -> Path:
-        """The fixed path Claude Code reads — always settings.json in the target dir."""
-        return self.require_target("claude").parent / "settings.json"
 
 
 @dataclass

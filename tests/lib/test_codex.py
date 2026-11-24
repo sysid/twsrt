@@ -205,7 +205,7 @@ class TestCodexProfileGeneration:
 
     def test_untranslated_srt_sandbox_fields_are_named(self) -> None:
         config = AppConfig(
-            srt_sandbox_config={"enabled": True, "ignoreViolations": {"*": ["/x"]}}
+            sandbox_config={"enabled": True, "ignoreViolations": {"*": ["/x"]}}
         )
 
         warnings = CodexGenerator().compatibility_warnings([], config)
@@ -214,17 +214,6 @@ class TestCodexProfileGeneration:
         assert len(untranslated) == 1
         assert "ignoreViolations" in untranslated[0]
         assert "enabled" not in untranslated[0]
-
-    def test_mode_overrides_are_not_reported_as_srt_fields(self) -> None:
-        """[sandbox_overrides.*] configure Claude, not the canonical srt policy."""
-        config = AppConfig(
-            sandbox_config={"enabled": True, "enableWeakerNestedSandbox": True},
-            srt_sandbox_config={"enabled": True},
-        )
-
-        warnings = CodexGenerator().compatibility_warnings([], config)
-
-        assert not any("SRT sandbox fields" in w for w in warnings)
 
     def test_rejects_literal_root_tilde_path(self) -> None:
         rules = [_rule(Scope.WRITE, Action.DENY, "/~/dev/private")]
@@ -245,19 +234,11 @@ class TestCodexProfileGeneration:
             for warning in warnings
         )
 
-    def test_rejects_disabled_canonical_sandbox_but_ignores_claude_override(
-        self,
-    ) -> None:
-        generator = CodexGenerator()
-        disabled = AppConfig(srt_sandbox_enabled=False)
-        with pytest.raises(ValueError, match="disabled"):
-            generator.generate_config([], disabled)
+    def test_rejects_disabled_canonical_sandbox(self) -> None:
+        disabled = AppConfig(sandbox_config={"enabled": False})
 
-        claude_override = AppConfig(
-            srt_sandbox_enabled=True,
-            sandbox_config={"enabled": False},
-        )
-        assert generator.generate_config([], claude_override)
+        with pytest.raises(ValueError, match="sandbox is disabled.*Codex"):
+            CodexGenerator().generate_config([], disabled)
 
 
 class TestCodexExecutionRules:
@@ -280,17 +261,6 @@ class TestCodexExecutionRules:
         assert 'decision = "allow"' not in generated
         assert '"push"' not in generated
         assert '"gh"' not in generated
-
-    def test_rules_identical_regardless_of_yolo(self) -> None:
-        rules = [
-            _rule(Scope.EXECUTE, Action.DENY, "rm"),
-            _rule(Scope.EXECUTE, Action.ASK, "git push"),
-        ]
-
-        full = CodexGenerator().generate_rules(rules, AppConfig())
-        yolo = CodexGenerator().generate_rules(rules, AppConfig(yolo=True))
-
-        assert full == yolo
 
     def test_warns_about_skipped_allow_and_ask_rules(self) -> None:
         rules = [

@@ -5,6 +5,8 @@
 - **Deciders:** Tom
 - **Implementation:** `src/twsrt/bin/cli.py` `generate --project`, `_stage_project_claude`;
   `src/twsrt/lib/sources.py` `compile_sources(extra_deny_write=…)`
+- **Amended by:** ADR 0010 (outputs in `./.twsrt/<profile>/`, no modes; `--settings` files are not
+  watched, so decision 4 protects later launches)
 - **Related:** ADR 0003 (composition only adds), ADR 0001 (`denyRead` ⇒ `denyWrite`);
   `doc/REFERENCE.md` → "Claude per-project launch premise"; README → "Per-project policy"
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tomllib
+import unicodedata
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, cast
@@ -10,7 +11,6 @@ from typing import Any, cast
 from twsrt.lib.models import (
     AppConfig,
     CanonicalSource,
-    ClaudeSync,
     Profile,
     SourceFragment,
 )
@@ -21,8 +21,25 @@ SOURCE_KINDS = ("srt", "bash")
 # exist and every bash code path is skipped.
 REQUIRED_SOURCE_KINDS = ("srt",)
 # Canonical output file names: next to config.toml when [sources.<kind>].output
-# is omitted, and inside ./.twsrt/ under `generate --project`.
+# is omitted, and inside ./.twsrt/<profile>/ under `generate --project`.
 DEFAULT_OUTPUT_NAMES = {"srt": "srt-settings.json", "bash": "bash-rules.json"}
+
+
+_TOP_LEVEL_KEYS = (
+    "schema_version",
+    "default_profile",
+    "sources",
+    "profiles",
+    "targets",
+)
+# ADR 0010: keys of twsrt 3.x, with what replaced them.
+_REMOVED_KEYS = {
+    "sandbox_overrides": "Claude's sandbox is always enabled; for one session "
+    "without it use claude --settings",
+    "claude_sync": "there is one settings.json, so nothing is left to sync",
+    "claude_settings_yolo": "select a profile instead of a mode",
+    "copilot_output_yolo": "select a profile instead of a mode",
+}
 
 
 def source_kind_error(kind: str, configured: Iterable[str]) -> str:
@@ -45,7 +62,7 @@ def load_config(config_path: Path) -> AppConfig:
     except tomllib.TOMLDecodeError as exc:
         raise ValueError(f"Invalid TOML in {config_path}: {exc}") from exc
 
-    raw_sources = data.get("sources", {})
+    raw_sources = _require_table(data.get("sources", {}), "sources")
     if any(isinstance(value, str) for value in raw_sources.values()):
         raise ValueError(
             "The legacy [sources] path schema is not supported. Replace "
@@ -59,6 +76,8 @@ def load_config(config_path: Path) -> AppConfig:
             f"Unsupported schema_version {schema_version!r}; expected {SCHEMA_VERSION}"
         )
 
+    _reject_unknown_keys(data, _TOP_LEVEL_KEYS, config_path.name)
+
     base_dir = config_path.parent
     sources = _build_sources(raw_sources, base_dir)
     profiles = _build_profiles(data.get("profiles", {}), sources)
@@ -71,7 +90,7 @@ def load_config(config_path: Path) -> AppConfig:
         )
     _validate_profiles(profiles, sources)
 
-    targets = data.get("targets", {})
+    targets = _require_table(data.get("targets", {}), "targets")
     config = AppConfig(
         sources=sources,
         policy_files=_policy_files(config_path, sources),
@@ -85,34 +104,33 @@ def load_config(config_path: Path) -> AppConfig:
     if "bash" in sources:
         config.bash_rules_path = sources["bash"].output_path
     _apply_target_paths(config, targets, base_dir)
-    config.sandbox_overrides = dict(data.get("sandbox_overrides", {}))
-    config.claude_sync = _build_claude_sync(data.get("claude_sync"))
     return config
 
 
-def _build_claude_sync(raw: Any) -> ClaudeSync | None:
-    """Parse [claude_sync]. Absent table means sync disabled.
+def _require_table(value: Any, where: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{where} must be a table")
+    return cast(dict[str, Any], value)
 
-    Strict on purpose: a misspelled field would otherwise silently disable
-    an exclusion and let a mode-specific key leak across modes.
-    """
-    if raw is None:
-        return None
-    if not isinstance(raw, dict):
-        raise ValueError("claude_sync must be a table")
-    unknown = sorted(set(raw) - {"mode_specific"})
+
+def _reject_unknown_keys(
+    table: dict[str, Any], known: Iterable[str], where: str
+) -> None:
+    """A misspelled key would otherwise drop the policy it was meant to set."""
+    known = set(known)
+    unknown = sorted(set(table) - known)
+    removed = [
+        f"{key} was removed: {_REMOVED_KEYS[key]}"
+        for key in unknown
+        if key in _REMOVED_KEYS
+    ]
+    if removed:
+        raise ValueError(f"{where}: {'; '.join(removed)} (ADR 0010)")
     if unknown:
-        raise ValueError(f"claude_sync: unknown field(s): {', '.join(unknown)}")
-    mode_specific = raw.get("mode_specific", [])
-    if not isinstance(mode_specific, list):
-        raise ValueError("claude_sync.mode_specific must be a list of key paths")
-    for entry in mode_specific:
-        if not isinstance(entry, str) or not entry:
-            raise ValueError(
-                "claude_sync.mode_specific entries must be non-empty strings, "
-                f"got {entry!r}"
-            )
-    return ClaudeSync(mode_specific=list(mode_specific))
+        raise ValueError(
+            f"{where}: unknown key(s): {', '.join(unknown)}; "
+            f"known: {', '.join(sorted(known))}"
+        )
 
 
 def _build_sources(raw: dict[str, Any], base_dir: Path) -> dict[str, CanonicalSource]:
@@ -127,8 +145,8 @@ def _build_sources(raw: dict[str, Any], base_dir: Path) -> dict[str, CanonicalSo
                 f"unknown canonical source kind {kind!r}; available: "
                 f"{', '.join(SOURCE_KINDS)}"
             )
-        if not isinstance(blob, dict):
-            raise ValueError(f"sources.{kind} must be a table")
+        blob = _require_table(blob, f"sources.{kind}")
+        _reject_unknown_keys(blob, ["output", "fragments"], f"sources.{kind}")
         output_path = _resolve_path(
             blob.get("output", DEFAULT_OUTPUT_NAMES[kind]), base_dir
         )
@@ -139,13 +157,18 @@ def _build_sources(raw: dict[str, Any], base_dir: Path) -> dict[str, CanonicalSo
             )
         output_owners[output_path] = kind
 
-        raw_fragments = blob.get("fragments", {})
+        raw_fragments = _require_table(
+            blob.get("fragments", {}), f"sources.{kind}.fragments"
+        )
         if not raw_fragments:
             raise ValueError(f"sources.{kind} must define at least one fragment")
         fragments: dict[str, SourceFragment] = {}
         for name, fragment_blob in raw_fragments.items():
             if not isinstance(fragment_blob, dict) or "path" not in fragment_blob:
                 raise ValueError(f"sources.{kind}.fragments.{name}.path is required")
+            _reject_unknown_keys(
+                fragment_blob, ["path"], f"sources.{kind}.fragments.{name}"
+            )
             path = _resolve_path(fragment_blob["path"], base_dir)
             if path.suffix != ".jsonc":
                 raise ValueError(
@@ -201,15 +224,35 @@ def _tilde(path: Path) -> str:
 
 
 def _build_profiles(
-    raw: dict[str, Any], sources: dict[str, CanonicalSource]
+    raw: Any, sources: dict[str, CanonicalSource]
 ) -> dict[str, Profile]:
+    raw = _require_table(raw, "profiles")
     if not raw:
         raise ValueError("At least one profile must be configured")
     profiles: dict[str, Profile] = {}
+    directory_owners: dict[str, str] = {}
     for name, blob in raw.items():
-        if not isinstance(blob, dict):
-            raise ValueError(f"profiles.{name} must be a table")
-        profile_blob = cast(dict[str, Any], blob)
+        # `generate --project` writes into ./.twsrt/<name>/.
+        if (
+            not name
+            or name.startswith(".")
+            or "/" in name
+            or "\\" in name
+            or not name.isprintable()
+        ):
+            raise ValueError(
+                f"profiles: {name!r} is not a valid profile name; it must be usable "
+                "as a directory name and not start with a dot"
+            )
+        # APFS and NTFS ignore case, APFS also Unicode normalization.
+        directory = unicodedata.normalize("NFC", name.casefold())
+        if directory in directory_owners:
+            raise ValueError(
+                f"profiles: {directory_owners[directory]!r} and {name!r} would share "
+                "the same directory under ./.twsrt on a case-insensitive filesystem"
+            )
+        directory_owners[directory] = name
+        profile_blob = _require_table(blob, f"profiles.{name}")
         unconfigured = set(profile_blob) & (set(SOURCE_KINDS) - set(sources))
         if unconfigured:
             kind = min(unconfigured)
@@ -217,11 +260,7 @@ def _build_profiles(
                 f"profiles.{name}: source kind {kind!r} not configured; add "
                 f"[sources.{kind}] or remove profiles.{name}.{kind}"
             )
-        unknown = set(profile_blob) - {"extends", *sources}
-        if unknown:
-            raise ValueError(
-                f"profiles.{name}: unknown field(s): {', '.join(sorted(unknown))}"
-            )
+        _reject_unknown_keys(profile_blob, ["extends", *sources], f"profiles.{name}")
         selections: dict[str, list[str]] = {}
         for kind in sources:
             values = profile_blob.get(kind, [])
@@ -274,8 +313,6 @@ def _validate_profiles(
 
 
 _DEPENDENT_TARGETS = {
-    "claude_settings_yolo": "claude_settings",
-    "copilot_output_yolo": "copilot_output",
     "codex_rules": "codex_config",
 }
 
@@ -289,9 +326,8 @@ def _apply_target_paths(
         "copilot_settings": "copilot_settings_path",
         "codex_config": "codex_config_path",
         "codex_rules": "codex_rules_path",
-        "claude_settings_yolo": "claude_yolo_path",
-        "copilot_output_yolo": "copilot_yolo_path",
     }
+    _reject_unknown_keys(targets, [*fields, "copilot_jetbrains_xml"], "targets")
     # A secondary path refines an agent; alone it would half-configure one.
     for dependent, primary in _DEPENDENT_TARGETS.items():
         if dependent in targets and primary not in targets:
@@ -306,11 +342,11 @@ def _apply_target_paths(
 
     if (
         config.claude_settings_path is not None
-        and config.claude_settings_path.name == "settings.json"
+        and config.claude_settings_path.name != "settings.json"
     ):
         raise ValueError(
-            "claude_settings must not be 'settings.json' — that path is reserved "
-            "for the symlink anchor. Use 'settings.full.json' instead."
+            "claude_settings must be named settings.json, the only file Claude Code "
+            f"reads; got {config.claude_settings_path} (ADR 0010)"
         )
 
 

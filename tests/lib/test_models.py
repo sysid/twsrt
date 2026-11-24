@@ -1,7 +1,5 @@
 """Tests for models: SecurityRule, enums, AppConfig, DiffResult."""
 
-from pathlib import Path
-
 import pytest
 
 from twsrt.lib.models import (
@@ -122,14 +120,6 @@ class TestAppConfig:
         assert config.copilot_output_path is None
         assert config.codex_config_path is None
 
-    def test_symlink_anchor_follows_custom_path(self) -> None:
-        config = AppConfig(claude_settings_path=Path("/custom/dir/settings.full.json"))
-        assert config.symlink_anchor == Path("/custom/dir/settings.json")
-
-    def test_symlink_anchor_requires_claude(self) -> None:
-        with pytest.raises(ValueError, match="claude is not configured"):
-            AppConfig().symlink_anchor
-
     def test_tilde_expansion(self) -> None:
         config = AppConfig()
         # Paths should not contain literal ~
@@ -153,44 +143,3 @@ class TestDiffResult:
     def test_no_drift(self) -> None:
         result = DiffResult(agent="copilot", missing=[], extra=[], matched=True)
         assert result.matched is True
-
-
-class TestYoloPath:
-    def test_json_extension(self) -> None:
-        from twsrt.lib.models import yolo_path
-
-        result = yolo_path(Path("/home/user/.claude/settings.json"))
-        assert result == Path("/home/user/.claude/settings.yolo.json")
-
-    def test_txt_extension(self) -> None:
-        from twsrt.lib.models import yolo_path
-
-        result = yolo_path(Path("copilot-flags.txt"))
-        assert result == Path("copilot-flags.yolo.txt")
-
-    def test_compound_extension(self) -> None:
-        """settings.full.json → settings.yolo.json (strip variant, keep final ext)."""
-        from twsrt.lib.models import yolo_path
-
-        result = yolo_path(Path("/home/user/.claude/settings.full.json"))
-        assert result == Path("/home/user/.claude/settings.yolo.json")
-
-    def test_no_extension(self) -> None:
-        from twsrt.lib.models import yolo_path
-
-        result = yolo_path(Path("config"))
-        assert result == Path("config.yolo")
-
-
-class TestAppConfigYoloFields:
-    def test_yolo_defaults_to_false(self) -> None:
-        config = AppConfig()
-        assert config.yolo is False
-
-    def test_claude_yolo_path_defaults_to_none(self) -> None:
-        config = AppConfig()
-        assert config.claude_yolo_path is None
-
-    def test_copilot_yolo_path_defaults_to_none(self) -> None:
-        config = AppConfig()
-        assert config.copilot_yolo_path is None

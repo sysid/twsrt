@@ -413,6 +413,15 @@ class TestReadSrtSandboxConfig:
         result = read_srt(p)
         assert result.sandbox_config["enabled"] is False
 
+    @pytest.mark.parametrize("value", [None, 0, 1, "false"])
+    def test_enabled_must_be_a_boolean(self, tmp_path: Path, value: object) -> None:
+        """Anything else is not `False`, so the disabled-sandbox check misses it."""
+        p = tmp_path / "srt.json"
+        p.write_text(json.dumps({"enabled": value}))
+
+        with pytest.raises(ValueError, match="enabled must be true or false"):
+            read_srt(p)
+
 
 class TestReadBashRules:
     def test_deny_rules(self, bash_rules_file: Path) -> None:

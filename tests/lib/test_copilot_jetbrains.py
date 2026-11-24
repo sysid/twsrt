@@ -270,7 +270,7 @@ class TestDiff:
         assert result.missing == [str(xml)]
 
 
-class TestWarningsAndYolo:
+class TestWarnings:
     def test_jetbrains_specific_gaps_are_warned(
         self, gen: CopilotJetbrainsGenerator, tmp_path: Path
     ) -> None:
@@ -284,15 +284,3 @@ class TestWarningsAndYolo:
         assert "LSP" in text
         assert "environment" in text
         assert "in-process" in text
-
-    def test_yolo_does_not_change_output(
-        self, gen: CopilotJetbrainsGenerator, tmp_path: Path
-    ) -> None:
-        """FR-036."""
-        xml = tmp_path / "github-copilot.xml"
-        full = AppConfig(copilot_jetbrains_xml_paths=[xml])
-        yolo = AppConfig(copilot_jetbrains_xml_paths=[xml], yolo=True)
-
-        assert gen.render_write_files(_rules(), full) == gen.render_write_files(
-            _rules(), yolo
-        )

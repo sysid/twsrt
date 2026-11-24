@@ -1,7 +1,8 @@
 """Configuration diagnostics: correctness, redundancy, and pattern traps.
 
 Correctness reuses the real pipeline (JSONC loading, profile resolution,
-compilation) over every profile, so doctor never disagrees with `generate`.
+compilation, every configured agent's generator) over every profile, so doctor
+never disagrees with `generate`.
 Redundancy and trap checks are lint: they flag rules that work but do less
 than they look, or nothing at all. Pattern semantics follow
 thoughts/research/2026-10-02-srt-wildcard-semantics.md.
@@ -13,10 +14,11 @@ import os
 import json
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from twsrt.lib.agent import GENERATORS
 from twsrt.lib.jsonc import load as load_jsonc, split_comments
 from twsrt.lib.models import AppConfig, ResolvedProfile
 from twsrt.lib.profiles import resolve_profile
@@ -214,11 +216,33 @@ def _compile_profiles(
         ):
             continue  # already reported as fragment-load
         try:
-            compile_sources(config, profile)
+            compiled = compile_sources(config, profile)
         except (OSError, ValueError) as exc:
             findings.append(
                 Finding("error", "profile-compile", f"profile {name!r}", str(exc))
             )
+            continue
+        srt = compiled.srt_result
+        agent_config = replace(
+            config,
+            network_config=srt.network_config,
+            filesystem_config=srt.filesystem_config,
+            sandbox_config=srt.sandbox_config,
+        )
+        for agent, generator in GENERATORS.items():
+            if config.agent_target(agent) is None:
+                continue
+            try:
+                generator.generate(compiled.rules, agent_config)
+            except (OSError, ValueError) as exc:
+                findings.append(
+                    Finding(
+                        "error",
+                        "profile-generate",
+                        f"profile {name!r}",
+                        f"{agent}: {exc}",
+                    )
+                )
 
 
 # --- B. redundancy --------------------------------------------------------
@@ -584,8 +608,8 @@ def _check_unknown_srt_keys(
                     "unknown-srt-key",
                     _show(fragment.path, base_dir),
                     f"{_count(unknown, 'key', 'keys')} srt ignores and twsrt maps "
-                    "to no agent; Claude-only settings belong in "
-                    "[sandbox_overrides]",
+                    "to no agent; Claude-only settings belong in Claude's own "
+                    "settings.json",
                     tuple(unknown),
                 )
             )

@@ -92,6 +92,49 @@ def test_every_profile_is_compiled_not_only_the_default(tmp_path: Path) -> None:
     assert "/enabled" in findings[0].message
 
 
+def test_a_profile_generate_refuses_is_an_error_for_each_refusing_agent(
+    tmp_path: Path,
+) -> None:
+    config = write_config(
+        tmp_path,
+        srt={"base": '{"enabled": true}', "off": '{"enabled": false}'},
+        bash={"base": BASH_BASE},
+        profiles=(
+            '[profiles.default]\nsrt = ["base"]\nbash = ["base"]\n\n'
+            '[profiles.off]\nsrt = ["off"]\nbash = ["base"]\n\n'
+            '[targets]\nclaude_settings = "settings.json"\n'
+            'codex_config = "codex.toml"\n'
+        ),
+    )
+
+    findings = run(config)
+
+    assert [(f.severity, f.code, f.location) for f in findings] == [
+        ("error", "profile-generate", "profile 'off'"),
+        ("error", "profile-generate", "profile 'off'"),
+    ]
+    assert "claude: " in findings[0].message
+    assert "codex: " in findings[1].message
+    assert all("sandbox is disabled" in finding.message for finding in findings)
+
+
+def test_a_disabled_sandbox_is_fine_where_no_configured_agent_refuses_it(
+    tmp_path: Path,
+) -> None:
+    """Flags-only Copilot runs under srt, which has no `enabled` key."""
+    config = write_config(
+        tmp_path,
+        srt={"off": '{"enabled": false}'},
+        bash={"base": BASH_BASE},
+        profiles=(
+            '[profiles.default]\nsrt = ["off"]\nbash = ["base"]\n\n'
+            '[targets]\ncopilot_output = "flags.txt"\n'
+        ),
+    )
+
+    assert run(config) == []
+
+
 def test_unparseable_fragment_is_an_error_even_when_unused(tmp_path: Path) -> None:
     config = write_config(
         tmp_path,
@@ -961,7 +1004,7 @@ def test_claude_only_key_in_an_srt_fragment_reaches_no_agent(tmp_path: Path) -> 
     assert findings[0].severity == "warning"
     assert findings[0].location == "srt/base.jsonc"
     assert findings[0].message.startswith("1 key srt ignores and twsrt maps to no ")
-    assert "[sandbox_overrides]" in findings[0].message
+    assert "belong in Claude's own settings.json" in findings[0].message
     assert findings[0].items == ("'excludedCommands'",)
 
 

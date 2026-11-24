@@ -11,8 +11,7 @@ rationale are in [SECURITY_CONCEPT.md](../SECURITY_CONCEPT.md).
 - [Rule mapping per agent](#rule-mapping-per-agent)
 - [Claude sandbox key mapping](#claude-sandbox-key-mapping)
 - [Claude merge example](#claude-merge-example)
-- [Claude settings symlink](#claude-settings-symlink)
-- [Claude full and yolo sync](#claude-full-and-yolo-sync)
+- [Claude settings file](#claude-settings-file)
 - [Claude per-project launch premise](#claude-per-project-launch-premise)
 - [Codex translation rules](#codex-translation-rules)
 - [Copilot flags](#copilot-flags)
@@ -64,7 +63,7 @@ Each source kind owns a fragment namespace and exactly one compiled output.
 Relative paths resolve from `config.toml`, so the configuration directory is
 relocatable. An omitted `output` defaults to `srt-settings.json` or
 `bash-rules.json` next to `config.toml` (`config.DEFAULT_OUTPUT_NAMES`, the
-same names `--project` uses in `./.twsrt/`). srt itself reads only
+same names `--project` uses in `./.twsrt/<profile>/`). srt itself reads only
 `~/.srt-settings.json`, and a missing one runs it with built-in defaults, no
 `denyRead` at all: with the default, launch `srt -s <output>`. Unknown source kinds fail instead of being composed without
 validation or translation semantics. `srt` is required (`config.REQUIRED_SOURCE_KINDS`);
@@ -160,10 +159,10 @@ Every `denyRead` path also arrives as an implied `denyWrite`; Claude drops
 the resulting duplicate `Edit(p)`, and Codex keeps `deny`, which outranks
 `read`.
 
-**Yolo mode.** Bash `ask` rules are skipped. Claude's `permissions.ask` is
-removed and `[sandbox_overrides.yolo]` applies instead of
-`[sandbox_overrides.full]`. Copilot's output starts with `--yolo` and drops
-the `--allow-*` flags. Codex output is identical in both modes.
+**No modes.** The selected profile alone decides the output; `ask` rules are never
+dropped. How a session answers them is a launch flag
+([ADR 0010](adr/0010-no-modes-profiles-select-policy.md),
+[README](../README.md#prompting-is-a-launch-choice)).
 
 **Claude file rules.** Claude Code matches file permissions on `Edit(path)`
 only, and one `Edit` rule covers every file-editing tool (Write, Edit,
@@ -178,8 +177,7 @@ source and silently matches nothing.
 ## Claude sandbox key mapping
 
 Claude Code's `sandbox` section has 18 configurable keys. twsrt manages a
-subset from the compiled SRT document; `[sandbox_overrides.*]` may also set
-the Claude-only keys per mode.
+subset from the compiled SRT document and two keys with a fixed value.
 
 | Claude Code key | SRT source | Status |
 |---|---|---|
@@ -194,15 +192,17 @@ the Claude-only keys per mode.
 | `sandbox.filesystem.allowWrite` | `filesystem.allowWrite` | Managed-empty; emitted as `Edit` allow rules instead (a raw entry anchors relative paths at the settings-file root, ADR 0002) |
 | `sandbox.filesystem.denyWrite` | `filesystem.denyWrite` | Managed-empty; emitted as `Edit` deny rules instead |
 | `sandbox.filesystem.denyRead` | `filesystem.denyRead` | Managed-empty; emitted as `Read`/`Edit` deny rules instead |
-| `sandbox.enabled` | `enabled` | Managed (pass-through) |
+| `sandbox.enabled` | (fixed) | Always `true`; a canonical `enabled: false` is refused. Absent would mean off in Claude |
 | `sandbox.enableWeakerNetworkIsolation` | `enableWeakerNetworkIsolation` | Managed (pass-through) |
 | `sandbox.enableWeakerNestedSandbox` | `enableWeakerNestedSandbox` | Managed (pass-through) |
 | `sandbox.ignoreViolations` | `ignoreViolations` | Managed (pass-through) |
-| `sandbox.excludedCommands` | (none) | Claude-only; preserved, overridable via `[sandbox_overrides]` |
-| `sandbox.autoAllowBashIfSandboxed` | (none) | Claude-only; preserved, overridable via `[sandbox_overrides]` |
-| `sandbox.allowUnsandboxedCommands` | (none) | Claude-only; preserved, overridable via `[sandbox_overrides]` |
+| `sandbox.excludedCommands` | (none) | Claude-only; preserved. Each entry opens the sandbox and is not part of the policy |
+| `sandbox.autoAllowBashIfSandboxed` | (none) | Claude-only; preserved |
+| `sandbox.allowUnsandboxedCommands` | (fixed) | Always `false`; `diff` reports a hand edit |
 
-**Pass-through** keys are copied verbatim; one absent from SRT is omitted.
+**Pass-through** keys are copied verbatim; one absent from SRT is removed from
+the target, so nothing another profile or a hand edit loosened survives a
+write. To keep such a key, set it in an SRT fragment.
 SRT keys without an honoured Claude Code counterpart are dropped: `allowPty`
 is valid for srt but Claude Code ignores `sandbox.allowPty`, so it is not
 forwarded.
@@ -214,8 +214,7 @@ deny rules into the native OS sandbox profile. twsrt relies on that merge to
 enforce canonical `denyRead`/`denyWrite` paths without duplicating them under
 `sandbox.filesystem`, which previously expanded the Seatbelt profile past
 macOS `ARG_MAX` (E2BIG on every Bash call). Consequently these two keys
-cannot be set through `[sandbox_overrides]`; define deny paths in SRT
-fragments.
+cannot be set by hand; define deny paths in SRT fragments.
 
 **Canary after every Claude Code upgrade.** From sandboxed Bash, reading and
 moving a configured read-deny path must fail, and writing a configured
@@ -223,9 +222,11 @@ relative deny such as a cwd `.env` must fail. If any probe succeeds, stop
 using the generated configuration and reconsider direct
 `sandbox.filesystem` emission.
 
-**Sandbox posture per mode.** `[sandbox_overrides.yolo]` and
-`[sandbox_overrides.full]` set top-level `sandbox` keys after the SRT values.
-A nested `network` or `filesystem` table replaces that whole section.
+**Admin-required sandbox.** From a `--settings` file (`generate --project`),
+`allowUnsandboxedCommands: false` makes the sandbox admin-required (Claude Code
+2.1.285 or later): a repository's `.claude/settings*.json` can then no longer
+loosen it, except through `autoAllowBashIfSandboxed`. From user settings the same
+key does not have that effect.
 
 ## Claude merge example
 
@@ -235,10 +236,10 @@ A nested `network` or `filesystem` table replaces that whole section.
 |---|---|
 | `permissions.deny`, `permissions.ask` | replaced |
 | `permissions.allow` | `WebFetch(domain:…)` and `Edit(…)` entries replaced (twsrt owns them); other allows kept |
-| `sandbox.network`, `sandbox.filesystem`, `sandbox.*` | merged key by key; Claude-only keys kept; `denyRead`/`denyWrite`/`allowWrite` reset to `[]` |
-| everything else (hooks, plugins, model, theme, …) | kept, or synced from the other mode's file with `[claude_sync]` |
+| `sandbox.network`, `sandbox.filesystem`, `sandbox.*` | managed keys replaced, pass-through keys the policy does not set removed; Claude-only keys kept; `denyRead`/`denyWrite`/`allowWrite` reset to `[]` |
+| everything else (hooks, plugins, model, theme, …) | kept |
 
-Existing hand-maintained `~/.claude/settings.full.json`:
+Existing hand-maintained `~/.claude/settings.json`:
 
 ```json
 {
@@ -297,10 +298,11 @@ After `twsrt generate claude -w` with SRT `allowedDomains` `github.com` and
   "additionalDirectories": ["/home/user/other-project"],
   "sandbox": {
     "network": {
-      "allowedDomains": ["github.com", "*.github.com"],
-      "allowLocalBinding": true
+      "allowedDomains": ["github.com", "*.github.com"]
     },
-    "filesystem": { "denyRead": [], "denyWrite": [] },
+    "filesystem": { "denyRead": [], "denyWrite": [], "allowWrite": [] },
+    "enabled": true,
+    "allowUnsandboxedCommands": false,
     "autoAllowBashIfSandboxed": true,
     "excludedCommands": ["docker"]
   }
@@ -317,93 +319,47 @@ What changed and what did not:
     ├─ Bash(npm test:*)     ← PRESERVED
     ├─ mcp__memory__store   ← PRESERVED
     └─ WebFetch(domain:...) ← REPLACED  (old.example.com gone, github.com added)
-  hooks                     ← PRESERVED (or synced from the donor with [claude_sync])
-  additionalDirectories     ← PRESERVED (or synced)
+  hooks                     ← PRESERVED
+  additionalDirectories     ← PRESERVED
   sandbox.network
     ├─ allowedDomains       ← REPLACED
-    └─ allowLocalBinding    ← PRESERVED (key-by-key merge)
+    └─ allowLocalBinding    ← REMOVED   (managed; not set in SRT)
   sandbox.filesystem
     ├─ denyRead             ← RESET to [] (enforced through permission rules)
-    └─ denyWrite            ← RESET to []
-  sandbox.autoAllowBash...  ← PRESERVED unless [sandbox_overrides] sets it
-  sandbox.excludedCommands  ← PRESERVED unless [sandbox_overrides] sets it
+    ├─ denyWrite            ← RESET to []
+    └─ allowWrite           ← RESET to []
+  sandbox.enabled           ← SET to true
+  sandbox.allowUnsand...    ← SET to false
+  sandbox.autoAllowBash...  ← PRESERVED
+  sandbox.excludedCommands  ← PRESERVED
 ```
 
-In yolo mode the merge is the same except `permissions.ask` is removed and
-`[sandbox_overrides.yolo]` applies.
+## Claude settings file
 
-## Claude settings symlink
+Claude Code reads exactly one user settings file, `settings.json` in its config
+directory, and writes runtime changes (model, theme, hooks added in the UI) into
+it. `claude_settings` must name that file; any other file name is a load error.
 
-Claude Code reads exactly one user settings file, `settings.json` in its
-config directory. twsrt never writes that file. It writes one file per mode
-and makes `settings.json` a symlink (the *anchor*) to the active one:
+`generate -w claude` reads it, replaces the managed sections and writes the
+result atomically (`os.replace`). A missing file or a dangling symlink counts as
+empty. A symlink (the one twsrt 3.x maintained, or one from a dotfiles manager)
+is replaced by a regular file holding the linked file's content plus the policy;
+the linked file itself is not changed. A symlinked *directory* (`~/.claude` into a
+dotfiles repository) is unaffected. A file that is not a JSON object, or in which
+a section twsrt reads has the wrong type (`"sandbox": null`), stops preview, `-w`
+and `diff` with an error naming the file and key; nothing is written.
 
-```
- ~/.claude/
-   settings.json ──symlink──► settings.full.json    after  generate -w claude
-                 ──symlink──► settings.yolo.json    after  generate --yolo -w claude
-```
+Claude Code watches the user, project, local and managed settings files,
+symlink targets included, and applies most edits to running sessions. A
+`--settings` file is not watched (Claude Code 2.1.331, documented and read from
+the binary), so `--project` sessions keep the policy they started with.
 
-The anchor is always `settings.json` in the directory of `claude_settings`,
-which is why `claude_settings` itself must not be named `settings.json`. The
-last `-w` decides which mode the next `claude` start gets; the usual launch
-functions (`claude-full`, `claude-yolo`) regenerate on every start, so the
-link always matches the mode launched.
+## Claude per-project launch premise
 
-`generate -w claude`, step by step (`cli._write_agent_files`,
-`lib/symlink.py`):
-
-| Step | What happens |
-|---|---|
-| 1. Stage (preview too) | Read the mode's target, merge the managed sections into it; with `[claude_sync]` the current link target is the donor ([sync](#claude-full-and-yolo-sync)) |
-| 2. Migrate | `settings.json` is a regular file and the target is missing: it is moved to the target (`Migrated: …`). Both exist: stop with an error, nothing is guessed. Already a symlink: nothing to do |
-| 3. Write | The target is written atomically |
-| 4. Link | `settings.json` is repointed atomically (temporary symlink, then `os.replace`), so Claude never sees a missing file. Same directory: relative link (`settings.full.json`); otherwise absolute |
-
-- **Windows without symlink rights:** the target is copied over
-  `settings.json` and a warning is printed. Mode switching still works, but
-  settings Claude changes at runtime land in the copy, not the mode file.
-- **If `settings.json` stops being a symlink** (a tool replaced it with a
-  regular file), the next `-w` stops at step 2 instead of overwriting either
-  file. Check with `ls -l ~/.claude/settings.json`.
-- **Not linked:** `diff` reads the mode files directly, never the link.
-  `--project` leaves the link alone and launches with `--settings` instead
-  ([per-project launch premise](#claude-per-project-launch-premise)).
-
-## Claude full and yolo sync
-
-Claude Code writes runtime settings (`model`, `theme`, `editorMode`, hooks
-added in the UI) into whatever `settings.json` points to. With two files and
-a symlink flip per launch those keys would land in one file only:
-
-```
- claude-full ──► settings.json ─symlink─► settings.full.json   ◄── Claude writes "model" here
- claude-yolo ──► generate --yolo -w:
-                   1. donor = current symlink target (settings.full.json)
-                   2. copy unmanaged keys donor ──► settings.yolo.json
-                   3. apply the selective merge
-                   4. flip symlink ──► settings.yolo.json
-```
-
-With the `[claude_sync]` table present, both files converge on every mode
-switch:
-
-- Donor values replace target values wholesale; deletions propagate. Last
-  writer wins.
-- Dotted paths in `mode_specific` (for example `hooks.PostToolUse`) keep the
-  target's value and are never synced.
-- Managed sections and the whole `sandbox` subtree are never synced.
-- No donor, no sync: fresh install, migration, dangling symlink, or symlink
-  already pointing at the target. A missing target is bootstrapped from the
-  donor.
-- `twsrt diff` does not report full/yolo drift; it is transient by design.
-
-## Claude per-project launch premise (not relevant for `srt`)
-
-`generate --project` is only useful for Claude if Claude is launched as:
+Not relevant for `srt`. `generate --project` is only useful for Claude if Claude is launched as:
 
 ```bash
-claude --setting-sources project,local --settings .twsrt/claude-settings.json
+claude --setting-sources project,local --settings .twsrt/<profile>/claude-settings.json
 ```
 
 twsrt does not launch Claude and cannot check the flags; the launcher must
@@ -430,23 +386,29 @@ claude --setting-sources
 | 3 | No setting subtracts an entry defined in another scope | no such mechanism found in the settings, permissions or sandboxing docs (searched 2026-10-02) |
 | 4 | `--setting-sources` takes a comma list of `user`, `project`, `local`; managed settings always load | documented, cli-reference.md |
 | 5 | `--setting-sources project,local --settings X` in an interactive session skips the user file and applies `X` | the docs do not say whether the flag applies to interactive sessions; verified manually by Tom on 2026-10-02 |
-| 6 | Settings files are watched and reloaded mid-session | documented, settings.md "When edits take effect" |
+| 6 | User, project, local and managed settings files are watched and reloaded mid-session; a `--settings` file is not | documented, settings.md "When edits take effect"; watcher skips `flagSettings` (2.1.331 binary) |
+| 7 | `allowUnsandboxedCommands: false` from `--settings` makes the sandbox admin-required | documented, sandboxing.md (2.1.285 or later) |
 
 Claims 2 and 3 are why a project cannot drop a rule by layering a file on
-top: only not loading the global file works (claims 4 and 5). Claim 6 is why
-`./.twsrt` is added to `denyWrite`.
+top: only not loading the global file works (claims 4 and 5). `./.twsrt` is added
+to `denyWrite` because an agent able to write it could loosen a later launch.
+
+**Refused directories.** `--project` fails, preview included, while `./.twsrt` or
+`./.twsrt/<profile>` is a symlink (a cloned repository could redirect the write)
+or `./.twsrt` directly holds a file twsrt 3.x wrote there (`srt-settings.json`,
+`bash-rules.json`, `claude-settings[.yolo].json`): a launcher on the old path
+would keep loading that frozen policy. Delete what the error names.
 
 **Consequences:**
 
 - `X` replaces the user scope completely, so it carries the user keys too.
-  It is built by `selective_merge` from the global Claude target of the same
-  mode (`settings.full.json` or `settings.yolo.json`). A hook or plugin added
-  to the global file appears in a project session on the next launch, since
-  every launch regenerates `X`.
+  It is built by `selective_merge` from the global Claude target. A hook or
+  plugin added to the global file appears in a project session on the next
+  launch, since every launch regenerates `X`. Preferences changed inside such a
+  session may not persist: the user file is not one of its sources.
 - The repository's `.claude/settings.json` and `.claude/settings.local.json`
-  still load. They can add rules and, once the folder is trusted, override
-  sandbox scalars such as `sandbox.enabled`. This is the same exposure as a
-  plain `claude` launch.
+  still load and can add rules. They cannot loosen the sandbox (claim 7), except
+  through `autoAllowBashIfSandboxed`; a plain `claude` launch lacks that lock.
 - Managed settings cannot be skipped and still apply.
 - Starting `claude` without both flags in a project directory is not unsafe:
   the global file loads.
@@ -462,11 +424,11 @@ top: only not loading the global file works (claims 4 and 5). Claim 6 is why
 **Re-verify** after a Claude Code upgrade, from a plain terminal:
 
 1. `twsrt generate claude -w -p <profile-without-rule-R> --project`
-2. `claude --setting-sources project,local --settings .twsrt/claude-settings.json`
+2. `claude --setting-sources project,local --settings .twsrt/<profile>/claude-settings.json`
 3. `/permissions`: rule R is absent and the other twsrt denies are present.
 4. A deny that exists only in `~/.claude/settings.json` (not in any
    fragment) is absent from `/permissions`: proves the user file was skipped.
-5. Ask the agent to `echo x >> .twsrt/claude-settings.json`: refused.
+5. Ask the agent to `echo x >> .twsrt/<profile>/claude-settings.json`: refused.
 
 ## Codex translation rules
 
@@ -550,16 +512,17 @@ credentials are never printed.
 
 ## Copilot flags
 
-| Canonical rule | Flag | Full | Yolo |
-|---|---|---|---|
-| any `allowWrite` | `--allow-tool 'shell'`, `'read'`, `'edit'`, `'write'`, emitted once | ✓ | — |
-| `allowedDomains` | `--allow-url 'X'`, only without `copilot_settings` | ✓ | — |
-| `deniedDomains` | `--deny-url 'X'`, only without `copilot_settings` | ✓ | ✓ |
-| Bash `deny` | `--deny-tool 'shell(c)'` | ✓ | ✓ |
-| Bash `ask` | `--deny-tool 'shell(c)'` + warning | ✓ | — |
-| `denyRead`, `denyWrite` | — (native sandbox or SRT wrapper enforces) | | |
+| Canonical rule | Flag |
+|---|---|
+| any `allowWrite` | `--allow-tool 'shell'`, `'read'`, `'edit'`, `'write'`, emitted once |
+| `allowedDomains` | `--allow-url 'X'`, only without `copilot_settings` |
+| `deniedDomains` | `--deny-url 'X'`, only without `copilot_settings` |
+| Bash `deny` | `--deny-tool 'shell(c)'` |
+| Bash `ask` | `--deny-tool 'shell(c)'` + warning |
+| `denyRead`, `denyWrite` | — (native sandbox or SRT wrapper enforces) |
 
-Yolo output starts with `--yolo`; deny flags still take precedence over it.
+Deny flags take precedence over every allow, `--allow-all-tools` and `--yolo`
+included. twsrt never emits `--yolo`.
 Copilot has no "ask before running" tier, so an ask rule becomes a deny, the
 fail-safe direction:
 
@@ -568,7 +531,7 @@ Warning: Bash ask rule 'git push' mapped to --deny-tool for copilot (no ask equi
 ```
 
 These flags exist only in the `copilot_output` file. With `copilot_settings`
-alone, Bash deny (and, in full mode, ask) rules reach no Copilot CLI file;
+alone, Bash deny and ask rules reach no Copilot CLI file;
 twsrt warns that they are not enforced instead.
 
 ## Copilot native sandbox
@@ -620,8 +583,8 @@ same effect until it is removed. XML comments in the file are preserved.
 ## Doctor checks
 
 `twsrt doctor` reads `config.toml`, every registered fragment, and the Claude
-settings files that can carry sandbox paths (the twsrt Claude targets, full
-and yolo, and `./.claude/settings.json` / `settings.local.json` of the current
+settings files that can carry sandbox paths (the twsrt Claude target and
+`./.claude/settings.json` / `settings.local.json` of the current
 directory). It writes nothing, and prints one line per finding on stdout followed by a count.
 Without options it shows errors and warnings; `--error`, `--warn` and `--info` show exactly
 those levels and combine, `--all` shows every level. The filter is display only: the count
@@ -659,13 +622,14 @@ redundant copy, and names the earlier one.
 |---|---|---|
 | `fragment-load` | error | A registered fragment is missing or not valid JSONC, used or not |
 | `profile-compile` | error | A profile fails to compile: scalar conflict, opposing allow/deny, a write-only path, invalid shape. Profiles using a broken fragment are not reported again |
+| `profile-generate` | error | A profile compiles, but a configured agent refuses it, e.g. `enabled: false`; one finding per agent |
 | `profile-incomplete` | warning | A profile selects no fragment for some source kind, so `-p NAME` fails. Legitimate for mixins used only via `extends` |
 | `subsumed-rule` | warning | An entry is already covered by another entry in the same list: a path below a listed directory (`dir` and `dir/**` count as equal; `.` covers every relative path), a wildcard domain below a broader `*.` wildcard or `*` (a concrete host is never flagged: `twsrt test` checks a wildcard only by srt's filter decision, the concrete host is its only end-to-end probe), a Bash command extending a listed command (`rm -rf` under `rm`; Claude emits `Bash(rm *)`) |
 | `duplicate-rule` | warning | The same entry appears in two fragments of one profile |
 | `inherited-fragment` | warning | A profile selects a fragment its `extends` chain already selects |
 | `redundant-extends` | warning | A profile extends a parent it already reaches through another parent |
 | `unused-fragment` | warning | A registered fragment no profile selects |
-| `unknown-srt-key` | warning | A top-level, `network.*` or `filesystem.*` key outside srt's config schema (sandbox-runtime 0.0.78) that twsrt does not map either. srt strips it without a word, so it reaches no agent. Typical case: a Claude-only key such as `excludedCommands`, which belongs in `[sandbox_overrides]`. Fragment-level, so `// doctor-ignore` does not apply |
+| `unknown-srt-key` | warning | A top-level, `network.*` or `filesystem.*` key outside srt's config schema (sandbox-runtime 0.0.78) that twsrt does not map either. srt strips it without a word, so it reaches no agent. Typical case: a Claude-only key such as `excludedCommands`, which belongs in Claude's own `settings.json`. Fragment-level, so `// doctor-ignore` does not apply |
 | `symlinked-deny-path` | warning | A `denyRead`/`denyWrite` path reaches a symlink on disk and its real path is not denied too. srt keeps the unresolved spelling while Seatbelt matches the real path, so the deny is a no-op (bkmr 3686) |
 | `broad-allow-write` | warning | `allowWrite` on or above `/`, `~`, `~/.config` or `~/Library`. With Claude Code every `allowWrite` path also auto-approves the edit tools (ADR 0002) |
 | `claude-relative-sandbox-path` | warning | A relative or `**/` entry in `sandbox.filesystem.*` of a scanned Claude settings file. Claude anchors it at the settings-file root (`~/.claude`, the project root, or the `--settings` file's directory), not the launch cwd; use `Read()`/`Edit()` rules (bkmr 3742) |
@@ -709,7 +673,7 @@ Pattern semantics are from srt `117eb92` (v0.0.78), see
 `thoughts/research/2026-10-02-srt-wildcard-semantics.md`. Not modelled
 (deliberate simplifications): coverage by a glob entry and port-qualified
 domains. `~/x` and its absolute spelling compare as equal.
-Drift and the Claude settings symlink are out of scope; use `diff`.
+Drift is out of scope; use `diff`.
 
 ## Sandbox probes
 
@@ -1039,7 +1003,7 @@ Derivation and verdict logic are covered by `tests/lib/test_probe.py` and
 Generated JSON, TOML, rules, and Copilot flags stay unstyled on stdout so
 they can be piped. stdout carries a command's result; narration about side
 effects goes to stderr, so `generate -w` leaves stdout capturable
-(`--project -w` prints only the `.twsrt` directory there). Generators return
+(`--project -w` prints only the `.twsrt/<profile>` directory there). Generators return
 warnings as data and never write to the terminal; the CLI owns severity,
 stream and color.
 
@@ -1070,7 +1034,7 @@ with the `+`/`-` legend printed once:
 ```
 srt canonical: no drift
 bash canonical: no drift
-claude: 2 missing, 1 extra  /Users/x/.claude/settings.full.json
+claude: 2 missing, 1 extra  /Users/x/.claude/settings.json
   + Bash(terraform)
   + Bash(terraform *)
   - Bash(docker run:*)
@@ -1079,7 +1043,7 @@ claude: 2 missing, 1 extra  /Users/x/.claude/settings.full.json
 ```
 
 `--verbose` goes before the subcommand and reports lifecycle facts only:
-selected profile, mode, agent names, counts, target paths, caught exception
+selected profile, agent names, counts, target paths, caught exception
 tracebacks. It never prints policy contents, rule patterns, domains,
 environment values, or credentials. `test` is the exception: with `-v` it
 traces the whole run on stderr so a verdict can be reproduced by hand. In
@@ -1117,9 +1081,7 @@ Command stdout is still never captured or logged.
    compiled into `denyWrite`; a write-only path is a compile error.
 4. **Selective merge owns only declared sections.** Everything else in a
    target file (hooks, MCP servers, projects, credentials) is preserved
-   byte-for-byte where the format allows. With `[claude_sync]`, those
-   unmanaged keys converge between the full and yolo targets on the next mode
-   switch; drift between them is transient by design.
+   byte-for-byte where the format allows.
 5. **Fail-safe on ambiguity.** Disabled canonical sandbox, malformed paths,
    conflicting fragments, incomplete profiles, and legacy Codex
    `sandbox_mode` in the managed file abort generation instead of guessing.
@@ -1129,9 +1091,9 @@ Command stdout is still never captured or logged.
    follow `$HOME` (`~/…` spelling) and the symlinks on their paths, so
    `generate` and `diff` must run under the same `$HOME`.
 7. **Project mode writes nothing global.** `generate --project` sends
-   every canonical output and the Claude target to `./.twsrt/`, adds that
-   directory to the compiled `denyWrite`, reads the global Claude target only
-   as merge base, and never touches the symlink or the `[claude_sync]` donor.
+   every canonical output and the Claude target to `./.twsrt/<profile>/`, adds
+   `./.twsrt` to the compiled `denyWrite`, and reads the global Claude target
+   only as merge base.
    Rules are dropped per project by profile choice, never by subtraction.
    The global policy files stay write-denied (invariant 8).
 8. **The policy is never writable by the agent it governs.** Every compile
@@ -1188,7 +1150,7 @@ JSON objects.
 ## Scope and roadmap
 
 All three agents ship native OS sandboxes (Claude Code: built-in
-Seatbelt/bwrap, opt-in; Copilot CLI and JetBrains: local sandbox, GA since October 2026; Codex:
+Seatbelt/bwrap, switched on by twsrt; Copilot CLI and JetBrains: local sandbox, GA since October 2026; Codex:
 kernel sandbox always-on). The durable core, deny paths and domains,
 compiles into each of them with high fidelity. The Bash-rules app layer is
 the per-agent best-effort supplement:

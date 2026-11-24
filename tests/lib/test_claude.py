@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from twsrt.lib.claude import ClaudeGenerator, selective_merge, sync_invariants
+from twsrt.lib.claude import ClaudeGenerator, selective_merge
 from twsrt.lib.models import Action, AppConfig, Scope, SecurityRule, Source
 
 
@@ -463,21 +463,51 @@ class TestSandboxConfig:
         assert "enableWeakerNetworkIsolation" not in sandbox
         assert "ignoreViolations" not in sandbox
 
-    def test_empty_sandbox_config_no_extra_keys(
+    def test_sandbox_is_enabled_even_if_the_policy_does_not_say_so(
+        self, gen: ClaudeGenerator
+    ) -> None:
+        """ADR 0010: Claude treats an absent key as off, so a canonical srt
+        document without `enabled` must not leave the sandbox off."""
+        output = json.loads(gen.generate([], AppConfig(sandbox_config={})))
+        assert output["sandbox"]["enabled"] is True
+
+    def test_commands_may_not_be_retried_outside_the_sandbox(
         self, gen: ClaudeGenerator, config: AppConfig
     ) -> None:
-        """Empty sandbox_config → no top-level sandbox keys in output."""
         output = json.loads(gen.generate([], config))
-        sandbox = output["sandbox"]
-        # Only "network" should be present (existing behavior)
-        assert "enabled" not in sandbox
-        assert "enableWeakerNetworkIsolation" not in sandbox
+        assert output["sandbox"]["allowUnsandboxedCommands"] is False
 
-    def test_enabled_false_preserved(self, gen: ClaudeGenerator) -> None:
-        """enabled: false is falsy but must appear in output."""
+    def test_a_disabled_canonical_sandbox_is_refused(
+        self, gen: ClaudeGenerator
+    ) -> None:
+        """ADR 0010: like Codex and Copilot, never generate without a sandbox."""
         config = AppConfig(sandbox_config={"enabled": False})
-        output = json.loads(gen.generate([], config))
-        assert output["sandbox"]["enabled"] is False
+        with pytest.raises(ValueError, match="sandbox is disabled.*Claude"):
+            gen.generate([], config)
+
+    def test_a_write_restores_the_posture_and_keeps_claude_only_keys(
+        self, gen: ClaudeGenerator, config: AppConfig, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "settings.json"
+        target.write_text(
+            json.dumps(
+                {
+                    "sandbox": {
+                        "enabled": False,
+                        "allowUnsandboxedCommands": True,
+                        "autoAllowBashIfSandboxed": True,
+                        "excludedCommands": ["docker"],
+                    }
+                }
+            )
+        )
+
+        merged = selective_merge(target, json.loads(gen.generate([], config)))
+
+        assert merged["sandbox"]["enabled"] is True
+        assert merged["sandbox"]["allowUnsandboxedCommands"] is False
+        assert merged["sandbox"]["autoAllowBashIfSandboxed"] is True
+        assert merged["sandbox"]["excludedCommands"] == ["docker"]
 
     def test_empty_ignore_violations_preserved(self, gen: ClaudeGenerator) -> None:
         """ignoreViolations: {} is preserved in output."""
@@ -488,6 +518,48 @@ class TestSandboxConfig:
 
 class TestSelectiveMerge:
     """FR-018: Selective merge for Claude settings.json."""
+
+    def test_unmanaged_top_level_keys_are_kept(self, tmp_path: Path) -> None:
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps({"permissions": {"deny": []}, "theme": "light"}))
+        generated = {
+            "permissions": {"deny": ["Bash(rm)"], "allow": [], "ask": []},
+            "sandbox": {},
+        }
+        result = selective_merge(target, generated)
+        assert result["theme"] == "light"
+        assert result["permissions"]["deny"] == ["Bash(rm)"]
+
+    def test_sandbox_toplevel_keys_merged(self, tmp_path: Path) -> None:
+        """US4: Top-level sandbox keys merged via update, Claude-only keys preserved."""
+        existing = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {
+                "enabled": False,
+                "autoAllowBashIfSandboxed": True,
+                "excludedCommands": ["docker"],
+                "network": {"allowedDomains": []},
+            },
+        }
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(existing))
+
+        generated = {
+            "permissions": {"deny": [], "ask": [], "allow": []},
+            "sandbox": {
+                "network": {"allowedDomains": []},
+                "enabled": True,
+                "enableWeakerNetworkIsolation": True,
+            },
+        }
+        result = selective_merge(target, generated)
+        sandbox = result["sandbox"]
+        # Generated keys updated
+        assert sandbox["enabled"] is True
+        assert sandbox["enableWeakerNetworkIsolation"] is True
+        # Claude-only keys preserved
+        assert sandbox["autoAllowBashIfSandboxed"] is True
+        assert sandbox["excludedCommands"] == ["docker"]
 
     def test_stale_deny_lists_cleared_by_merge(self, tmp_path: Path) -> None:
         """Populated deny lists in an existing target are cleared to [].
@@ -511,7 +583,7 @@ class TestSelectiveMerge:
         target.write_text(json.dumps(existing))
 
         generated = {
-            "permissions": {"deny": ["Read(~/.ssh)"], "allow": []},
+            "permissions": {"deny": ["Read(~/.ssh)"], "allow": [], "ask": []},
             "sandbox": {
                 "network": {"allowedDomains": []},
                 "filesystem": {"allowWrite": ["."], "denyRead": [], "denyWrite": []},
@@ -858,383 +930,6 @@ class TestSelectiveMerge:
         assert fs["customKey"] == "preserved"
 
 
-class TestSandboxOverridesInGeneration:
-    """Sandbox overrides applied per-mode affect generated output."""
-
-    def test_yolo_overrides_applied(self, gen: ClaudeGenerator) -> None:
-        """Yolo sandbox overrides appear in generated output."""
-        config = AppConfig(
-            sandbox_config={"enabled": True},
-            sandbox_overrides={
-                "yolo": {"enabled": True, "autoAllowBashIfSandboxed": True},
-            },
-            yolo=True,
-        )
-        config.apply_sandbox_overrides()
-        output = json.loads(gen.generate([], config))
-        assert output["sandbox"]["enabled"] is True
-        assert output["sandbox"]["autoAllowBashIfSandboxed"] is True
-
-    def test_full_overrides_applied(self, gen: ClaudeGenerator) -> None:
-        """Full mode sandbox overrides appear in generated output."""
-        config = AppConfig(
-            sandbox_config={"enabled": True},
-            sandbox_overrides={
-                "full": {"enabled": False},
-            },
-            yolo=False,
-        )
-        config.apply_sandbox_overrides()
-        output = json.loads(gen.generate([], config))
-        assert output["sandbox"]["enabled"] is False
-
-    def test_overrides_override_srt_values(self, gen: ClaudeGenerator) -> None:
-        """Overrides take precedence over SRT-sourced sandbox_config."""
-        config = AppConfig(
-            sandbox_config={"enabled": True, "enableWeakerNetworkIsolation": True},
-            sandbox_overrides={
-                "full": {"enabled": False},
-            },
-            yolo=False,
-        )
-        config.apply_sandbox_overrides()
-        output = json.loads(gen.generate([], config))
-        # Override wins
-        assert output["sandbox"]["enabled"] is False
-        # Non-overridden SRT value preserved
-        assert output["sandbox"]["enableWeakerNetworkIsolation"] is True
-
-    def test_filesystem_override_cannot_restore_managed_deny_lists(
-        self, gen: ClaudeGenerator
-    ) -> None:
-        """Nested overrides preserve other keys but cannot repopulate deny lists."""
-        config = AppConfig(
-            filesystem_config={
-                "allowWrite": ["/canonical"],
-                "denyRead": ["~/.aws"],
-                "denyWrite": ["**/.env"],
-            },
-            sandbox_overrides={
-                "full": {
-                    "filesystem": {
-                        "allowWrite": ["/override"],
-                        "denyRead": ["~/.ssh"],
-                        "denyWrite": ["**/*.pem"],
-                        "customKey": ["kept"],
-                    }
-                }
-            },
-        )
-        config.apply_sandbox_overrides()
-
-        output = json.loads(gen.generate([], config))
-        filesystem = output["sandbox"]["filesystem"]
-
-        # ADR 0002: allowWrite is managed-empty too; an override cannot route
-        # a path around the Edit-rule translation.
-        assert filesystem["allowWrite"] == []
-        assert filesystem["customKey"] == ["kept"]
-        assert filesystem["denyRead"] == []
-        assert filesystem["denyWrite"] == []
-
-    def test_no_overrides_preserves_srt(self, gen: ClaudeGenerator) -> None:
-        """Without overrides, SRT values pass through unchanged."""
-        config = AppConfig(
-            sandbox_config={"enabled": True},
-            sandbox_overrides={},
-            yolo=False,
-        )
-        config.apply_sandbox_overrides()
-        output = json.loads(gen.generate([], config))
-        assert output["sandbox"]["enabled"] is True
-
-    def test_overrides_merged_into_selective_merge(self, tmp_path: Path) -> None:
-        """Overrides flow through selective_merge to update existing settings."""
-        gen = ClaudeGenerator()
-        config = AppConfig(
-            sandbox_config={"enabled": True},
-            sandbox_overrides={
-                "full": {"enabled": False, "autoAllowBashIfSandboxed": False},
-            },
-            yolo=False,
-        )
-        config.apply_sandbox_overrides()
-        output = json.loads(gen.generate([], config))
-
-        existing = {
-            "permissions": {"deny": [], "ask": [], "allow": []},
-            "sandbox": {
-                "enabled": True,
-                "autoAllowBashIfSandboxed": True,
-                "excludedCommands": ["docker"],
-                "network": {"allowedDomains": []},
-            },
-        }
-        target = tmp_path / "settings.json"
-        target.write_text(json.dumps(existing))
-
-        result = selective_merge(target, output)
-        assert result["sandbox"]["enabled"] is False
-        assert result["sandbox"]["autoAllowBashIfSandboxed"] is False
-        # Claude-only key NOT in overrides is preserved
-        assert result["sandbox"]["excludedCommands"] == ["docker"]
-
-
-class TestClaudeYoloGeneration:
-    """YOLO mode: deny-only permissions, no ask, keep allow (WebFetch)."""
-
-    def test_yolo_output_has_deny_and_allow_but_no_ask(
-        self, gen: ClaudeGenerator, config: AppConfig
-    ) -> None:
-        """T007: yolo produces deny + allow, no ask key."""
-        config.yolo = True
-        rules = [
-            SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
-            SecurityRule(Scope.EXECUTE, Action.ASK, "git push", Source.BASH_RULES),
-            SecurityRule(Scope.NETWORK, Action.ALLOW, "github.com", Source.SRT_NETWORK),
-        ]
-        output = json.loads(gen.generate(rules, config))
-        assert "Bash(rm)" in output["permissions"]["deny"]
-        assert "Bash(rm *)" in output["permissions"]["deny"]
-        assert "ask" not in output["permissions"]
-        assert "WebFetch(domain:github.com)" in output["permissions"]["allow"]
-        assert output["sandbox"]["network"]["allowedDomains"] == ["github.com"]
-
-    def test_yolo_filters_ask_from_deny(
-        self, gen: ClaudeGenerator, config: AppConfig
-    ) -> None:
-        """T008: ASK-derived Bash entries absent from deny in yolo mode."""
-        config.yolo = True
-        rules = [
-            SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
-            SecurityRule(Scope.EXECUTE, Action.ASK, "git push", Source.BASH_RULES),
-            SecurityRule(Scope.EXECUTE, Action.ASK, "pip install", Source.BASH_RULES),
-        ]
-        output = json.loads(gen.generate(rules, config))
-        deny = output["permissions"]["deny"]
-        assert "Bash(rm)" in deny
-        assert "Bash(rm *)" in deny
-        assert "Bash(git push)" not in deny
-        assert "Bash(git push *)" not in deny
-        assert "Bash(pip install)" not in deny
-
-    def test_yolo_no_ask_rules_same_as_standard_minus_ask_key(
-        self, gen: ClaudeGenerator, config: AppConfig
-    ) -> None:
-        """T009: with no ASK rules, yolo output identical to standard except no ask key."""
-        rules = [
-            SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
-            SecurityRule(Scope.NETWORK, Action.ALLOW, "github.com", Source.SRT_NETWORK),
-        ]
-        standard = json.loads(gen.generate(rules, config))
-        config.yolo = True
-        yolo = json.loads(gen.generate(rules, config))
-        assert yolo["permissions"]["deny"] == standard["permissions"]["deny"]
-        assert yolo["permissions"]["allow"] == standard["permissions"]["allow"]
-        assert "ask" not in yolo["permissions"]
-        assert yolo["sandbox"] == standard["sandbox"]
-
-    def test_yolo_preserves_srt_deny_rules(
-        self, gen: ClaudeGenerator, config: AppConfig
-    ) -> None:
-        """SRT-derived deny rules (READ/DENY, WRITE/DENY) preserved in yolo mode."""
-        config.yolo = True
-        rules = [
-            SecurityRule(Scope.READ, Action.DENY, "**/.aws", Source.SRT_FILESYSTEM),
-            SecurityRule(Scope.WRITE, Action.DENY, "**/.env", Source.SRT_FILESYSTEM),
-        ]
-        output = json.loads(gen.generate(rules, config))
-        deny = output["permissions"]["deny"]
-        assert "Read(**/.aws)" in deny
-        assert "Edit(**/.env)" in deny
-
-    def test_sandbox_toplevel_keys_merged(self, tmp_path: Path) -> None:
-        """US4: Top-level sandbox keys merged via update, Claude-only keys preserved."""
-        existing = {
-            "permissions": {"deny": [], "ask": [], "allow": []},
-            "sandbox": {
-                "enabled": False,
-                "autoAllowBashIfSandboxed": True,
-                "excludedCommands": ["docker"],
-                "network": {"allowedDomains": []},
-            },
-        }
-        target = tmp_path / "settings.json"
-        target.write_text(json.dumps(existing))
-
-        generated = {
-            "permissions": {"deny": [], "ask": [], "allow": []},
-            "sandbox": {
-                "network": {"allowedDomains": []},
-                "enabled": True,
-                "enableWeakerNetworkIsolation": True,
-            },
-        }
-        result = selective_merge(target, generated)
-        sandbox = result["sandbox"]
-        # Generated keys updated
-        assert sandbox["enabled"] is True
-        assert sandbox["enableWeakerNetworkIsolation"] is True
-        # Claude-only keys preserved
-        assert sandbox["autoAllowBashIfSandboxed"] is True
-        assert sandbox["excludedCommands"] == ["docker"]
-
-
-class TestSyncInvariants:
-    """Invariant keys flow from the donor (file settings.json points to) into
-    the target; managed and declared mode-specific keys stay with the target."""
-
-    def test_donor_key_added_to_target(self) -> None:
-        existing = {"permissions": {"deny": []}}
-        donor = {"permissions": {"deny": []}, "model": "opus", "theme": "dark"}
-        result = sync_invariants(existing, donor, [])
-        assert result["model"] == "opus"
-        assert result["theme"] == "dark"
-
-    def test_key_deleted_in_donor_is_removed_from_target(self) -> None:
-        existing = {"model": "stale", "theme": "light"}
-        donor = {"theme": "light"}
-        result = sync_invariants(existing, donor, [])
-        assert "model" not in result
-
-    def test_mode_specific_top_level_key_keeps_target_value(self) -> None:
-        existing = {"skipDangerousModePermissionPrompt": False}
-        donor = {"skipDangerousModePermissionPrompt": True, "theme": "dark"}
-        result = sync_invariants(existing, donor, ["skipDangerousModePermissionPrompt"])
-        assert result["skipDangerousModePermissionPrompt"] is False
-        assert result["theme"] == "dark"
-
-    def test_mode_specific_key_absent_in_target_stays_absent(self) -> None:
-        existing = {}
-        donor = {"skipAutoPermissionPrompt": True}
-        result = sync_invariants(existing, donor, ["skipAutoPermissionPrompt"])
-        assert "skipAutoPermissionPrompt" not in result
-
-    def test_mode_specific_nested_path_keeps_target_while_sibling_syncs(
-        self,
-    ) -> None:
-        existing = {
-            "hooks": {
-                "UserPromptSubmit": [{"hooks": [{"command": "old-prompt-hook"}]}],
-                "PostToolUse": [{"hooks": [{"command": "full-only-hook"}]}],
-            }
-        }
-        donor = {
-            "hooks": {
-                "UserPromptSubmit": [{"hooks": [{"command": "new-prompt-hook"}]}],
-                "PostToolUse": [{"hooks": [{"command": "yolo-only-hook"}]}],
-            }
-        }
-        result = sync_invariants(existing, donor, ["hooks.PostToolUse"])
-        assert result["hooks"]["UserPromptSubmit"] == donor["hooks"]["UserPromptSubmit"]
-        assert result["hooks"]["PostToolUse"] == existing["hooks"]["PostToolUse"]
-
-    def test_managed_sections_are_not_taken_from_donor(self) -> None:
-        existing = {
-            "permissions": {"deny": ["Bash(full-deny)"], "ask": ["Bash(full-ask)"]},
-            "sandbox": {"enabled": False, "excludedCommands": ["docker"]},
-        }
-        donor = {
-            "permissions": {"deny": ["Bash(yolo-deny)"]},
-            "sandbox": {"enabled": True},
-        }
-        result = sync_invariants(existing, donor, [])
-        assert result["permissions"]["deny"] == ["Bash(full-deny)"]
-        assert result["permissions"]["ask"] == ["Bash(full-ask)"]
-        assert result["sandbox"] == {"enabled": False, "excludedCommands": ["docker"]}
-
-    def test_managed_section_absent_in_target_is_not_inherited(self) -> None:
-        existing = {"permissions": {"deny": []}}
-        donor = {"permissions": {"deny": [], "ask": ["Bash(yolo-ask)"]}}
-        result = sync_invariants(existing, donor, [])
-        assert "ask" not in result["permissions"]
-
-    def test_donor_is_not_mutated(self) -> None:
-        donor = {"hooks": {"PostToolUse": []}, "permissions": {"deny": ["x"]}}
-        snapshot = json.loads(json.dumps(donor))
-        sync_invariants({"permissions": {"deny": []}}, donor, ["hooks.PostToolUse"])
-        assert donor == snapshot
-
-    def test_selective_merge_with_donor_syncs_allows_but_regenerates_webfetch(
-        self, tmp_path: Path
-    ) -> None:
-        target = tmp_path / "settings.full.json"
-        target.write_text(
-            json.dumps(
-                {
-                    "permissions": {
-                        "deny": [],
-                        "allow": ["Read", "WebFetch(domain:stale.example.com)"],
-                    }
-                }
-            )
-        )
-        donor = tmp_path / "settings.yolo.json"
-        donor.write_text(
-            json.dumps(
-                {
-                    "permissions": {
-                        "deny": [],
-                        "allow": [
-                            "Read",
-                            "mcp__memory__store",
-                            "WebFetch(domain:donor.example.com)",
-                        ],
-                    },
-                    "model": "opus",
-                }
-            )
-        )
-        generated = {
-            "permissions": {
-                "deny": ["Bash(rm)"],
-                "allow": ["WebFetch(domain:github.com)"],
-            },
-            "sandbox": {"network": {"allowedDomains": ["github.com"]}},
-        }
-        result = selective_merge(target, generated, donor=donor)
-        assert result["permissions"]["allow"] == [
-            "Read",
-            "mcp__memory__store",
-            "WebFetch(domain:github.com)",
-        ]
-        assert result["permissions"]["deny"] == ["Bash(rm)"]
-        assert result["model"] == "opus"
-
-    def test_selective_merge_without_donor_is_unchanged(self, tmp_path: Path) -> None:
-        target = tmp_path / "settings.full.json"
-        target.write_text(json.dumps({"permissions": {"deny": []}, "theme": "light"}))
-        generated = {"permissions": {"deny": ["Bash(rm)"], "allow": []}, "sandbox": {}}
-        result = selective_merge(target, generated)
-        assert result["theme"] == "light"
-        assert result["permissions"]["deny"] == ["Bash(rm)"]
-
-    def test_selective_merge_missing_target_bootstraps_from_donor(
-        self, tmp_path: Path
-    ) -> None:
-        donor = tmp_path / "settings.full.json"
-        donor.write_text(
-            json.dumps(
-                {
-                    "permissions": {"deny": ["Bash(old)"], "allow": ["Read"]},
-                    "hooks": {"UserPromptSubmit": []},
-                    "skipDangerousModePermissionPrompt": False,
-                }
-            )
-        )
-        generated = {"permissions": {"deny": ["Bash(rm)"], "allow": []}, "sandbox": {}}
-        result = selective_merge(
-            None,
-            generated,
-            donor=donor,
-            mode_specific=["skipDangerousModePermissionPrompt"],
-        )
-        assert result["hooks"] == {"UserPromptSubmit": []}
-        assert result["permissions"]["allow"] == ["Read"]
-        assert result["permissions"]["deny"] == ["Bash(rm)"]
-        assert "skipDangerousModePermissionPrompt" not in result
-
-
 def test_read_and_write_deny_on_one_path_emit_each_rule_once(
     gen: ClaudeGenerator, config: AppConfig
 ) -> None:
@@ -1321,16 +1016,6 @@ class TestAllowWriteAsEditAllowRules:
         assert "Edit(.)" in output["permissions"]["allow"]
         assert "Edit(./xxx/x.md)" in output["permissions"]["deny"]
 
-    def test_yolo_mode_still_emits_the_allow_rules(self, gen: ClaudeGenerator) -> None:
-        # They feed the sandbox write grant; yolo only drops ask rules.
-        rules = [SecurityRule(Scope.WRITE, Action.ALLOW, ".", Source.SRT_FILESYSTEM)]
-
-        allow = json.loads(gen.generate(rules, AppConfig(yolo=True)))["permissions"][
-            "allow"
-        ]
-
-        assert "Edit(.)" in allow
-
 
 class TestEditAllowOwnership:
     """ADR 0002: twsrt owns every Edit(...) allow entry in its Claude target."""
@@ -1354,7 +1039,11 @@ class TestEditAllowOwnership:
             )
         )
         generated = {
-            "permissions": {"deny": [], "allow": ["Edit(.)", "Edit(./**)"]},
+            "permissions": {
+                "deny": [],
+                "allow": ["Edit(.)", "Edit(./**)"],
+                "ask": [],
+            },
             "sandbox": {},
         }
 
@@ -1404,3 +1093,88 @@ class TestEditAllowDiff:
         assert "Edit(.)" in result.missing
         assert "Edit(~/stale)" in result.extra
         assert "Bash(ls)" not in result.extra
+
+
+class TestOwnedSandboxKeysFollowThePolicy:
+    """ADR 0010: the profile alone decides the output, also when it drops a key."""
+
+    def test_a_loosening_the_policy_no_longer_has_is_removed(
+        self, gen: ClaudeGenerator, tmp_path: Path
+    ) -> None:
+        loose = AppConfig(
+            network_config={
+                "allowUnixSockets": ["/var/run/docker.sock"],
+                "allowAllUnixSockets": True,
+                "allowLocalBinding": True,
+                "allowMachLookup": ["com.apple.x"],
+                "httpProxyPort": 8080,
+                "socksProxyPort": 1080,
+            },
+            sandbox_config={
+                "enableWeakerNetworkIsolation": True,
+                "enableWeakerNestedSandbox": True,
+                "ignoreViolations": {"*": ["/usr/bin"]},
+            },
+        )
+        strict = AppConfig()
+        target = tmp_path / "settings.json"
+        target.write_text(gen.generate([], loose))
+
+        merged = selective_merge(target, json.loads(gen.generate([], strict)))
+
+        assert merged["sandbox"] == json.loads(gen.generate([], strict))["sandbox"]
+
+    def test_diff_is_clean_after_writing_a_stricter_profile(
+        self, gen: ClaudeGenerator, tmp_path: Path
+    ) -> None:
+        loose = AppConfig(
+            network_config={"allowAllUnixSockets": True},
+            sandbox_config={"enableWeakerNestedSandbox": True},
+        )
+        strict = AppConfig()
+        target = tmp_path / "settings.json"
+        target.write_text(gen.generate([], loose))
+
+        merged = selective_merge(target, json.loads(gen.generate([], strict)))
+        target.write_text(json.dumps(merged))
+
+        result = gen.diff([], target, strict)
+        assert result.matched, (result.missing, result.extra)
+
+
+class TestMalformedSettingsSections:
+    """A settings file twsrt cannot merge is one error line, not a traceback."""
+
+    @pytest.mark.parametrize(
+        ("document", "key"),
+        [
+            ({"permissions": None}, "permissions"),
+            ({"permissions": {"allow": None}}, "permissions.allow"),
+            ({"permissions": {"deny": "Bash(rm)"}}, "permissions.deny"),
+            ({"permissions": {"ask": [{}]}}, "permissions.ask"),
+            ({"sandbox": None}, "sandbox"),
+            ({"sandbox": []}, "sandbox"),
+            ({"sandbox": {"network": None}}, "sandbox.network"),
+            (
+                {"sandbox": {"network": {"allowedDomains": None}}},
+                "sandbox.network.allowedDomains",
+            ),
+            ({"sandbox": {"filesystem": True}}, "sandbox.filesystem"),
+        ],
+    )
+    def test_merge_and_diff_name_the_file_and_the_key(
+        self,
+        gen: ClaudeGenerator,
+        config: AppConfig,
+        tmp_path: Path,
+        document: dict,
+        key: str,
+    ) -> None:
+        target = tmp_path / "settings.json"
+        target.write_text(json.dumps(document))
+        generated = json.loads(gen.generate([], config))
+
+        with pytest.raises(ValueError, match=rf"settings\.json: {key} must be"):
+            selective_merge(target, generated)
+        with pytest.raises(ValueError, match=rf"settings\.json: {key} must be"):
+            gen.diff([], target, config)

@@ -184,74 +184,6 @@ class TestCopilotLossyMapping:
         assert any("no ask equivalent" in warning.lower() for warning in warnings)
 
 
-class TestCopilotYoloGeneration:
-    """T013-T015: Copilot YOLO mode generates --yolo + deny-only flags."""
-
-    def test_yolo_output_starts_with_yolo_flag(
-        self, gen: CopilotGenerator, config: AppConfig
-    ) -> None:
-        """T013: yolo output starts with --yolo, has --deny-tool for DENY only, no --allow-*."""
-        config.yolo = True
-        rules = [
-            SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
-            SecurityRule(Scope.EXECUTE, Action.ASK, "git push", Source.BASH_RULES),
-            SecurityRule(Scope.WRITE, Action.ALLOW, ".", Source.SRT_FILESYSTEM),
-            SecurityRule(Scope.NETWORK, Action.ALLOW, "github.com", Source.SRT_NETWORK),
-        ]
-        output = gen.generate(rules, config)
-        lines = [line.strip() for line in output.strip().split("\n") if line.strip()]
-
-        # First line must be --yolo
-        assert lines[0].startswith("--yolo")
-
-        # DENY rule present
-        assert any("--deny-tool 'shell(rm)'" in line for line in lines)
-
-        # ASK rule absent (not mapped to --deny-tool in yolo mode)
-        assert not any("git push" in line for line in lines)
-
-        # No --allow-tool or --allow-url (subsumed by --yolo)
-        assert not any("--allow-tool" in line for line in lines)
-        assert not any("--allow-url" in line for line in lines)
-
-    def test_yolo_includes_deny_url(
-        self, gen: CopilotGenerator, config: AppConfig
-    ) -> None:
-        """T014: yolo mode includes --deny-url for NETWORK/DENY rules."""
-        config.yolo = True
-        rules = [
-            SecurityRule(Scope.NETWORK, Action.DENY, "evil.com", Source.SRT_NETWORK),
-            SecurityRule(Scope.NETWORK, Action.ALLOW, "github.com", Source.SRT_NETWORK),
-        ]
-        output = gen.generate(rules, config)
-        assert "--deny-url 'evil.com'" in output
-        assert "--allow-url" not in output
-
-    def test_yolo_no_ask_rules_no_warning(
-        self,
-        gen: CopilotGenerator,
-        config: AppConfig,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """T015: yolo mode with no ASK rules emits no lossy-mapping warning."""
-        config.yolo = True
-        rules = [
-            SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
-            SecurityRule(Scope.EXECUTE, Action.ASK, "git push", Source.BASH_RULES),
-        ]
-        output = gen.generate(rules, config)
-        captured = capsys.readouterr()
-        warnings = gen.compatibility_warnings(rules, config)
-
-        # Should have --yolo flag and deny entries
-        assert "--yolo" in output
-        assert "--deny-tool 'shell(rm)'" in output
-
-        # No lossy mapping warning
-        assert captured.err == ""
-        assert warnings == []
-
-
 def _settings_config(tmp_path: Path, **kwargs) -> AppConfig:
     return AppConfig(copilot_settings_path=tmp_path / "settings.json", **kwargs)
 
@@ -352,17 +284,6 @@ class TestCopilotSettings:
         with pytest.raises(ValueError, match=str(target)):
             gen.render_settings(_sandbox_rules(), _settings_config(tmp_path))
 
-    def test_yolo_writes_the_same_settings(
-        self, gen: CopilotGenerator, tmp_path: Path
-    ) -> None:
-        """FR-025: one settings.json serves both modes; only flags differ."""
-        full = gen.render_settings(_sandbox_rules(), _settings_config(tmp_path))
-        yolo = gen.render_settings(
-            _sandbox_rules(), _settings_config(tmp_path, yolo=True)
-        )
-
-        assert full == yolo
-
     def test_settings_only_config_previews_no_flags(
         self, gen: CopilotGenerator, tmp_path: Path
     ) -> None:
@@ -392,23 +313,6 @@ class TestCopilotSettings:
         assert "copilot_output" in gap[0]
         assert "rm" in gap[0] and "git push" in gap[0]
 
-    def test_settings_only_yolo_still_warns_about_deny_rules(
-        self, gen: CopilotGenerator, tmp_path: Path
-    ) -> None:
-        config = _settings_config(tmp_path, yolo=True)
-        rules = [
-            SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
-            SecurityRule(Scope.EXECUTE, Action.ASK, "git push", Source.BASH_RULES),
-        ]
-
-        gap = [
-            w for w in gen.compatibility_warnings(rules, config) if "not enforced" in w
-        ]
-
-        assert len(gap) == 1
-        assert "rm" in gap[0]
-        assert "git push" not in gap[0]
-
     def test_settings_only_without_shell_rules_has_no_gap_warning(
         self, gen: CopilotGenerator, tmp_path: Path
     ) -> None:
@@ -419,8 +323,8 @@ class TestCopilotSettings:
     def test_settings_warnings_include_the_builder_warnings(
         self, gen: CopilotGenerator, tmp_path: Path
     ) -> None:
-        """FR-040 reaches the user through compatibility_warnings, yolo too."""
-        config = _settings_config(tmp_path, yolo=True)
+        """FR-040 reaches the user through compatibility_warnings."""
+        config = _settings_config(tmp_path)
 
         warnings = gen.compatibility_warnings([], config)
 

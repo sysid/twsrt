@@ -160,7 +160,7 @@ class TestLoadConfig:
         path.write_text(
             base_config(
                 "[targets]\n"
-                f'claude_settings = "{tmp_path / "settings.full.json"}"\n'
+                f'claude_settings = "{tmp_path / "settings.json"}"\n'
                 f'copilot_output = "{tmp_path / "copilot-flags.txt"}"\n'
                 f'codex_config = "{tmp_path / "config.toml"}"\n'
             )
@@ -168,7 +168,7 @@ class TestLoadConfig:
 
         config = load_config(path)
 
-        assert config.agent_target("claude") == tmp_path / "settings.full.json"
+        assert config.agent_target("claude") == tmp_path / "settings.json"
         assert config.agent_target("copilot") == tmp_path / "copilot-flags.txt"
         assert config.agent_target("codex") == tmp_path / "config.toml"
 
@@ -257,22 +257,14 @@ class TestLoadConfig:
         with pytest.raises(ValueError, match=r"copilot.*\[targets\]\.copilot_output"):
             config.require_target("copilot")
 
-    @pytest.mark.parametrize(
-        ("dependent", "primary"),
-        [
-            ("claude_settings_yolo", "claude_settings"),
-            ("copilot_output_yolo", "copilot_output"),
-            ("codex_rules", "codex_config"),
-        ],
-    )
-    def test_secondary_target_without_its_primary_is_rejected(
-        self, tmp_twsrt_dir: Path, dependent: str, primary: str
+    def test_codex_rules_without_codex_config_is_rejected(
+        self, tmp_twsrt_dir: Path
     ) -> None:
-        """A yolo or rules path alone would half-configure an agent; fail loudly."""
+        """A rules path alone would half-configure an agent; fail loudly."""
         path = tmp_twsrt_dir / "config.toml"
-        path.write_text(base_config(f'[targets]\n{dependent} = "x.txt"\n'))
+        path.write_text(base_config('[targets]\ncodex_rules = "x.txt"\n'))
 
-        with pytest.raises(ValueError, match=rf"{dependent} requires {primary}"):
+        with pytest.raises(ValueError, match="codex_rules requires codex_config"):
             load_config(path)
 
     def test_loads_codex_targets(self, tmp_twsrt_dir: Path, tmp_path: Path) -> None:
@@ -370,127 +362,242 @@ bash = ["base"]
             load_config(path)
 
 
-class TestYoloConfigLoading:
-    def test_yolo_paths_loaded_when_present(self, tmp_twsrt_dir: Path) -> None:
+class TestUnknownKeys:
+    """ADR 0010 decision 8: nothing in config.toml is silently ignored."""
+
+    def test_a_misspelled_table_is_rejected_by_name(self, tmp_twsrt_dir: Path) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(base_config('[target]\ncopilot_output = "flags.txt"\n'))
+
+        with pytest.raises(ValueError, match=r"config\.toml: unknown key\(s\): target"):
+            load_config(path)
+
+    def test_a_misspelled_target_is_rejected_and_the_known_ones_are_listed(
+        self, tmp_twsrt_dir: Path
+    ) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(
+            base_config('[targets]\nclaude_setings = "~/.claude/settings.json"\n')
+        )
+
+        with pytest.raises(
+            ValueError,
+            match=r"targets: unknown key\(s\): claude_setings.*known: .*claude_settings",
+        ):
+            load_config(path)
+
+    def test_a_misspelled_source_output_is_rejected(self, tmp_twsrt_dir: Path) -> None:
+        """It would silently move the canonical srt settings to the default path."""
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(base_config().replace('output = "~/.srt', 'outptu = "~/.srt'))
+
+        with pytest.raises(ValueError, match=r"sources\.srt: unknown key.*outptu"):
+            load_config(path)
+
+    def test_an_unknown_fragment_key_is_rejected(self, tmp_twsrt_dir: Path) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(
+            base_config().replace(
+                'path = "srt/base.jsonc"', 'path = "srt/base.jsonc"\nenabled = false'
+            )
+        )
+
+        with pytest.raises(
+            ValueError, match=r"sources\.srt\.fragments\.base: unknown key.*enabled"
+        ):
+            load_config(path)
+
+    def test_every_documented_target_key_is_known(self, tmp_twsrt_dir: Path) -> None:
         path = tmp_twsrt_dir / "config.toml"
         path.write_text(
             base_config(
                 "[targets]\n"
-                'claude_settings = "~/.claude/settings.full.json"\n'
-                'copilot_output = "~/.config/twsrt/copilot-flags.txt"\n'
-                'claude_settings_yolo = "~/.claude/settings.yolo.json"\n'
-                'copilot_output_yolo = "~/.config/twsrt/copilot-flags.yolo.txt"\n'
+                'claude_settings = "~/.claude/settings.json"\n'
+                'copilot_settings = "~/.copilot/settings.json"\n'
+                'copilot_output = "copilot-flags.txt"\n'
+                'copilot_jetbrains_xml = ["~/idea/github-copilot.xml"]\n'
+                'codex_config = "~/.codex/config.toml"\n'
+                'codex_rules = "~/.codex/rules/twsrt.rules"\n'
             )
         )
 
         config = load_config(path)
 
-        assert str(config.claude_yolo_path).endswith("settings.yolo.json")
-        assert str(config.copilot_yolo_path).endswith("copilot-flags.yolo.txt")
-
-    def test_claude_settings_rejects_anchor_name(self, tmp_twsrt_dir: Path) -> None:
-        path = tmp_twsrt_dir / "config.toml"
-        path.write_text(
-            base_config('[targets]\nclaude_settings = "~/.claude/settings.json"\n')
-        )
-
-        with pytest.raises(ValueError, match="reserved.*symlink anchor"):
-            load_config(path)
-
-    def test_yolo_paths_none_when_absent(self, tmp_twsrt_dir: Path) -> None:
-        path = tmp_twsrt_dir / "config.toml"
-        path.write_text(base_config())
-
-        config = load_config(path)
-
-        assert config.claude_yolo_path is None
-        assert config.copilot_yolo_path is None
+        assert config.agent_target("claude") is not None
+        assert config.agent_target("codex") is not None
 
 
-class TestSandboxOverrides:
-    def test_sandbox_overrides_loaded(self, tmp_twsrt_dir: Path) -> None:
-        path = tmp_twsrt_dir / "config.toml"
-        path.write_text(
-            base_config(
-                "[sandbox_overrides.yolo]\n"
-                "enabled = true\n"
-                "autoAllowBashIfSandboxed = true\n"
-                "allowUnsandboxedCommands = false\n"
-                "[sandbox_overrides.full]\n"
-                "enabled = false\n"
-            )
-        )
+class TestProfileNames:
+    """ADR 0010 decision 7: a profile name is a directory below ./.twsrt/."""
 
-        config = load_config(path)
-
-        assert config.sandbox_overrides == {
-            "yolo": {
-                "enabled": True,
-                "autoAllowBashIfSandboxed": True,
-                "allowUnsandboxedCommands": False,
-            },
-            "full": {"enabled": False},
-        }
-
-    def test_sandbox_overrides_empty_when_absent(self, tmp_twsrt_dir: Path) -> None:
-        path = tmp_twsrt_dir / "config.toml"
-        path.write_text(base_config())
-        assert load_config(path).sandbox_overrides == {}
-
-    def test_sandbox_overrides_partial(self, tmp_twsrt_dir: Path) -> None:
-        path = tmp_twsrt_dir / "config.toml"
-        path.write_text(base_config("[sandbox_overrides.yolo]\nenabled = true\n"))
-        assert load_config(path).sandbox_overrides == {"yolo": {"enabled": True}}
-
-
-class TestClaudeSync:
-    def test_absent_table_disables_sync(self, tmp_twsrt_dir: Path) -> None:
-        path = tmp_twsrt_dir / "config.toml"
-        path.write_text(base_config())
-        assert load_config(path).claude_sync is None
-
-    def test_mode_specific_list_parsed(self, tmp_twsrt_dir: Path) -> None:
-        path = tmp_twsrt_dir / "config.toml"
-        path.write_text(
-            base_config(
-                "[claude_sync]\n"
-                'mode_specific = ["skipDangerousModePermissionPrompt", "hooks.PostToolUse"]\n'
-            )
-        )
-        config = load_config(path)
-        assert config.claude_sync is not None
-        assert config.claude_sync.mode_specific == [
-            "skipDangerousModePermissionPrompt",
-            "hooks.PostToolUse",
-        ]
-
-    def test_empty_table_enables_sync_with_no_exclusions(
-        self, tmp_twsrt_dir: Path
+    @pytest.mark.parametrize(
+        "name", ["../evil", "a/b", "a\\b", "..", ".", ".gitignore", ""]
+    )
+    def test_a_name_that_is_not_one_path_component_is_rejected(
+        self, tmp_twsrt_dir: Path, name: str
     ) -> None:
         path = tmp_twsrt_dir / "config.toml"
-        path.write_text(base_config("[claude_sync]\n"))
-        config = load_config(path)
-        assert config.claude_sync is not None
-        assert config.claude_sync.mode_specific == []
+        path.write_text(base_config(f"[profiles.'{name}']\nsrt = ['base']\n"))
 
-    def test_mode_specific_must_be_list(self, tmp_twsrt_dir: Path) -> None:
+        with pytest.raises(ValueError, match="not a valid profile name"):
+            load_config(path)
+
+    @pytest.mark.parametrize("name", ["work", "personal-srt", "v1.2", "über"])
+    def test_ordinary_names_are_accepted(self, tmp_twsrt_dir: Path, name: str) -> None:
         path = tmp_twsrt_dir / "config.toml"
-        path.write_text(base_config('[claude_sync]\nmode_specific = "theme"\n'))
+        path.write_text(base_config(f'[profiles."{name}"]\nextends = ["default"]\n'))
+
+        assert name in load_config(path).profiles
+
+    @pytest.mark.parametrize("escape", ["\\n", "\\u0000", "\\u001b", "\\u200b"])
+    def test_an_unprintable_character_is_rejected(
+        self, tmp_twsrt_dir: Path, escape: str
+    ) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(base_config(f'[profiles."a{escape}b"]\nsrt = ["base"]\n'))
+
+        with pytest.raises(ValueError, match="not a valid profile name"):
+            load_config(path)
+
+    @pytest.mark.parametrize(
+        ("first", "second"),
+        [
+            ("slim", "Slim"),
+            ("straße", "STRASSE"),
+            # Composed and decomposed u-umlaut: one directory on APFS.
+            ("\u00fcber", "u\u0308ber"),
+        ],
+    )
+    def test_names_sharing_a_directory_on_macos_are_rejected(
+        self, tmp_twsrt_dir: Path, first: str, second: str
+    ) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(
+            base_config(
+                f'[profiles."{first}"]\nsrt = ["base"]\n'
+                f'[profiles."{second}"]\nsrt = ["base"]\n'
+            )
+        )
+
+        with pytest.raises(ValueError, match="same directory") as error:
+            load_config(path)
+        assert repr(first) in str(error.value)
+        assert repr(second) in str(error.value)
+
+
+class TestRemovedKeys:
+    """ADR 0010 decision 8: a 3.x config fails with the replacement named."""
+
+    def test_sandbox_overrides(self, tmp_twsrt_dir: Path) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(base_config("[sandbox_overrides.yolo]\nenabled = true\n"))
+
         with pytest.raises(
-            ValueError, match="claude_sync.mode_specific must be a list"
+            ValueError, match="sandbox_overrides was removed.*always enabled.*ADR 0010"
         ):
             load_config(path)
 
-    def test_mode_specific_entries_must_be_non_empty_strings(
+    def test_claude_sync(self, tmp_twsrt_dir: Path) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(base_config("[claude_sync]\nmode_specific = []\n"))
+
+        with pytest.raises(
+            ValueError, match="claude_sync was removed.*one settings.json.*ADR 0010"
+        ):
+            load_config(path)
+
+    def test_every_removed_key_of_a_table_is_reported_at_once(
         self, tmp_twsrt_dir: Path
     ) -> None:
         path = tmp_twsrt_dir / "config.toml"
-        path.write_text(base_config('[claude_sync]\nmode_specific = ["theme", ""]\n'))
-        with pytest.raises(ValueError, match="claude_sync.mode_specific"):
+        path.write_text(
+            base_config("[claude_sync]\n[sandbox_overrides.yolo]\nenabled = true\n")
+        )
+
+        with pytest.raises(ValueError, match="(?s)claude_sync was.*sandbox_overrides"):
             load_config(path)
 
-    def test_unknown_field_rejected(self, tmp_twsrt_dir: Path) -> None:
+    def test_claude_settings_must_be_the_file_claude_reads(
+        self, tmp_twsrt_dir: Path
+    ) -> None:
+        """A 3.x value: -w would update a file no longer linked to settings.json,
+        and Claude would keep running the old policy."""
         path = tmp_twsrt_dir / "config.toml"
-        path.write_text(base_config("[claude_sync]\nmode_specifc = []\n"))
-        with pytest.raises(ValueError, match="claude_sync: unknown field"):
+        path.write_text(
+            base_config('[targets]\nclaude_settings = "~/.claude/settings.full.json"\n')
+        )
+
+        with pytest.raises(
+            ValueError, match=r"claude_settings must be named settings\.json.*ADR 0010"
+        ):
+            load_config(path)
+
+    @pytest.mark.parametrize("key", ["claude_settings_yolo", "copilot_output_yolo"])
+    def test_yolo_targets(self, tmp_twsrt_dir: Path, key: str) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(base_config(f'[targets]\n{key} = "x"\n'))
+
+        with pytest.raises(
+            ValueError, match=f"{key} was removed.*select a profile.*ADR 0010"
+        ):
+            load_config(path)
+
+
+class TestTablesMustBeTables:
+    """ADR 0010 decision 8: a wrongly typed table is neither ignored nor a crash."""
+
+    @pytest.mark.parametrize(
+        "targets",
+        [
+            "targets = []\n",
+            'targets = ""\n',
+            "targets = false\n",
+        ],
+    )
+    def test_a_targets_value_is_rejected(
+        self, tmp_twsrt_dir: Path, targets: str
+    ) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(targets + base_config())
+
+        with pytest.raises(ValueError, match="targets must be a table"):
+            load_config(path)
+
+    def test_a_targets_array_of_tables_is_rejected(self, tmp_twsrt_dir: Path) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(
+            base_config('[[targets]]\nclaude_settings = "~/.claude/settings.json"\n')
+        )
+
+        with pytest.raises(ValueError, match="targets must be a table"):
+            load_config(path)
+
+    def test_a_profiles_array_of_tables_is_rejected(self, tmp_twsrt_dir: Path) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(base_config().replace("[profiles.default]", "[[profiles]]"))
+
+        with pytest.raises(ValueError, match="profiles must be a table"):
+            load_config(path)
+
+    def test_a_sources_array_of_tables_is_rejected(self, tmp_twsrt_dir: Path) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(
+            'schema_version = 1\ndefault_profile = "default"\n'
+            '[[sources]]\noutput = "x"\n'
+        )
+
+        with pytest.raises(ValueError, match="sources must be a table"):
+            load_config(path)
+
+    def test_a_fragments_array_of_tables_is_rejected(self, tmp_twsrt_dir: Path) -> None:
+        path = tmp_twsrt_dir / "config.toml"
+        path.write_text(
+            base_config().replace(
+                "[sources.bash.fragments.base]", "[[sources.bash.fragments]]"
+            )
+        )
+
+        with pytest.raises(
+            ValueError, match=r"sources\.bash\.fragments must be a table"
+        ):
             load_config(path)

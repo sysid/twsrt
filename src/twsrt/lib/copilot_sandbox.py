@@ -55,11 +55,7 @@ def build_policy(
     rules: list[SecurityRule], config: AppConfig
 ) -> tuple[SandboxPolicy, list[str]]:
     """Translate rules into a policy plus warnings for every lossy mapping."""
-    if config.srt_sandbox_enabled is False:
-        raise ValueError(
-            "Canonical SRT sandbox is disabled; refusing to generate a Copilot "
-            "sandbox without restrictions"
-        )
+    config.require_sandbox("Copilot")
     warnings: list[str] = []
     denied: set[str] = set()
     readonly: set[str] = set()
@@ -132,9 +128,7 @@ def build_policy(
         )
     untranslated = sorted(
         [k for k in _UNTRANSLATED_NETWORK_KEYS if k in config.network_config]
-        # The compiled srt fields, not sandbox_config: [sandbox_overrides.*]
-        # target Claude and are no srt policy Copilot could miss.
-        + [k for k in _UNTRANSLATED_SANDBOX_KEYS if k in config.srt_sandbox_config]
+        + [k for k in _UNTRANSLATED_SANDBOX_KEYS if k in config.sandbox_config]
     )
     if untranslated:
         warnings.append(

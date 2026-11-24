@@ -5,6 +5,7 @@
 - **Deciders:** Tom
 - **Implementation:** `src/twsrt/lib/composition.py` `_merge`; `src/twsrt/lib/sources.py`
   `_reject_cross_action_conflicts`; `src/twsrt/lib/profiles.py` `resolve_profile`
+- **Amended by:** ADR 0010 (`[sandbox_overrides]` removed; scalars have one value)
 - **Related:** `SECURITY_CONCEPT.md` §3.2; `doc/REFERENCE.md` → "Compiler model"; ADR 0004 (per-project policy)
 
 ## Context

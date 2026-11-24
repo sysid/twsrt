@@ -288,7 +288,7 @@ class TestUntranslatedFieldWarnings:
                 "allowUnixSockets": ["/tmp"],
                 "allowMachLookup": ["com.apple.FSEvents"],
             },
-            srt_sandbox_config={
+            sandbox_config={
                 "enabled": True,
                 "enableWeakerNetworkIsolation": True,
                 "ignoreViolations": {"*": ["/usr/bin"]},
@@ -314,18 +314,6 @@ class TestUntranslatedFieldWarnings:
 
         assert not any("no equivalent" in w for w in warnings)
 
-    def test_mode_overrides_are_not_reported_as_srt_fields(self) -> None:
-        """FR-040: [sandbox_overrides.*] target Claude, not the canonical srt
-        policy; only the compiled srt fields are Copilot's concern."""
-        config = AppConfig(
-            sandbox_config={"enabled": True, "enableWeakerNestedSandbox": True},
-            srt_sandbox_config={"enabled": True},
-        )
-
-        _, warnings = build_policy([], config)
-
-        assert not any("no equivalent" in w for w in warnings)
-
     def test_software_only_enforcement_is_always_stated(self) -> None:
         """FR-040, G1: in-process tools have no OS backstop (accepted risk)."""
         _, warnings = build_policy([], AppConfig())
@@ -336,9 +324,9 @@ class TestUntranslatedFieldWarnings:
 class TestGuards:
     def test_disabled_canonical_sandbox_is_refused(self) -> None:
         """FR-012: never emit a native sandbox for a policy that disables srt."""
-        config = AppConfig(srt_sandbox_enabled=False)
+        config = AppConfig(sandbox_config={"enabled": False})
 
-        with pytest.raises(ValueError, match="sandbox is disabled"):
+        with pytest.raises(ValueError, match="sandbox is disabled.*Copilot"):
             build_policy([], config)
 
 

@@ -5,6 +5,7 @@
 - **Date:** 2026-10-03
 - **Deciders:** Tom
 - **Implementation:** `src/twsrt/lib/claude.py` `ClaudeGenerator.generate`, `selective_merge`
+- **Amended by:** ADR 0010 (no yolo/full modes, sandbox always on)
 - **Related:** ADR 0001 (`denyRead` ⇒ `denyWrite`), ADR 0006 (translations never widen);
   bkmr memories 3742 (anchoring), 3671 (folding, ARG_MAX); vimwiki `help/srt.md` → Claude Code
 
@@ -105,7 +106,7 @@ Edit/Write/NotebookEdit tools **no longer prompt** for files under P.
 
 | Mode | Consequence |
 |---|---|
-| yolo (prompts skipped anyway) | none beyond the sandbox grant |
+| yolo (prompts skipped anyway; modes were removed by ADR 0010) | none beyond the sandbox grant |
 | full (interactive approval) | edits under every `allowWrite` path — including `.`, i.e. the whole project — are no longer confirmed. If `[sandbox_overrides.full]` disables the sandbox, the auto-approval is the **only** effect of the rule in full mode |
 
 Accepted because identical anchoring between srt and Claude and the removal of the `~/.claude`

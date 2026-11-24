@@ -28,7 +28,7 @@ def make_profile_config(tmp_path: Path, conflicting: bool = False) -> tuple[Path
     (fragments / "bash-base.jsonc").write_text(
         '{"allow": [], "ask": [], "deny": ["rm"]}'
     )
-    claude_target = tmp_path / "claude" / "settings.full.json"
+    claude_target = tmp_path / "claude" / "settings.json"
     config = tmp_path / "config.toml"
     config.write_text(
         f"""schema_version = 1
@@ -100,19 +100,6 @@ def test_config_init_documents_all_supported_configuration_shapes(
         "copilot_output =",
         "codex_config =",
         "codex_rules =",
-        "# claude_settings_yolo =",
-        "# copilot_output_yolo =",
-        "# Known top-level sandbox keys accepted here:",
-        "# Known nested network keys:",
-        "# Known nested filesystem keys:",
-        "# Nested network/filesystem overrides replace the entire compiled section.",
-        "# For filesystem overrides, twsrt then restores denyRead and denyWrite as",
-        (
-            "# The same seven top-level and eight nested keys documented above "
-            "are valid here."
-        ),
-        "# [sandbox_overrides.yolo.network]",
-        "# [sandbox_overrides.yolo.filesystem]",
     )
     for expected in expected_documentation:
         assert expected in content
@@ -472,32 +459,6 @@ def test_show_conflicting_fragments_exits_1(tmp_path: Path) -> None:
     assert "conflict at /enabled" in result.stderr
 
 
-def test_generate_yolo_write_leaves_the_canonical_srt_document_unchanged(
-    tmp_path: Path,
-) -> None:
-    """Canonical config depends on the profile only; yolo overrides stay agent-side."""
-    config, claude_target = make_profile_config(tmp_path)
-    with config.open("a") as handle:
-        handle.write("\n[sandbox_overrides.yolo]\nenabled = false\n")
-
-    result = runner.invoke(
-        app, ["-c", str(config), "generate", "claude", "--yolo", "--write"]
-    )
-
-    assert result.exit_code == 0, result.output
-    yolo_target = claude_target.parent / "settings.yolo.json"
-    assert json.loads(yolo_target.read_text())["sandbox"]["enabled"] is False
-    assert json.loads((tmp_path / "compiled/srt.json").read_text()) == {
-        "enabled": True,
-        # denyRead implies denyWrite; the policy files are always write-denied
-        # (see sources.compile_sources).
-        "filesystem": {
-            "denyRead": ["~/.ssh"],
-            "denyWrite": sorted(["~/.ssh", *load_config(config).policy_files]),
-        },
-    }
-
-
 @pytest.mark.parametrize(
     ("argv", "exit_code"),
     [
@@ -543,3 +504,41 @@ def test_edit_reports_unreadable_fragment_after_the_editor_closes(
     assert result.exit_code == 1, result.output
     assert not isinstance(result.exception, PermissionError)
     assert str(fragment) in result.stderr
+
+
+def test_generate_write_keeps_the_fixed_claude_posture_out_of_the_canonical_document(
+    tmp_path: Path,
+) -> None:
+    """Canonical config depends on the profile only; the posture is agent-side."""
+    config, claude_target = make_profile_config(tmp_path)
+
+    result = runner.invoke(app, ["-c", str(config), "generate", "claude", "--write"])
+
+    assert result.exit_code == 0, result.output
+    claude = json.loads(claude_target.read_text())
+    assert claude["sandbox"]["allowUnsandboxedCommands"] is False
+    assert json.loads((tmp_path / "compiled/srt.json").read_text()) == {
+        "enabled": True,
+        # denyRead implies denyWrite; the policy files are always write-denied
+        # (see sources.compile_sources).
+        "filesystem": {
+            "denyRead": ["~/.ssh"],
+            "denyWrite": sorted(["~/.ssh", *load_config(config).policy_files]),
+        },
+    }
+
+
+def test_switching_to_a_profile_without_ask_rules_clears_them_in_the_claude_target(
+    tmp_path: Path,
+) -> None:
+    """ADR 0010: which commands prompt is policy; the profile alone decides."""
+    config, claude_target = make_profile_config(tmp_path)
+    claude_target.parent.mkdir(parents=True, exist_ok=True)
+    claude_target.write_text(
+        json.dumps({"permissions": {"ask": ["Bash(git push)", "Bash(git push *)"]}})
+    )
+
+    result = runner.invoke(app, ["-c", str(config), "generate", "claude", "-w"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(claude_target.read_text())["permissions"]["ask"] == []

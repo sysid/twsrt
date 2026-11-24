@@ -18,7 +18,6 @@ from twsrt.lib.models import (
     AGENT_TARGET_KEYS,
     AppConfig,
     CompilationResult,
-    yolo_path,
 )
 
 __version__ = "3.4.0"
@@ -231,17 +230,17 @@ srt = ["base"]
 # Generated agent targets
 # -----------------------------------------------------------------------------
 # Agents are opt-in: an agent is configured only when its primary key is set.
-# `generate`/`diff all` skip unconfigured agents with a note; naming one
-# explicitly (e.g. `generate codex`) fails. With no agent configured,
-# `generate -w` writes only the canonical outputs above.
+# `generate`/`diff` skip unconfigured agents with a note, whether named or
+# covered by `all`. With no agent configured, `generate -w` writes only the
+# canonical outputs above.
 # Uncomment a key to enable its agent; the values shown are sensible defaults.
 # Home-relative and absolute paths are supported. Relative paths resolve from
 # the directory containing config.toml.
 
 [targets]
-# Claude Code. Must not be named settings.json: that path is twsrt's symlink
-# anchor, pointed at the full or yolo file by `generate -w claude`.
-# claude_settings = "~/.claude/settings.full.json"
+# Claude Code: the file it reads. twsrt merges its own sections into it (ADR
+# 0010) and keeps hooks, plugins, model and every other key.
+# claude_settings = "~/.claude/settings.json"
 
 # GitHub Copilot CLI native sandbox (ADR 0009): twsrt owns the keys sandbox,
 # allowedUrls and deniedUrls in this file and always writes enabled = true.
@@ -263,92 +262,6 @@ srt = ["base"]
 # Optional, requires codex_config: sandbox-escape escalation rules.
 # codex_rules = "~/.codex/rules/twsrt.rules"
 
-# Optional explicit YOLO targets, each requiring its full-mode key. When omitted,
-# twsrt inserts ".yolo" before the final suffix of the full-mode target.
-# claude_settings_yolo = "~/.claude/settings.yolo.json"
-# copilot_output_yolo = "copilot-flags.yolo.txt"
-
-
-# -----------------------------------------------------------------------------
-# Invariant sync between the Claude full and yolo targets
-# -----------------------------------------------------------------------------
-# Claude Code writes runtime settings (model, theme, editorMode, hooks added via
-# the UI, ...) into whatever settings.json points to. With this table present,
-# generate -w claude first copies every key twsrt does not manage from that file
-# (the donor) into the target being generated, so the two targets converge on
-# each mode switch. Deletions propagate; last writer wins. Managed sections
-# (permissions.deny/ask, WebFetch allows, sandbox.*) are never synced.
-# Uncomment the table to enable the sync.
-# [claude_sync]
-# # Keys that legitimately differ between modes and are never synced.
-# # Dotted paths address nested keys, e.g. "hooks.PostToolUse".
-# mode_specific = [
-#   "skipDangerousModePermissionPrompt",
-#   "skipAutoPermissionPrompt",
-# ]
-
-
-# -----------------------------------------------------------------------------
-# Mode-specific sandbox overrides
-# -----------------------------------------------------------------------------
-# These optional tables are shallow top-level overrides applied after compiled
-# SRT values: [sandbox_overrides.yolo] for --yolo, otherwise
-# [sandbox_overrides.full]. Prefer canonical SRT JSONC for shared policy.
-#
-# Known top-level sandbox keys accepted here:
-#   enabled = true | false
-#   enableWeakerNetworkIsolation = true | false
-#   enableWeakerNestedSandbox = true | false
-#   autoAllowBashIfSandboxed = true | false
-#   allowUnsandboxedCommands = true | false
-#   excludedCommands = ["command", ...]
-#   ignoreViolations = { "executable" = ["path", ...] }
-#
-# Known nested network keys:
-#   allowedDomains, deniedDomains, allowUnixSockets, allowAllUnixSockets,
-#   allowLocalBinding, httpProxyPort, socksProxyPort
-#
-# Known nested filesystem keys:
-#   allowWrite
-#
-# Nested network/filesystem overrides replace the entire compiled section.
-# For filesystem overrides, twsrt then restores denyRead and denyWrite as
-# empty arrays; canonical deny paths remain enforced through Claude permission
-# rules. Prefer SRT JSONC unless complete replacement is intentional.
-
-[sandbox_overrides.yolo]
-# YOLO skips command confirmation, so keep the kernel sandbox enabled and forbid
-# falling back to unsandboxed execution. The only optional table active by
-# default: removing it weakens yolo mode.
-enabled = true
-autoAllowBashIfSandboxed = true
-allowUnsandboxedCommands = false
-
-# Optional top-level examples:
-# enableWeakerNetworkIsolation = false
-# enableWeakerNestedSandbox = false
-# excludedCommands = ["docker"]
-# ignoreViolations = { "*" = ["/usr/bin"] }
-
-# Complete nested replacement examples—normally keep these in SRT JSONC:
-# [sandbox_overrides.yolo.network]
-# allowedDomains = ["github.com"]
-# deniedDomains = ["example.invalid"]
-# allowUnixSockets = ["/tmp/example.sock"]
-# allowAllUnixSockets = false
-# allowLocalBinding = true
-# httpProxyPort = 8080
-# socksProxyPort = 1080
-#
-# [sandbox_overrides.yolo.filesystem]
-# allowWrite = ["."]
-
-# Full mode retains interactive approval; uncomment to disable the agent's native
-# sandbox there. Without it, full mode inherits SRT's enabled value.
-# [sandbox_overrides.full]
-# enabled = false
-#
-# The same seven top-level and eight nested keys documented above are valid here.
 """
 DEFAULT_SRT_JSONC = """\
 {
@@ -585,15 +498,12 @@ def doctor(
         _error(str(exc))
         raise typer.Exit(1)
 
-    # The twsrt Claude targets plus the repo's own settings, which Claude also
+    # The twsrt Claude target plus the repo's own settings, which Claude also
     # loads and which twsrt never writes (relative-path trap, bkmr 3742).
     project = Path.cwd() / ".claude"
     claude_files = [project / "settings.json", project / "settings.local.json"]
     if config.claude_settings_path is not None:
-        claude_files[:0] = [
-            config.claude_settings_path,
-            config.claude_yolo_path or yolo_path(config.claude_settings_path),
-        ]
+        claude_files.insert(0, config.claude_settings_path)
     findings = diagnose(config, config_path.parent, claude_files)
     if not findings:
         _success("doctor: no findings")
@@ -671,7 +581,7 @@ def _report_stale_targets(config_path: Path, profile: str | None) -> None:
     it is the expected outcome of an edit.
     """
     try:
-        _, compiled = _compile(config_path, profile, yolo=False)
+        _, compiled = _compile(config_path, profile)
     except (OSError, ValueError) as exc:
         log.debug("Post-edit compile failed", exc_info=True)
         _error(str(exc))
@@ -700,11 +610,6 @@ def generate(
         "-w",
         help="Write every file the preview lists. Without -w nothing is written",
     ),
-    yolo: bool = typer.Option(
-        False,
-        "--yolo",
-        help="Yolo mode: drop ask rules and use the *.yolo.* agent targets",
-    ),
     profile: str | None = typer.Option(
         None,
         "--profile",
@@ -714,7 +619,7 @@ def generate(
     project: bool = typer.Option(
         False,
         "--project",
-        help="Claude only: target ./.twsrt/ in the current directory instead "
+        help="Claude only: target ./.twsrt/<profile>/ in the current directory instead "
         "of the global paths. With -w, stdout is that directory",
     ),
 ) -> None:
@@ -725,8 +630,7 @@ def generate(
 
     Both modes stage first. Staging builds in memory the exact files -w writes:
     each agent's managed sections merged into its existing target file (your
-    hooks, MCP servers and other keys are kept), plus \\[claude_sync] settings
-    taken from the other mode's file. Staging only reads, so a conflicting or
+    hooks, MCP servers and other keys are kept). Staging only reads, so an
     unparsable target fails the preview before -w would write anything.
 
     With -w: write those files, the canonical outputs (\\[sources] srt and bash
@@ -736,29 +640,27 @@ def generate(
 
     Agent configs are translated from the canonical config; the agent argument
     only picks which translations run. An agent without a \\[targets] key is
-    skipped with an Info note, whether named or covered by `all`. The preview does not print the canonical
-    outputs: use `twsrt show`.
+    skipped with an Info note, whether named or covered by `all`. The preview
+    does not print the canonical outputs: use `twsrt show`.
 
-    Claude modes via a symlink: Claude Code reads only settings.json next to
-    the claude_settings target (usually ~/.claude). -w writes the mode's own
-    file (settings.full.json, or settings.yolo.json with --yolo) and then
-    points settings.json at it, so the last -w decides which mode Claude starts
-    in. A regular settings.json found on the first -w is moved to the target;
-    if both exist, -w stops. Settings Claude changes at runtime land in the
-    linked file; \\[claude_sync] carries them over on the next mode switch.
+    The profile decides which commands ask before they run; the agent's own
+    launch flags decide who answers. twsrt never skips prompts for an agent.
 
-    --project: write into ./.twsrt/ and add that directory to denyWrite. Launch
-    with `claude --setting-sources project,local --settings
-    .twsrt/claude-settings.json` or `srt -s .twsrt/srt-settings.json`.
+    --project: write into ./.twsrt/<profile>/ and add ./.twsrt to denyWrite.
+    Launch with `claude --setting-sources project,local --settings
+    DIR/claude-settings.json` or `srt -s DIR/srt-settings.json`, where DIR is
+    the directory -w prints. Refused while ./.twsrt is a symlink or holds policy
+    files of twsrt 3.x.
     """
     try:
         twsrt_dir = Path.cwd().resolve() / ".twsrt" if project else None
         if twsrt_dir is not None:
             agent = _project_agent(agent)
-        config, compiled = _compile(ctx.obj["config_path"], profile, yolo, twsrt_dir)
+        config, compiled = _compile(ctx.obj["config_path"], profile, twsrt_dir)
         if twsrt_dir is not None:
             # Not optional here: --project copies hooks from the global target.
             config.require_target("claude")
+            _check_project_directory(twsrt_dir, compiled.profile_name)
         generators = _select_generators(agent, config)
         log.debug(
             "Generating agents=%s write=%s",
@@ -771,7 +673,9 @@ def generate(
         }
         # Staged in both modes: the preview hits every error -w would.
         if twsrt_dir is not None:
-            staged = _stage_project_claude(rendered, config, twsrt_dir)
+            staged = _stage_project_claude(
+                rendered, config, twsrt_dir / compiled.profile_name
+            )
         else:
             staged = _stage_agent_files(generators, rendered, compiled, config)
     except (OSError, ValueError) as exc:
@@ -791,7 +695,7 @@ def generate(
             _wrote(f"Wrote: {path}")
         # The files hold absolute paths and the user's hooks: never commit them.
         _atomic_write(twsrt_dir / ".gitignore", "*\n")
-        typer.echo(str(twsrt_dir))
+        typer.echo(str(twsrt_dir / compiled.profile_name))
         return
 
     locked = _locked_jetbrains_files(staged, config)
@@ -808,8 +712,8 @@ def generate(
         for document in compiled.documents.values():
             _atomic_write(document.output_path, _serialize(document.document))
             _wrote(f"Wrote canonical: {document.output_path}")
-        _write_agent_files(staged, config)
-        for path in staged:
+        for path, content in staged.items():
+            _atomic_write(path, content)
             _wrote(f"Wrote: {path}")
         if "codex" in rendered:
             _note("Restart Codex to load the updated permission profile and rules.")
@@ -843,13 +747,13 @@ def show(
 
     The canonical config is what SRT reads and the input for every agent
     translation. Writes nothing. Prints exactly what `generate -w` would
-    write for the profile. Agent and --yolo do not change canonical
-    documents, so neither is accepted here.
+    write for the profile. The agent does not change canonical documents, so
+    it is not accepted here.
     """
     from twsrt.lib.config import SOURCE_KINDS, source_kind_error
 
     try:
-        _, compiled = _compile(ctx.obj["config_path"], profile, yolo=False)
+        _, compiled = _compile(ctx.obj["config_path"], profile)
     except (OSError, ValueError) as exc:
         log.debug("Show setup failed", exc_info=True)
         _error(str(exc))
@@ -871,14 +775,13 @@ def diff(
     agent: str = typer.Argument(
         "all", help="Target agent: claude, copilot, codex, copilot-jetbrains, or all"
     ),
-    yolo: bool = typer.Option(False, "--yolo", help="Diff yolo agent targets"),
     profile: str | None = typer.Option(
         None, "--profile", "-p", help="Canonical-source profile"
     ),
 ) -> None:
     """Compare compiled canonical and agent configuration with disk."""
     try:
-        config, compiled = _compile(ctx.obj["config_path"], profile, yolo)
+        config, compiled = _compile(ctx.obj["config_path"], profile)
         generators = _select_generators(agent, config)
     except (OSError, ValueError) as exc:
         log.debug("Diff setup failed", exc_info=True)
@@ -899,7 +802,7 @@ def diff(
             _success(f"{kind} canonical: no drift")
 
     for generator in generators:
-        target = _resolve_target(generator.name, config)
+        target = config.require_target(generator.name)
         # copilot-jetbrains reports each missing file as drift (FR-030).
         if generator.name != "copilot-jetbrains" and not target.exists():
             _error(f"Target file not found for {generator.name}: {target}")
@@ -1007,7 +910,7 @@ def test_command(
     from twsrt.lib.sources import read_srt
 
     try:
-        config, compiled = _compile(ctx.obj["config_path"], profile, yolo=False)
+        config, compiled = _compile(ctx.obj["config_path"], profile)
         settings = config.srt_path
         if not settings.exists():
             raise FileNotFoundError(
@@ -1277,43 +1180,40 @@ def _probe_report(
 def _compile(
     config_path: Path,
     profile_name: str | None,
-    yolo: bool,
     twsrt_dir: Path | None = None,
 ) -> tuple[AppConfig, CompilationResult]:
-    """Load, resolve and compile; with twsrt_dir, canonical outputs move there."""
+    """Load, resolve and compile.
+
+    With twsrt_dir, canonical outputs move to its <profile> subdirectory, so
+    sessions with different profiles do not overwrite each other's policy.
+    """
     from twsrt.lib.config import DEFAULT_OUTPUT_NAMES, load_config
     from twsrt.lib.profiles import resolve_profile
     from twsrt.lib.sources import compile_sources
 
     config = load_config(config_path)
+    resolved = resolve_profile(config, profile_name)
     extra_deny_write: list[str] = []
     if twsrt_dir is not None:
         for kind, source in list(config.sources.items()):
             config.sources[kind] = replace(
-                source, output_path=twsrt_dir / DEFAULT_OUTPUT_NAMES[kind]
+                source,
+                output_path=twsrt_dir / resolved.name / DEFAULT_OUTPUT_NAMES[kind],
             )
-        # Claude hot-reloads --settings: an agent able to write here could
-        # loosen its own policy mid-session.
+        # An agent able to write here could loosen the policy of a later launch.
         extra_deny_write.append(str(twsrt_dir))
-    resolved = resolve_profile(config, profile_name)
     compiled = compile_sources(config, resolved, extra_deny_write)
     log.debug(
-        "Compiled profile %r: fragments=%d documents=%d rules=%d mode=%s",
+        "Compiled profile %r: fragments=%d documents=%d rules=%d",
         resolved.name,
         sum(len(fragments) for fragments in resolved.fragments.values()),
         len(compiled.documents),
         len(compiled.rules),
-        "yolo" if yolo else "full",
     )
     srt = compiled.srt_result
     config.network_config = srt.network_config
     config.filesystem_config = srt.filesystem_config
-    config.srt_sandbox_config = dict(srt.sandbox_config)
-    # A copy: apply_sandbox_overrides updates sandbox_config in place.
-    config.sandbox_config = dict(srt.sandbox_config)
-    config.srt_sandbox_enabled = srt.sandbox_config.get("enabled")
-    config.yolo = yolo
-    config.apply_sandbox_overrides()
+    config.sandbox_config = srt.sandbox_config
     return config, compiled
 
 
@@ -1369,36 +1269,13 @@ def _stage_agent_files(
     staged: dict[Path, str] = {}
     for generator in generators:
         if generator.name == "claude":
-            target = _resolve_target("claude", config)
-            existing = target
-            anchor = config.symlink_anchor
-            if anchor.exists() and not anchor.is_symlink() and target.exists():
-                raise FileExistsError(
-                    f"both {anchor} (regular file) and {target} exist. "
-                    "Remove one before running generate -w."
-                )
-            if not existing.exists() and anchor.exists() and not anchor.is_symlink():
-                existing = anchor
-            generated = json.loads(rendered[generator.name])
-            donor = _resolve_sync_donor(config, target)
-            if donor is not None:
-                _note(f"Synced invariant settings from {donor.name}")
-            if existing.exists() or donor is not None:
-                document = selective_merge(
-                    existing if existing.exists() else None,
-                    generated,
-                    donor=donor,
-                    mode_specific=(
-                        config.claude_sync.mode_specific if config.claude_sync else ()
-                    ),
-                )
-            else:
-                document = generated
+            target = config.require_target("claude")
+            document = selective_merge(target, json.loads(rendered[generator.name]))
             staged[target] = json.dumps(document, indent=2) + "\n"
         elif generator.name == "copilot":
             assert isinstance(generator, CopilotGenerator)
             if config.copilot_output_path is not None:
-                target = _resolve_target("copilot", config)
+                target = config.require_target("copilot")
                 staged[target] = generator.generate_flags(compiled.rules, config) + "\n"
             staged.update(generator.render_settings(compiled.rules, config))
         elif generator.name == "codex":
@@ -1431,68 +1308,60 @@ def _project_agent(agent: str) -> str:
     return "claude" if agent == "all" else agent
 
 
+# Written directly into ./.twsrt by twsrt 3.x.
+_3X_PROJECT_FILES = (
+    "srt-settings.json",
+    "bash-rules.json",
+    "claude-settings.json",
+    "claude-settings.yolo.json",
+)
+
+
+def _check_project_directory(twsrt_dir: Path, profile: str) -> None:
+    """Refuse a ./.twsrt that would misdirect this write or a later launch."""
+    # A repository can ship the link: the policy would land outside ./.twsrt,
+    # on the global files or where the agent may write.
+    for path in (twsrt_dir, twsrt_dir / profile):
+        if path.is_symlink():
+            raise ValueError(
+                f"{path} is a symlink; --project writes only into a real directory. "
+                "Remove it and re-run."
+            )
+    # A launcher on the 3.x path would keep loading a frozen policy.
+    stale = [
+        str(twsrt_dir / name)
+        for name in _3X_PROJECT_FILES
+        if (twsrt_dir / name).is_file()
+    ]
+    if stale:
+        raise ValueError(
+            f"policy files of twsrt 3.x are never updated: {', '.join(stale)}. "
+            f"Delete them and launch from {twsrt_dir / profile} "
+            "(the directory -w prints)."
+        )
+
+
 def _stage_project_claude(
-    rendered: dict[str, str], config: AppConfig, twsrt_dir: Path
+    rendered: dict[str, str], config: AppConfig, directory: Path
 ) -> dict[Path, str]:
-    """Merge the project policy onto the global Claude target of the same mode.
+    """Merge the project policy onto the global Claude target.
 
     The project file is launched with --setting-sources project,local, which
     skips ~/.claude/settings.json, so hooks, plugins and model must be carried
-    over from the global target. No symlink and no claude_sync donor: nothing
-    global changes. The premise and its failure modes are recorded in
+    over from the global target. Nothing global changes. The premise and its
+    failure modes are recorded in
     doc/REFERENCE.md#claude-per-project-launch-premise.
     """
     from twsrt.lib.claude import selective_merge
 
-    base = _resolve_target("claude", config)
+    base = config.require_target("claude")
     if not base.exists():
-        mode = " --yolo" if config.yolo else ""
         raise FileNotFoundError(
             f"{base} not found: --project copies hooks, plugins and model from "
-            f"it. Run `twsrt generate claude -w{mode}` first."
+            f"it. Run `twsrt generate claude -w` first."
         )
-    name = "claude-settings.yolo.json" if config.yolo else "claude-settings.json"
     document = selective_merge(base, json.loads(rendered["claude"]))
-    return {twsrt_dir / name: json.dumps(document, indent=2) + "\n"}
-
-
-def _resolve_sync_donor(config: AppConfig, target: Path) -> Path | None:
-    """The file settings.json currently points to, if it should feed the target.
-
-    Staging runs before ensure_symlink repoints the anchor, so the anchor still
-    names the previous mode's file — the one Claude Code has been writing to.
-    None when sync is disabled, the anchor is not a symlink (fresh install or
-    migration), the link dangles, or it already points at the target.
-    """
-    if config.claude_sync is None:
-        return None
-    anchor = config.symlink_anchor
-    if not anchor.is_symlink():
-        return None
-    donor = anchor.resolve()
-    if not donor.exists() or donor == target.resolve():
-        return None
-    return donor
-
-
-def _write_agent_files(staged: dict[Path, str], config: AppConfig) -> None:
-    from twsrt.lib.symlink import ensure_symlink, prepare_claude_target
-
-    claude_target = (
-        _resolve_target("claude", config)
-        if config.agent_target("claude") is not None
-        else None
-    )
-    if claude_target is not None and claude_target in staged:
-        migration_message = prepare_claude_target(config.symlink_anchor, claude_target)
-        if migration_message:
-            _note(migration_message)
-    for path, content in staged.items():
-        _atomic_write(path, content)
-    if claude_target is not None and claude_target in staged:
-        warning = ensure_symlink(claude_target, config.symlink_anchor)
-        if warning:
-            _warning(warning)
+    return {directory / "claude-settings.json": json.dumps(document, indent=2) + "\n"}
 
 
 def _print_generator_warnings(
@@ -1509,24 +1378,6 @@ def _print_generator_warnings(
             if warning not in seen:
                 seen.add(warning)
                 _warning(warning)
-
-
-def _resolve_target(agent: str, config: AppConfig) -> Path:
-    """The agent's target for the current mode.
-
-    Codex has a single target: its permission profile serves both modes. So do
-    Copilot's settings.json and the JetBrains XML files (ADR 0009); only the
-    Copilot flags file has a yolo variant.
-    """
-    full = config.require_target(agent)
-    if not config.yolo or agent in ("codex", "copilot-jetbrains"):
-        return full
-    if agent == "copilot" and config.copilot_output_path is None:
-        return full
-    explicit = (
-        config.claude_yolo_path if agent == "claude" else config.copilot_yolo_path
-    )
-    return explicit or yolo_path(full)
 
 
 # Editors that take one tab per file. `vi` is deliberately absent: it is the
