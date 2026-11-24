@@ -225,16 +225,15 @@ the single-source model with drift detection removes the configuration
 mistakes that in practice cause most gaps.
 
 **Native-sandbox convergence (2026).** All supported agents now ship native
-OS sandboxes (Claude Code: Seatbelt/bwrap, opt-in; Copilot CLI and
-JetBrains: local sandbox, GA, compiled by twsrt since ADR 0009; Codex:
-always on). twsrt's durable core is
-therefore compiling deny paths and domains into each agent's native sandbox,
+OS sandboxes (Claude Code: Seatbelt/bwrap, opt-in, always switched on by
+twsrt since ADR 0010; Copilot CLI and JetBrains: local sandbox, GA, compiled
+by twsrt since ADR 0009; Codex: always on). twsrt's durable core is therefore compiling deny paths and domains into each agent's native sandbox,
 a high-fidelity translation everywhere; the Bash-rules app layer stays a
 best-effort supplement ([roadmap](doc/REFERENCE.md#scope-and-roadmap)).
 
 ## 5. Per-project policy
 
-`generate --project` compiles a chosen profile into `./.twsrt/` for a
+`generate --project` compiles a chosen profile into `./.twsrt/<profile>/` for a
 per-launch `claude --setting-sources project,local --settings …` or
 `srt -s …` ([usage](README.md#per-project-policy),
 [launch premise](doc/REFERENCE.md#claude-per-project-launch-premise)).
@@ -249,13 +248,16 @@ Its security properties:
 - **The global file must be skipped.** Claude unions list settings across
   scopes, so a dropped deny stays dropped only with
   `--setting-sources project,local`. The repository's own
-  `.claude/settings*.json` still loads and, once the folder is trusted, can
-  add rules or override sandbox scalars, the same exposure as a plain launch.
+  `.claude/settings*.json` still loads and can add rules. It cannot loosen the
+  sandbox, because `allowUnsandboxedCommands: false` from `--settings` makes the
+  sandbox admin-required (Claude Code 2.1.285 or later); a repository's
+  `autoAllowBashIfSandboxed` still applies. A plain launch lacks that lock.
   Launching without the flags is not unsafe: the union is stricter.
-- **The policy cannot rewrite itself.** Claude hot-reloads settings, so
-  `./.twsrt` is added to the compiled `denyWrite`, next to the global policy
+- **The policy cannot rewrite itself.** An agent able to write it could loosen
+  a later launch, so `./.twsrt` is added to the compiled `denyWrite`, next to the global policy
   files every compile protects (§3.4); every launch regenerates
-  the files, overwriting anything a repository ships there.
+  the files, overwriting anything a repository ships there. A repository cannot
+  redirect them either: a symlinked `./.twsrt` or profile directory is refused.
 - **Residual gap.** A session running under the global policy in the same
   directory lacks that deny. Close it with `.twsrt` in a global fragment's
   `denyWrite` and confirm with `twsrt test`.

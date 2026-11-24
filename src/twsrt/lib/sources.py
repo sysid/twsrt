@@ -282,6 +282,8 @@ def _validate_srt_document(data: dict[str, Any], source: str) -> None:
         for key in keys:
             if key in section_value:
                 _require_string_list(section_value[key], f"{source}: {section}.{key}")
+    if not isinstance(data.get("enabled", True), bool):
+        raise ValueError(f"{source}: enabled must be true or false")
 
 
 def _validate_bash_document(data: dict[str, Any], source: str) -> None:

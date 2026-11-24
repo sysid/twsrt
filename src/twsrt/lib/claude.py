@@ -1,11 +1,10 @@
 """ClaudeGenerator — translate SecurityRules to Claude Code settings.json format."""
 
-import copy
 import json
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from twsrt.lib.jsonc import read_json_object
 from twsrt.lib.models import (
     Action,
     AppConfig,
@@ -13,10 +12,19 @@ from twsrt.lib.models import (
     Scope,
     SecurityRule,
 )
+from twsrt.lib.sources import (
+    _FILESYSTEM_CONFIG_KEYS,
+    _NETWORK_CONFIG_KEYS,
+    _SANDBOX_CONFIG_KEYS,
+)
 
 
 # sandbox.filesystem path lists twsrt keeps empty; see ADR 0002.
 _MANAGED_PATH_LISTS = ("denyRead", "denyWrite", "allowWrite")
+
+# ADR 0010: the same posture for every profile. Claude treats an absent
+# `enabled` as off and allows unsandboxed retries by default.
+_FIXED_POSTURE = {"enabled": True, "allowUnsandboxedCommands": False}
 
 
 class ClaudeGenerator:
@@ -26,6 +34,7 @@ class ClaudeGenerator:
 
     def generate(self, rules: list[SecurityRule], config: AppConfig) -> str:
         """Generate Claude Code permission sections as JSON string."""
+        config.require_sandbox("Claude")
         deny: list[str] = []
         ask: list[str] = []
         allow: list[str] = []
@@ -74,10 +83,9 @@ class ClaudeGenerator:
                 deny.append(f"Bash({rule.pattern} *)")
 
             elif rule.scope == Scope.EXECUTE and rule.action == Action.ASK:
-                # FR-011: Bash ask — bare command + wildcard (skip in yolo mode)
-                if not config.yolo:
-                    ask.append(f"Bash({rule.pattern})")
-                    ask.append(f"Bash({rule.pattern} *)")
+                # FR-011: Bash ask — bare command + wildcard
+                ask.append(f"Bash({rule.pattern})")
+                ask.append(f"Bash({rule.pattern} *)")
 
         network: dict = {"allowedDomains": domains}
         network.update(config.network_config)
@@ -98,6 +106,7 @@ class ClaudeGenerator:
         sandbox["filesystem"] = filesystem
 
         sandbox.update(config.sandbox_config)
+        sandbox.update(_FIXED_POSTURE)
         for key in _MANAGED_PATH_LISTS:
             sandbox["filesystem"][key] = []
 
@@ -106,9 +115,8 @@ class ClaudeGenerator:
         permissions: dict = {
             "deny": list(dict.fromkeys(deny)),
             "allow": list(dict.fromkeys(allow)),
+            "ask": ask,
         }
-        if not config.yolo:
-            permissions["ask"] = ask
 
         output = {
             "permissions": permissions,
@@ -127,7 +135,7 @@ class ClaudeGenerator:
     ) -> DiffResult:
         """Compare generated config against existing Claude settings.json."""
         generated = json.loads(self.generate(rules, config))
-        existing = json.loads(target.read_text())
+        existing = _read_settings(target)
 
         missing: list[str] = []
         extra: list[str] = []
@@ -160,12 +168,6 @@ class ClaudeGenerator:
             extra.append(f"network:{d}")
 
         # Compare pass-through network config keys
-        from twsrt.lib.sources import (
-            _FILESYSTEM_CONFIG_KEYS,
-            _NETWORK_CONFIG_KEYS,
-            _SANDBOX_CONFIG_KEYS,
-        )
-
         gen_network = generated.get("sandbox", {}).get("network", {})
         ext_network = existing.get("sandbox", {}).get("network", {})
         for key in _NETWORK_CONFIG_KEYS:
@@ -198,7 +200,7 @@ class ClaudeGenerator:
         # Compare pass-through top-level sandbox config keys
         gen_sandbox = generated.get("sandbox", {})
         ext_sandbox = existing.get("sandbox", {})
-        for key in _SANDBOX_CONFIG_KEYS:
+        for key in dict.fromkeys((*_SANDBOX_CONFIG_KEYS, *_FIXED_POSTURE)):
             gen_val = gen_sandbox.get(key)
             ext_val = ext_sandbox.get(key)
             if gen_val != ext_val:
@@ -268,100 +270,50 @@ def _is_managed_allow(entry: str) -> bool:
     return _is_webfetch_entry(entry) or entry.startswith("Edit(")
 
 
-# Sections owned by generate; sync_invariants never takes these from the donor.
-# `sandbox` as a whole stays with the target because [sandbox_overrides.*] and
-# the key-by-key merge below already define it per mode.
-_MANAGED_PATHS = ("permissions.deny", "permissions.ask", "sandbox")
+def _read_settings(target: Path) -> dict[str, Any]:
+    """The existing settings.json, with every section twsrt reads well-formed."""
+    settings = read_json_object(target)
+
+    def section(parent: dict[str, Any], key: str, where: str) -> dict[str, Any]:
+        value = parent.get(key, {})
+        if not isinstance(value, dict):
+            raise ValueError(f"{target}: {where} must be an object")
+        return value
+
+    def require_strings(parent: dict[str, Any], key: str, where: str) -> None:
+        value = parent.get(key, [])
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise ValueError(f"{target}: {where} must be a list of strings")
+
+    permissions = section(settings, "permissions", "permissions")
+    for key in ("allow", "ask", "deny"):
+        require_strings(permissions, key, f"permissions.{key}")
+    sandbox = section(settings, "sandbox", "sandbox")
+    network = section(sandbox, "network", "sandbox.network")
+    require_strings(network, "allowedDomains", "sandbox.network.allowedDomains")
+    section(sandbox, "filesystem", "sandbox.filesystem")
+    return settings
 
 
-def sync_invariants(existing: dict, donor: dict, mode_specific: Sequence[str]) -> dict:
-    """Replace the target's invariant keys with the donor's.
-
-    The donor is the file Claude Code has been writing runtime settings to,
-    so its invariants are the freshest. Wholesale replacement means deletions
-    propagate too (last writer wins). Managed sections and declared
-    mode-specific paths keep the target's value, or stay absent.
-    """
-    result = copy.deepcopy(donor)
-    for path in (*_MANAGED_PATHS, *mode_specific):
-        found, value = _get_path(existing, path)
-        if found:
-            _set_path(result, path, copy.deepcopy(value))
-        else:
-            _delete_path(result, path)
-    return result
-
-
-# ponytail: dotted paths cannot address keys containing a literal '.'; no such
-# key exists in Claude settings today. An escape syntax is the upgrade path.
-def _get_path(doc: dict, path: str) -> tuple[bool, Any]:
-    node: Any = doc
-    for part in path.split("."):
-        if not isinstance(node, dict) or part not in node:
-            return False, None
-        node = node[part]
-    return True, node
-
-
-def _set_path(doc: dict, path: str, value: Any) -> None:
-    *parents, leaf = path.split(".")
-    node = doc
-    for part in parents:
-        child = node.get(part)
-        if not isinstance(child, dict):
-            child = {}
-            node[part] = child
-        node = child
-    node[leaf] = value
-
-
-def _delete_path(doc: dict, path: str) -> None:
-    *parents, leaf = path.split(".")
-    node: Any = doc
-    for part in parents:
-        node = node.get(part) if isinstance(node, dict) else None
-        if node is None:
-            return
-    if isinstance(node, dict):
-        node.pop(leaf, None)
-
-
-def selective_merge(
-    target: Path | None,
-    generated: dict,
-    donor: Path | None = None,
-    mode_specific: Sequence[str] = (),
-) -> dict:
-    """Merge generated permissions into existing settings.json.
+def selective_merge(target: Path, generated: dict) -> dict:
+    """Merge generated permissions into existing settings.json, if there is one.
 
     Selective merge rules:
     - permissions.deny: fully replaced
     - permissions.ask: fully replaced
     - permissions.allow: WebFetch(domain:*) entries replaced,
       blanket allows, mcp__ allows, and project-specific allows preserved
-    - sandbox.network: key-by-key merge (preserves unmanaged keys)
+    - sandbox, sandbox.network: keys SRT defines are replaced, and removed when
+      the policy has none; unmanaged and Claude-only keys preserved
     - sandbox.filesystem: key-by-key merge (preserves unmanaged keys)
-    - sandbox top-level keys: dict.update() (preserves Claude-only keys)
-    - hooks, plugins, additionalDirectories: preserved unchanged, unless a
-      donor is given — then every unmanaged key not listed in mode_specific
-      is taken from the donor (see sync_invariants)
-
-    target may be None (not yet created); with a donor the target is then
-    bootstrapped from the donor's invariants.
+    - hooks, plugins, additionalDirectories: preserved unchanged
     """
-    existing = json.loads(target.read_text()) if target is not None else {}
-    if donor is not None:
-        existing = sync_invariants(
-            existing, json.loads(donor.read_text()), mode_specific
-        )
+    existing = _read_settings(target)
 
     # Replace deny and ask fully
     existing.setdefault("permissions", {})
     existing["permissions"]["deny"] = generated["permissions"]["deny"]
-    if "ask" in generated["permissions"]:
-        existing["permissions"]["ask"] = generated["permissions"]["ask"]
-    else:
-        existing["permissions"].pop("ask", None)
+    existing["permissions"]["ask"] = generated["permissions"]["ask"]
 
     # Selective merge for allow: strip twsrt-owned entries, keep everything else
     existing_allow = existing["permissions"].get("allow", [])
@@ -374,6 +326,12 @@ def selective_merge(
     gen_sandbox = generated.get("sandbox", {})
 
     existing["sandbox"].setdefault("network", {})
+    # A pass-through key the policy does not set is absent from the generated
+    # config, so an update alone would keep another profile's loosening.
+    for key in _NETWORK_CONFIG_KEYS:
+        existing["sandbox"]["network"].pop(key, None)
+    for key in _SANDBOX_CONFIG_KEYS:
+        existing["sandbox"].pop(key, None)
     existing["sandbox"]["network"].update(gen_sandbox.get("network", {}))
 
     if "filesystem" in gen_sandbox:

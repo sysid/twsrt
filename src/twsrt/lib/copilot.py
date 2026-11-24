@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from twsrt.lib.copilot_sandbox import build_policy
+from twsrt.lib.jsonc import read_json_object
 from twsrt.lib.models import (
     Action,
     AppConfig,
@@ -74,23 +75,17 @@ class CopilotGenerator:
     def render_settings(
         self, rules: list[SecurityRule], config: AppConfig
     ) -> dict[Path, str]:
-        """settings.json with the owned keys replaced; {} when not configured.
-
-        Same file in full and yolo mode: only the flag snippet differs.
-        """
+        """settings.json with the owned keys replaced; {} when not configured."""
         target = config.copilot_settings_path
         if target is None:
             return {}
-        document = _read_settings(target)
+        document = read_json_object(target)
         document.update(self.generate_settings(rules, config))
         return {target: json.dumps(document, indent=2) + "\n"}
 
     def generate_flags(self, rules: list[SecurityRule], config: AppConfig) -> str:
         """Generate Copilot CLI flags from security rules."""
         flags: list[str] = []
-
-        if config.yolo:
-            flags.append("--yolo")
 
         allow_write_seen = False
         # With managed settings.json the URL rules live there (allowedUrls /
@@ -104,26 +99,20 @@ class CopilotGenerator:
                 flags.append(f"--deny-tool 'shell({rule.pattern})'")
 
             elif rule.scope == Scope.EXECUTE and rule.action == Action.ASK:
-                if config.yolo:
-                    # Yolo mode: skip ASK rules entirely (--yolo subsumes them)
-                    pass
-                else:
-                    # FR-012: lossy mapping — ask → deny-tool
-                    flags.append(f"--deny-tool 'shell({rule.pattern})'")
+                # FR-012: lossy mapping — ask → deny-tool
+                flags.append(f"--deny-tool 'shell({rule.pattern})'")
 
             elif rule.scope == Scope.WRITE and rule.action == Action.ALLOW:
-                if not config.yolo:
-                    # FR-008: allowWrite → allow-tool flags (deduplicated)
-                    if not allow_write_seen:
-                        allow_write_seen = True
-                        flags.append("--allow-tool 'shell'")
-                        flags.append("--allow-tool 'read'")
-                        flags.append("--allow-tool 'edit'")
-                        flags.append("--allow-tool 'write'")
+                # FR-008: allowWrite → allow-tool flags (deduplicated)
+                if not allow_write_seen:
+                    allow_write_seen = True
+                    flags.append("--allow-tool 'shell'")
+                    flags.append("--allow-tool 'read'")
+                    flags.append("--allow-tool 'edit'")
+                    flags.append("--allow-tool 'write'")
 
             elif rule.scope == Scope.NETWORK and rule.action == Action.ALLOW:
-                if not config.yolo:
-                    flags.append(f"--allow-url '{rule.pattern}'")
+                flags.append(f"--allow-url '{rule.pattern}'")
 
             elif rule.scope == Scope.NETWORK and rule.action == Action.DENY:
                 flags.append(f"--deny-url '{rule.pattern}'")
@@ -147,10 +136,7 @@ class CopilotGenerator:
                 rule.pattern
                 for rule in rules
                 if rule.scope == Scope.EXECUTE
-                and (
-                    rule.action == Action.DENY
-                    or (rule.action == Action.ASK and not config.yolo)
-                )
+                and rule.action in (Action.DENY, Action.ASK)
             ]
             if unenforced:
                 warnings.append(
@@ -158,8 +144,6 @@ class CopilotGenerator:
                     "[targets].copilot_output (the --deny-tool flags file): "
                     + ", ".join(unenforced)
                 )
-            return warnings
-        if config.yolo:
             return warnings
         return warnings + [
             f"Bash ask rule {rule.pattern!r} mapped to --deny-tool for copilot "
@@ -198,7 +182,7 @@ class CopilotGenerator:
 
         settings_path = config.copilot_settings_path
         if settings_path is not None:
-            existing = _read_settings(settings_path)
+            existing = read_json_object(settings_path)
             for key, expected in self.generate_settings(rules, config).items():
                 if existing.get(key) != expected:
                     missing.append(f"settings:{key}")
@@ -211,16 +195,3 @@ class CopilotGenerator:
             extra=extra,
             matched=len(missing) == 0 and len(extra) == 0,
         )
-
-
-def _read_settings(target: Path) -> dict[str, Any]:
-    """The existing settings.json as an object; {} when the file is absent."""
-    if not target.exists():
-        return {}
-    try:
-        document = json.loads(target.read_text())
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{target} is not valid JSON: {exc}") from exc
-    if not isinstance(document, dict):
-        raise ValueError(f"{target} must contain a JSON object")
-    return document

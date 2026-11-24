@@ -208,7 +208,7 @@ class TestInit:
         assert config.read_text() == "existing"
 
     def test_init_creates_comprehensive_config_toml(self, tmp_path: Path) -> None:
-        """US3: init creates config with settings.full.json default and commented yolo targets."""
+        """US3: init creates config with a settings.json default, commented out."""
         twsrt_dir = tmp_path / "config" / "twsrt"
         config = twsrt_dir / "config.toml"
         with patch("twsrt.bin.cli.subprocess.run") as run:
@@ -216,8 +216,8 @@ class TestInit:
             result = runner.invoke(app, ["-c", str(config), "config", "--init"])
         assert result.exit_code == 0
         content = config.read_text()
-        # Default claude_settings should be settings.full.json
-        assert 'claude_settings = "~/.claude/settings.full.json"' in content
+        # Default claude_settings is the file Claude Code reads
+        assert 'claude_settings = "~/.claude/settings.json"' in content
         # Copilot should be commented out
         assert "# copilot_output" in content
         assert "[sources.srt.fragments.base]" in content
@@ -526,7 +526,7 @@ class TestGenerate:
         assert result.exit_code == 0, result.output
         assert "Would write canonical:" in result.stderr
         assert "Would write agent target:" in result.stderr
-        assert "settings.full.json" in result.stderr
+        assert "settings.json" in result.stderr
         assert "Would write" not in result.stdout
 
     def test_generate_preview_fails_where_write_would_fail(
@@ -536,14 +536,13 @@ class TestGenerate:
         config = _make_config(tmp_path, {}, {"deny": ["rm"], "ask": []})
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir()
-        (claude_dir / "settings.json").write_text("{}")
-        (claude_dir / "settings.full.json").write_text("{}")
+        (claude_dir / "settings.json").write_text("{broken")
 
         result = runner.invoke(app, ["-c", str(config), "generate", "claude"])
 
         assert result.exit_code == 1
-        assert "both" in result.stderr
-        assert (claude_dir / "settings.full.json").read_text() == "{}"
+        assert f"{claude_dir / 'settings.json'} is not valid JSON" in result.stderr
+        assert (claude_dir / "settings.json").read_text() == "{broken"
 
     def test_generate_all_agents(
         self, srt_file: Path, bash_rules_file: Path, config_toml_file: Path
@@ -607,12 +606,12 @@ class TestGenerate:
         assert "every file -w would write" in help_text
         assert "--dry-run" not in help_text
 
-    def test_generate_help_explains_the_claude_settings_link(self) -> None:
-        """Claude reads only settings.json; which mode it gets must be obvious."""
+    def test_generate_help_says_who_decides_about_prompts(self) -> None:
+        """ADR 0010: no modes; the profile lists asks, the launch answers them."""
         help_text = _help_text("generate")
 
-        assert "Claude Code reads only settings.json" in help_text
-        assert "the last -w decides which mode Claude starts in" in help_text
+        assert "The profile decides which commands ask" in help_text
+        assert "the agent's own launch flags decide who answers" in help_text
 
     def test_generate_help_explains_staging(self) -> None:
         """The preview's strength is staging; the help must say what it is."""
@@ -671,28 +670,6 @@ class TestGenerate:
         assert codex_rules.exists()
         assert "Wrote:" in result.output
         assert "Restart Codex" in result.output
-
-    def test_generate_codex_yolo_write_produces_same_artifacts(
-        self, config_toml_file: Path, tmp_path: Path
-    ) -> None:
-        codex_config = tmp_path / ".codex" / "config.toml"
-        codex_rules = tmp_path / ".codex" / "rules" / "twsrt.rules"
-
-        full = runner.invoke(
-            app, ["-c", str(config_toml_file), "generate", "codex", "--write"]
-        )
-        assert full.exit_code == 0, full.output
-        full_config = codex_config.read_text()
-        full_rules = codex_rules.read_text()
-
-        yolo = runner.invoke(
-            app,
-            ["-c", str(config_toml_file), "generate", "codex", "--yolo", "--write"],
-        )
-
-        assert yolo.exit_code == 0, yolo.output
-        assert codex_config.read_text() == full_config
-        assert codex_rules.read_text() == full_rules
 
     def test_generate_codex_without_rules_target_writes_config_only(
         self, tmp_path: Path
@@ -774,7 +751,7 @@ def _make_config(
         config.write_text(
             config.read_text()
             + "[targets]\n"
-            + f'claude_settings = "{tmp_path / ".claude" / "settings.full.json"}"\n'
+            + f'claude_settings = "{tmp_path / ".claude" / "settings.json"}"\n'
             + f'copilot_output = "{tmp_path / "copilot-flags.txt"}"\n'
             + f'codex_config = "{tmp_path / ".codex" / "config.toml"}"\n'
         )
@@ -918,8 +895,8 @@ class TestUS1AcceptanceScenarios:
         bash_rules = {"deny": ["rm"], "ask": ["git push"]}
         config = _make_config(tmp_path, srt, bash_rules, targets=False)
 
-        # Create existing settings.full.json with hooks, mcp, blanket allows
-        settings_path = tmp_path / ".claude" / "settings.full.json"
+        # Create existing settings.json with hooks, mcp, blanket allows
+        settings_path = tmp_path / ".claude" / "settings.json"
         settings_path.parent.mkdir(parents=True)
         existing = {
             "permissions": {
@@ -976,542 +953,114 @@ class TestUS1AcceptanceScenarios:
         assert "github.com" in merged["sandbox"]["network"]["allowedDomains"]
 
 
-# --- Symlink Config Tests (007) ---
-
-
-class TestSymlinkGenerateClaude:
-    """T009 [US1]: CLI tests for generate claude -w with symlink management."""
-
-    def test_fresh_write_creates_target_and_symlink(self, tmp_path: Path) -> None:
-        """Given settings.json does not exist, generate -w creates target + symlink."""
-        srt = {}
-        bash_rules = {"deny": ["rm"], "ask": []}
-        config = _make_config(tmp_path, srt, bash_rules, targets=False)
-
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir(parents=True, exist_ok=True)
-        target = claude_dir / "settings.full.json"
-        anchor = claude_dir / "settings.json"
-
-        config_content = config.read_text()
-        config.write_text(
-            config_content + f'\n[targets]\nclaude_settings = "{target}"\n'
-        )
-
-        result = runner.invoke(
-            app, ["-c", str(config), "generate", "claude", "--write"]
-        )
-        assert result.exit_code == 0, result.output
-        assert target.exists()
-        assert anchor.is_symlink()
-        assert anchor.resolve() == target.resolve()
-        # Verify it's a relative symlink
-        import os
-
-        link_value = os.readlink(str(anchor))
-        assert link_value == "settings.full.json"
-
-    def test_migration_moves_regular_file_and_symlinks(self, tmp_path: Path) -> None:
-        """Given settings.json is a regular file and target missing, migrate + symlink."""
-        srt = {}
-        bash_rules = {"deny": ["rm"], "ask": []}
-        config = _make_config(tmp_path, srt, bash_rules, targets=False)
-
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir(parents=True, exist_ok=True)
-        target = claude_dir / "settings.full.json"
-        anchor = claude_dir / "settings.json"
-
-        # Create regular settings.json with existing content
-        existing = {
-            "permissions": {"deny": ["Bash(old)"], "ask": [], "allow": []},
-            "sandbox": {"network": {"allowedDomains": []}},
-        }
-        anchor.write_text(json.dumps(existing))
-
-        config_content = config.read_text()
-        config.write_text(
-            config_content + f'\n[targets]\nclaude_settings = "{target}"\n'
-        )
-
-        result = runner.invoke(
-            app, ["-c", str(config), "generate", "claude", "--write"]
-        )
-        assert result.exit_code == 0, result.output
-        assert "Migrated" in result.output
-        assert target.exists()
-        assert anchor.is_symlink()
-        assert anchor.resolve() == target.resolve()
-        # Merged content: old deny replaced, new deny present
-        written = json.loads(target.read_text())
-        assert "Bash(rm)" in written["permissions"]["deny"]
-
-    def test_conflict_errors_when_both_exist(self, tmp_path: Path) -> None:
-        """Given settings.json is a regular file AND target exists, error out."""
-        srt = {}
-        bash_rules = {"deny": ["rm"], "ask": []}
-        config = _make_config(tmp_path, srt, bash_rules, targets=False)
-
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir(parents=True, exist_ok=True)
-        target = claude_dir / "settings.full.json"
-        anchor = claude_dir / "settings.json"
-
-        anchor.write_text('{"anchor": true}')
-        target.write_text('{"target": true}')
-
-        config_content = config.read_text()
-        config.write_text(
-            config_content + f'\n[targets]\nclaude_settings = "{target}"\n'
-        )
-
-        result = runner.invoke(
-            app, ["-c", str(config), "generate", "claude", "--write"]
-        )
-        assert result.exit_code == 1
-        assert "both" in result.output.lower() or "Error" in result.output
-        # Neither file modified
-        assert anchor.read_text() == '{"anchor": true}'
-        assert target.read_text() == '{"target": true}'
-
-    def test_update_merges_leaves_symlink(self, tmp_path: Path) -> None:
-        """Given settings.json is already symlink to target, merge and keep symlink."""
-        srt = {}
-        bash_rules = {"deny": ["rm"], "ask": []}
-        config = _make_config(tmp_path, srt, bash_rules, targets=False)
-
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir(parents=True, exist_ok=True)
-        target = claude_dir / "settings.full.json"
-        anchor = claude_dir / "settings.json"
-
-        existing = {
-            "permissions": {"deny": ["Bash(old)"], "ask": [], "allow": []},
-            "sandbox": {"network": {"allowedDomains": []}},
-            "hooks": {"PreToolUse": []},
-        }
-        target.write_text(json.dumps(existing))
-        anchor.symlink_to("settings.full.json")
-
-        config_content = config.read_text()
-        config.write_text(
-            config_content + f'\n[targets]\nclaude_settings = "{target}"\n'
-        )
-
-        result = runner.invoke(
-            app, ["-c", str(config), "generate", "claude", "--write"]
-        )
-        assert result.exit_code == 0, result.output
-        assert anchor.is_symlink()
-        written = json.loads(target.read_text())
-        assert "Bash(rm)" in written["permissions"]["deny"]
-        assert "hooks" in written  # preserved
-
-    def test_switch_from_yolo_repoints_symlink(self, tmp_path: Path) -> None:
-        """Given settings.json symlinks to yolo target, generate claude -w re-points to full."""
-        srt = {}
-        bash_rules = {"deny": ["rm"], "ask": []}
-        config = _make_config(tmp_path, srt, bash_rules, targets=False)
-
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir(parents=True, exist_ok=True)
-        full_target = claude_dir / "settings.full.json"
-        yolo_target = claude_dir / "settings.yolo.json"
-        anchor = claude_dir / "settings.json"
-
-        yolo_target.write_text('{"yolo": true}')
-        anchor.symlink_to("settings.yolo.json")
-
-        config_content = config.read_text()
-        config.write_text(
-            config_content + f'\n[targets]\nclaude_settings = "{full_target}"\n'
-        )
-
-        result = runner.invoke(
-            app, ["-c", str(config), "generate", "claude", "--write"]
-        )
-        assert result.exit_code == 0, result.output
-        assert anchor.is_symlink()
-        import os
-
-        assert os.readlink(str(anchor)) == "settings.full.json"
-        assert full_target.exists()
-
-
-# --- Symlink YOLO Config Tests (007 US2) ---
-
-
-class TestSymlinkYoloGenerateClaude:
-    """T011 [US2]: CLI tests for generate --yolo claude -w with symlink management."""
-
-    def test_fresh_yolo_write_creates_target_and_symlink(self, tmp_path: Path) -> None:
-        """Given settings.json does not exist, generate --yolo -w creates yolo target + symlink."""
-        srt = {}
-        bash_rules = {"deny": ["rm"], "ask": ["git push"]}
-        config = _make_config(tmp_path, srt, bash_rules, targets=False)
-
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir(parents=True, exist_ok=True)
-        full_target = claude_dir / "settings.full.json"
-        anchor = claude_dir / "settings.json"
-
-        config_content = config.read_text()
-        config.write_text(
-            config_content + f'\n[targets]\nclaude_settings = "{full_target}"\n'
-        )
-
-        result = runner.invoke(
-            app, ["-c", str(config), "generate", "--yolo", "claude", "--write"]
-        )
-        assert result.exit_code == 0, result.output
-        yolo_target = claude_dir / "settings.yolo.json"
-        assert yolo_target.exists()
-        assert anchor.is_symlink()
-        import os
-
-        assert os.readlink(str(anchor)) == "settings.yolo.json"
-        written = json.loads(yolo_target.read_text())
-        assert "ask" not in written["permissions"]
-
-    def test_yolo_migration_moves_regular_file(self, tmp_path: Path) -> None:
-        """Given settings.json is a regular file and yolo target missing, migrate."""
-        srt = {}
-        bash_rules = {"deny": ["rm"], "ask": []}
-        config = _make_config(tmp_path, srt, bash_rules, targets=False)
-
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir(parents=True, exist_ok=True)
-        full_target = claude_dir / "settings.full.json"
-        anchor = claude_dir / "settings.json"
-        yolo_target = claude_dir / "settings.yolo.json"
-
-        # Create regular settings.json
-        existing = {
-            "permissions": {"deny": ["Bash(old)"], "allow": []},
-            "sandbox": {"network": {"allowedDomains": []}},
-        }
-        anchor.write_text(json.dumps(existing))
-
-        config_content = config.read_text()
-        config.write_text(
-            config_content + f'\n[targets]\nclaude_settings = "{full_target}"\n'
-        )
-
-        result = runner.invoke(
-            app, ["-c", str(config), "generate", "--yolo", "claude", "--write"]
-        )
-        assert result.exit_code == 0, result.output
-        assert "Migrated" in result.output
-        assert yolo_target.exists()
-        assert anchor.is_symlink()
-
-    def test_yolo_conflict_errors_when_both_exist(self, tmp_path: Path) -> None:
-        """Given settings.json is regular file AND yolo target exists, error out."""
-        srt = {}
-        bash_rules = {"deny": ["rm"], "ask": []}
-        config = _make_config(tmp_path, srt, bash_rules, targets=False)
-
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir(parents=True, exist_ok=True)
-        full_target = claude_dir / "settings.full.json"
-        anchor = claude_dir / "settings.json"
-        yolo_target = claude_dir / "settings.yolo.json"
-
-        anchor.write_text('{"anchor": true}')
-        yolo_target.write_text('{"yolo": true}')
-
-        config_content = config.read_text()
-        config.write_text(
-            config_content + f'\n[targets]\nclaude_settings = "{full_target}"\n'
-        )
-
-        result = runner.invoke(
-            app, ["-c", str(config), "generate", "--yolo", "claude", "--write"]
-        )
-        assert result.exit_code == 1
-        assert "both" in result.output.lower() or "Error" in result.output
-
-    def test_switch_from_full_to_yolo_repoints_symlink(self, tmp_path: Path) -> None:
-        """Given settings.json symlinks to full target, --yolo re-points to yolo target."""
-        srt = {}
-        bash_rules = {"deny": ["rm"], "ask": []}
-        config = _make_config(tmp_path, srt, bash_rules, targets=False)
-
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir(parents=True, exist_ok=True)
-        full_target = claude_dir / "settings.full.json"
-        anchor = claude_dir / "settings.json"
-
-        full_target.write_text('{"full": true}')
-        anchor.symlink_to("settings.full.json")
-
-        config_content = config.read_text()
-        config.write_text(
-            config_content + f'\n[targets]\nclaude_settings = "{full_target}"\n'
-        )
-
-        result = runner.invoke(
-            app, ["-c", str(config), "generate", "--yolo", "claude", "--write"]
-        )
-        assert result.exit_code == 0, result.output
-        assert anchor.is_symlink()
-        import os
-
-        assert os.readlink(str(anchor)) == "settings.yolo.json"
-
-
-# --- YOLO Mode Tests ---
-
-
-class TestYoloGenerateClaude:
-    """T010: CLI integration tests for generate --yolo claude."""
-
-    def test_yolo_generate_claude_stdout_no_ask(self, tmp_path: Path) -> None:
-        """generate --yolo claude prints JSON with no permissions.ask."""
-        srt = {"network": {"allowedDomains": ["github.com"]}}
-        bash_rules = {"deny": ["rm", "sudo"], "ask": ["git push", "pip install"]}
-        config = _make_config(tmp_path, srt, bash_rules)
-        result = runner.invoke(app, ["-c", str(config), "generate", "--yolo", "claude"])
-        assert result.exit_code == 0, result.output
-        output = json.loads(result.stdout)
-        assert "ask" not in output["permissions"]
-        assert "Bash(rm)" in output["permissions"]["deny"]
-        assert "Bash(git push)" not in output["permissions"]["deny"]
-        assert "WebFetch(domain:github.com)" in output["permissions"]["allow"]
-
-    def test_yolo_generate_claude_write_to_yolo_path(self, tmp_path: Path) -> None:
-        """generate --yolo -w claude writes to settings.yolo.json and symlinks settings.json."""
-        srt = {}
-        bash_rules = {"deny": ["rm"], "ask": ["git push"]}
-        config = _make_config(tmp_path, srt, bash_rules, targets=False)
-
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir(parents=True, exist_ok=True)
-        settings_full = claude_dir / "settings.full.json"
-        yolo_settings_path = claude_dir / "settings.yolo.json"
-        anchor = claude_dir / "settings.json"
-
-        # Update config to include claude_settings target
-        config_content = config.read_text()
-        config.write_text(
-            config_content + f'\n[targets]\nclaude_settings = "{settings_full}"\n'
-        )
-
-        result = runner.invoke(
-            app, ["-c", str(config), "generate", "--yolo", "claude", "--write"]
-        )
-        assert result.exit_code == 0, result.output
-        assert yolo_settings_path.exists()
-        written = json.loads(yolo_settings_path.read_text())
-        assert "ask" not in written["permissions"]
-        # settings.json should be a symlink to yolo target
-        assert anchor.is_symlink()
-        import os
-
-        assert os.readlink(str(anchor)) == "settings.yolo.json"
-
-    def test_yolo_generate_claude_merges_into_existing_yolo_file(
-        self, tmp_path: Path
-    ) -> None:
-        """generate --yolo -w claude merges into existing settings.yolo.json, preserving user keys."""
-        srt = {}
-        bash_rules = {"deny": ["rm"], "ask": ["git push"]}
-        config = _make_config(tmp_path, srt, bash_rules, targets=False)
-
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir(parents=True, exist_ok=True)
-        settings_full = claude_dir / "settings.full.json"
-        yolo_settings_path = claude_dir / "settings.yolo.json"
-
-        # Pre-populate yolo file with user-managed keys (hooks, custom allows)
-        existing = {
-            "permissions": {
-                "deny": ["Bash(old)"],
-                "allow": ["mcp__my_server", "WebFetch(domain:stale.com)"],
-            },
-            "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": ["echo hi"]}]},
-            "sandbox": {"network": {"allowedDomains": []}},
-        }
-        yolo_settings_path.write_text(json.dumps(existing))
-
-        config_content = config.read_text()
-        config.write_text(
-            config_content + f'\n[targets]\nclaude_settings = "{settings_full}"\n'
-        )
-
-        result = runner.invoke(
-            app, ["-c", str(config), "generate", "--yolo", "claude", "--write"]
-        )
-        assert result.exit_code == 0, result.output
-        written = json.loads(yolo_settings_path.read_text())
-
-        # deny replaced
-        assert "Bash(rm)" in written["permissions"]["deny"]
-        assert "Bash(old)" not in written["permissions"]["deny"]
-        # no ask key in yolo
-        assert "ask" not in written["permissions"]
-        # hooks preserved
-        assert "hooks" in written
-        # mcp allow preserved, stale WebFetch removed
-        assert "mcp__my_server" in written["permissions"]["allow"]
-        assert "WebFetch(domain:stale.com)" not in written["permissions"]["allow"]
-
-    def test_yolo_generate_claude_preview_names_the_yolo_target(
-        self, tmp_path: Path
-    ) -> None:
-        """generate --yolo claude lists the yolo path it would write."""
-        srt = {}
-        bash_rules = {"deny": ["rm"], "ask": []}
-        config = _make_config(tmp_path, srt, bash_rules, targets=False)
-
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir(parents=True, exist_ok=True)
-        settings_full = claude_dir / "settings.full.json"
-
-        config_content = config.read_text()
-        config.write_text(
-            config_content + f'\n[targets]\nclaude_settings = "{settings_full}"\n'
-        )
-
-        result = runner.invoke(
-            app,
-            ["-c", str(config), "generate", "--yolo", "claude"],
-        )
-        assert result.exit_code == 0, result.output
-        assert "Would write agent target:" in result.stderr
-        assert "settings.yolo.json" in result.stderr
-
-
-class TestYoloGenerateAll:
-    """T019: CLI integration tests for generate --yolo (all agents)."""
-
-    def test_yolo_generate_all_produces_both_outputs(self, tmp_path: Path) -> None:
-        """generate --yolo produces both Claude and Copilot yolo outputs."""
-        srt = {"network": {"allowedDomains": ["github.com"]}}
-        bash_rules = {"deny": ["rm"], "ask": ["git push"]}
-        config = _make_config(tmp_path, srt, bash_rules)
-        result = runner.invoke(app, ["-c", str(config), "generate", "--yolo"])
-        assert result.exit_code == 0, result.output
-        # Both agent headers present
-        assert "--- claude ---" in result.output
-        assert "--- copilot ---" in result.output
-        # Claude output has no ask key
-        # Copilot output starts with --yolo
-        assert "--yolo" in result.output
-
-    def test_yolo_generate_all_write_to_yolo_paths(self, tmp_path: Path) -> None:
-        """generate --yolo -w writes both agents to yolo-specific paths."""
-        srt = {}
-        bash_rules = {"deny": ["rm"], "ask": []}
-        config = _make_config(tmp_path, srt, bash_rules, targets=False)
-
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir(parents=True, exist_ok=True)
-        settings_full = claude_dir / "settings.full.json"
-        anchor = claude_dir / "settings.json"
-        copilot_path = tmp_path / "copilot-flags.txt"
-
-        config_content = config.read_text()
-        config.write_text(
-            config_content
-            + f'\n[targets]\nclaude_settings = "{settings_full}"\n'
-            + f'copilot_output = "{copilot_path}"\n'
-        )
-
-        result = runner.invoke(
-            app, ["-c", str(config), "generate", "--yolo", "--write"]
-        )
-        assert result.exit_code == 0, result.output
-
-        yolo_settings = claude_dir / "settings.yolo.json"
-        yolo_copilot = tmp_path / "copilot-flags.yolo.txt"
-
-        assert yolo_settings.exists()
-        assert yolo_copilot.exists()
-        # settings.json should now be a symlink to yolo target
-        assert anchor.is_symlink()
-        assert not copilot_path.exists()
-
-    def test_yolo_generate_all_writes_codex_and_yolo_targets(
-        self, tmp_path: Path
-    ) -> None:
-        config = _make_config(
-            tmp_path, {}, {"deny": ["rm"], "ask": ["git push"]}, targets=False
-        )
-        claude_target = tmp_path / ".claude" / "settings.full.json"
-        codex_config = tmp_path / ".codex" / "config.toml"
-        codex_rules = tmp_path / ".codex" / "rules" / "twsrt.rules"
-        config.write_text(
-            config.read_text()
-            + "\n[targets]\n"
-            + f'claude_settings = "{claude_target}"\n'
-            + f'codex_config = "{codex_config}"\n'
-            + f'codex_rules = "{codex_rules}"\n'
-        )
-
-        result = runner.invoke(
-            app, ["-c", str(config), "generate", "--yolo", "--write"]
-        )
-
-        assert result.exit_code == 0, result.output
-        assert (tmp_path / ".claude" / "settings.yolo.json").exists()
-        assert codex_config.exists()
-        assert codex_rules.exists()
-        rules_text = codex_rules.read_text()
-        assert '"prompt"' not in rules_text
-        assert 'decision = "forbidden"' in rules_text
-
-
-class TestYoloGenerateCopilot:
-    """T016: CLI integration tests for generate --yolo copilot."""
-
-    def test_yolo_generate_copilot_stdout_starts_with_yolo(
-        self, tmp_path: Path
-    ) -> None:
-        """generate --yolo copilot prints output starting with --yolo."""
-        srt = {"network": {"allowedDomains": ["github.com"]}}
-        bash_rules = {"deny": ["rm"], "ask": ["git push"]}
-        config = _make_config(tmp_path, srt, bash_rules)
-        result = runner.invoke(
-            app, ["-c", str(config), "generate", "--yolo", "copilot"]
-        )
-        assert result.exit_code == 0, result.output
-        lines = [
-            line.strip() for line in result.output.strip().split("\n") if line.strip()
-        ]
-        assert lines[0].startswith("--yolo")
-        # No --allow-url or --allow-tool
-        assert "--allow-url" not in result.output
-        assert "--allow-tool" not in result.output
-        # No ASK-derived deny-tool
-        assert "git push" not in result.output
-
-    def test_yolo_generate_copilot_write_to_yolo_path(self, tmp_path: Path) -> None:
-        """generate --yolo -w copilot writes to copilot-flags.yolo.txt (no symlink for copilot)."""
-        srt = {}
-        bash_rules = {"deny": ["rm"], "ask": []}
-        config = _make_config(tmp_path, srt, bash_rules, targets=False)
-
-        copilot_path = tmp_path / "copilot-flags.txt"
-        yolo_copilot_path = tmp_path / "copilot-flags.yolo.txt"
-
-        config_content = config.read_text()
-        config.write_text(
-            config_content + f'\n[targets]\ncopilot_output = "{copilot_path}"\n'
-        )
-
-        result = runner.invoke(
-            app, ["-c", str(config), "generate", "--yolo", "copilot", "--write"]
-        )
-        assert result.exit_code == 0, result.output
-        assert yolo_copilot_path.exists()
-        content = yolo_copilot_path.read_text()
-        assert "--yolo" in content
-        # Copilot doesn't use symlinks — no copilot_path created
-        assert not copilot_path.exists()
-
-
 # --- US2 Acceptance Scenario Integration Tests ---
+
+
+class TestClaudeSettingsFile:
+    """ADR 0010 decision 6: twsrt writes the one file Claude Code reads."""
+
+    def test_a_fresh_write_creates_a_regular_settings_json(
+        self, tmp_path: Path
+    ) -> None:
+        config = _make_config(tmp_path, {}, {"deny": ["rm"], "ask": ["git push"]})
+
+        result = runner.invoke(app, ["-c", str(config), "generate", "claude", "-w"])
+
+        assert result.exit_code == 0, result.output
+        settings = tmp_path / ".claude" / "settings.json"
+        assert not settings.is_symlink()
+        assert [path.name for path in settings.parent.iterdir()] == ["settings.json"]
+        written = json.loads(settings.read_text())
+        assert "Bash(rm)" in written["permissions"]["deny"]
+        assert "Bash(git push)" in written["permissions"]["ask"]
+
+    def test_a_write_keeps_what_claude_code_and_the_user_put_into_the_file(
+        self, tmp_path: Path
+    ) -> None:
+        config = _make_config(tmp_path, {}, {"deny": ["rm"], "ask": []})
+        settings = tmp_path / ".claude" / "settings.json"
+        settings.parent.mkdir()
+        settings.write_text(
+            json.dumps(
+                {
+                    "model": "opus",
+                    "env": {"FOO": "1"},
+                    "hooks": {"Stop": []},
+                    "permissions": {"allow": ["mcp__memory__store"]},
+                }
+            )
+        )
+
+        result = runner.invoke(app, ["-c", str(config), "generate", "claude", "-w"])
+
+        assert result.exit_code == 0, result.output
+        written = json.loads(settings.read_text())
+        assert written["model"] == "opus"
+        assert written["env"] == {"FOO": "1"}
+        assert written["hooks"] == {"Stop": []}
+        assert "mcp__memory__store" in written["permissions"]["allow"]
+
+    def test_a_3x_symlink_becomes_a_regular_file_with_the_active_modes_settings(
+        self, tmp_path: Path
+    ) -> None:
+        """Migration: settings.json -> settings.yolo.json was written by twsrt 3.x."""
+        config = _make_config(tmp_path, {}, {"deny": ["rm"], "ask": ["git push"]})
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        yolo = claude_dir / "settings.yolo.json"
+        yolo.write_text('{"model": "opus", "permissions": {"deny": ["Bash(old)"]}}')
+        settings = claude_dir / "settings.json"
+        settings.symlink_to("settings.yolo.json")
+        yolo_before = yolo.read_text()
+
+        result = runner.invoke(app, ["-c", str(config), "generate", "claude", "-w"])
+
+        assert result.exit_code == 0, result.output
+        assert not settings.is_symlink()
+        written = json.loads(settings.read_text())
+        assert written["model"] == "opus"
+        assert "Bash(old)" not in written["permissions"]["deny"]
+        assert "Bash(git push)" in written["permissions"]["ask"]
+        assert yolo.read_text() == yolo_before
+
+    def test_a_dangling_symlink_counts_as_a_missing_file(self, tmp_path: Path) -> None:
+        config = _make_config(tmp_path, {}, {"deny": ["rm"], "ask": []})
+        settings = tmp_path / ".claude" / "settings.json"
+        settings.parent.mkdir()
+        settings.symlink_to("settings.gone.json")
+
+        result = runner.invoke(app, ["-c", str(config), "generate", "claude", "-w"])
+
+        assert result.exit_code == 0, result.output
+        assert not settings.is_symlink()
+        assert "Bash(rm)" in json.loads(settings.read_text())["permissions"]["deny"]
+
+    def test_diff_reports_an_emptied_deny_list_in_the_file_claude_reads(
+        self, tmp_path: Path
+    ) -> None:
+        """twsrt 3.x compared the mode named on the command line and missed this."""
+        config = _make_config(tmp_path, {}, {"deny": ["rm"], "ask": []})
+        runner.invoke(app, ["-c", str(config), "generate", "claude", "-w"])
+        settings = tmp_path / ".claude" / "settings.json"
+        document = json.loads(settings.read_text())
+        document["permissions"]["deny"] = []
+        settings.write_text(json.dumps(document))
+
+        result = runner.invoke(app, ["-c", str(config), "diff", "claude"])
+
+        assert result.exit_code == 1
+        assert "Bash(rm)" in result.stdout
+
+    def test_diff_is_clean_right_after_a_write(self, tmp_path: Path) -> None:
+        config = _make_config(
+            tmp_path, {"network": {"allowedDomains": ["a.com"]}}, {"deny": ["rm"]}
+        )
+        runner.invoke(app, ["-c", str(config), "generate", "claude", "-w"])
+
+        result = runner.invoke(app, ["-c", str(config), "diff", "claude"])
+
+        assert result.exit_code == 0, result.output
+        assert "claude: no drift" in result.stdout
 
 
 class TestUS2AcceptanceScenarios:
@@ -1572,7 +1121,7 @@ def _make_config_with_targets(
         json.dumps(bash_rules or {"deny": [], "ask": []})
     )
 
-    claude_target = tmp_path / ".claude" / "settings.full.json"
+    claude_target = tmp_path / ".claude" / "settings.json"
     claude_target.parent.mkdir(parents=True)
 
     copilot_target = tmp_path / "copilot-flags.txt"
@@ -1616,168 +1165,12 @@ def _policy_edit_denies(config: Path) -> list[str]:
     return [f"Edit(/{rule.pattern})" for rule in _policy_write_denies(config)]
 
 
-class TestYoloDiffCommand:
-    """T023: CLI diff --yolo tests."""
-
-    def test_yolo_diff_matching_exits_0(self, tmp_path: Path) -> None:
-        """diff --yolo claude with matching yolo file exits 0."""
-        srt = {}
-        bash_rules = {"deny": ["rm"], "ask": ["git push"]}
-        config, claude_target, _ = _make_config_with_targets(tmp_path, srt, bash_rules)
-
-        # Generate yolo output and write to yolo path
-        yolo_target = claude_target.with_suffix(".yolo.json")
-        from twsrt.lib.claude import ClaudeGenerator
-        from twsrt.lib.models import AppConfig as AC
-
-        gen = ClaudeGenerator()
-        ac = AC(yolo=True)
-        from twsrt.lib.models import Action, Scope, SecurityRule, Source
-
-        rules = [
-            SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
-            SecurityRule(Scope.EXECUTE, Action.ASK, "git push", Source.BASH_RULES),
-            *_policy_write_denies(config),
-        ]
-        output = gen.generate(rules, ac)
-        yolo_target.write_text(output)
-
-        config_text = config.read_text()
-        config.write_text(
-            config_text.replace(
-                f'claude_settings = "{claude_target}"',
-                f'claude_settings = "{claude_target}"\nclaude_settings_yolo = "{yolo_target}"',
-            )
-        )
-
-        result = runner.invoke(app, ["-c", str(config), "diff", "--yolo", "claude"])
-        assert result.exit_code == 0, result.output
-        assert "no drift" in result.output.lower()
-
-    def test_yolo_diff_drifted_exits_1(self, tmp_path: Path) -> None:
-        """diff --yolo claude with drifted yolo file exits 1."""
-        srt = {}
-        bash_rules = {"deny": ["rm", "sudo"], "ask": []}
-        config, claude_target, _ = _make_config_with_targets(tmp_path, srt, bash_rules)
-
-        # Write yolo file with only rm (missing sudo)
-        yolo_target = claude_target.with_suffix(".yolo.json")
-        existing = {
-            "permissions": {
-                "deny": ["Bash(rm)", "Bash(rm *)"],
-                "allow": [],
-            },
-            "sandbox": {"network": {"allowedDomains": []}},
-        }
-        yolo_target.write_text(json.dumps(existing))
-
-        config_text = config.read_text()
-        config.write_text(
-            config_text.replace(
-                f'claude_settings = "{claude_target}"',
-                f'claude_settings = "{claude_target}"\nclaude_settings_yolo = "{yolo_target}"',
-            )
-        )
-
-        result = runner.invoke(app, ["-c", str(config), "diff", "--yolo", "claude"])
-        assert result.exit_code == 1
-        assert "sudo" in result.output
-
-    def test_yolo_diff_missing_file_exits_2(self, tmp_path: Path) -> None:
-        """diff --yolo claude with missing yolo file exits 2."""
-        srt = {}
-        bash_rules = {"deny": ["rm"], "ask": []}
-        config, claude_target, _ = _make_config_with_targets(tmp_path, srt, bash_rules)
-        # Don't create yolo file
-
-        result = runner.invoke(app, ["-c", str(config), "diff", "--yolo", "claude"])
-        assert result.exit_code == 2
-
-
-class TestSymlinkDiffCommand:
-    """T015 [US4]: Diff follows symlinks transparently."""
-
-    def test_diff_reads_full_target(self, tmp_path: Path) -> None:
-        """diff claude reads settings.full.json target directly."""
-        srt = {}
-        bash_rules = {"deny": ["rm"], "ask": []}
-        config, claude_target, _ = _make_config_with_targets(tmp_path, srt, bash_rules)
-
-        # Write matching content to target (settings.full.json)
-        from twsrt.lib.claude import ClaudeGenerator
-        from twsrt.lib.models import (
-            AppConfig as AC,
-            SecurityRule,
-            Scope,
-            Action,
-            Source,
-        )
-
-        gen = ClaudeGenerator()
-        rules = [
-            SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
-            *_policy_write_denies(config),
-        ]
-        output = gen.generate(rules, AC())
-        claude_target.write_text(output)
-
-        result = runner.invoke(app, ["-c", str(config), "diff", "claude"])
-        assert result.exit_code == 0, result.output
-        assert "no drift" in result.output.lower()
-
-    def test_diff_yolo_reads_yolo_target_directly(self, tmp_path: Path) -> None:
-        """diff --yolo claude reads yolo target file, not the full target."""
-        srt = {}
-        bash_rules = {"deny": ["rm"], "ask": ["git push"]}
-        config, claude_target, _ = _make_config_with_targets(tmp_path, srt, bash_rules)
-
-        claude_dir = claude_target.parent
-        yolo_target = claude_dir / "settings.yolo.json"
-
-        # Write matching yolo content
-        from twsrt.lib.claude import ClaudeGenerator
-        from twsrt.lib.models import (
-            AppConfig as AC,
-            SecurityRule,
-            Scope,
-            Action,
-            Source,
-        )
-
-        gen = ClaudeGenerator()
-        rules = [
-            SecurityRule(Scope.EXECUTE, Action.DENY, "rm", Source.BASH_RULES),
-            SecurityRule(Scope.EXECUTE, Action.ASK, "git push", Source.BASH_RULES),
-            *_policy_write_denies(config),
-        ]
-        ac = AC(yolo=True)
-        output = gen.generate(rules, ac)
-        yolo_target.write_text(output)
-
-        # Full target has different content
-        claude_target.write_text('{"different": true}')
-
-        # Update config to add yolo target
-        config_text = config.read_text()
-        config.write_text(
-            config_text.replace(
-                f'claude_settings = "{claude_target}"',
-                f'claude_settings = "{claude_target}"\n'
-                f'claude_settings_yolo = "{yolo_target}"',
-            )
-        )
-
-        result = runner.invoke(app, ["-c", str(config), "diff", "--yolo", "claude"])
-        assert result.exit_code == 0, result.output
-        assert "no drift" in result.output.lower()
-
-
 class TestDiffCommand:
     def test_diff_all_skips_codex_when_targets_are_not_configured(
         self, tmp_path: Path
     ) -> None:
         config = _make_config(tmp_path, {"enabled": True}, targets=False)
-        claude_target = tmp_path / ".claude" / "settings.full.json"
+        claude_target = tmp_path / ".claude" / "settings.json"
         copilot_target = tmp_path / "copilot-flags.txt"
         config.write_text(
             config.read_text()
@@ -1826,26 +1219,6 @@ class TestDiffCommand:
         assert result.exit_code == 0, result.output
         assert "codex: no drift" in result.output
         assert "sandbox_mode" in result.output
-
-    def test_diff_codex_yolo_matches_written_config(self, tmp_path: Path) -> None:
-        config = _make_config(tmp_path, {"enabled": True}, targets=False)
-        codex_config = tmp_path / ".codex" / "config.toml"
-        codex_rules = tmp_path / ".codex" / "rules" / "twsrt.rules"
-        config.write_text(
-            config.read_text()
-            + "\n[targets]\n"
-            + f'codex_config = "{codex_config}"\n'
-            + f'codex_rules = "{codex_rules}"\n'
-        )
-        write_result = runner.invoke(
-            app, ["-c", str(config), "generate", "codex", "--write"]
-        )
-        assert write_result.exit_code == 0, write_result.output
-
-        result = runner.invoke(app, ["-c", str(config), "diff", "codex", "--yolo"])
-
-        assert result.exit_code == 0, result.output
-        assert "codex: no drift" in result.output
 
     def test_diff_codex_missing_rules_exits_2(self, tmp_path: Path) -> None:
         config = _make_config(tmp_path, {"enabled": True}, targets=False)
@@ -1904,6 +1277,8 @@ class TestDiffCommand:
                 "allow": [],
             },
             "sandbox": {
+                "enabled": True,
+                "allowUnsandboxedCommands": False,
                 "network": {"allowedDomains": []},
                 "filesystem": {"denyRead": [], "denyWrite": [], "allowWrite": []},
             },
@@ -1978,6 +1353,8 @@ class TestUS3AcceptanceScenarios:
                 "allow": [],
             },
             "sandbox": {
+                "enabled": True,
+                "allowUnsandboxedCommands": False,
                 "network": {"allowedDomains": []},
                 "filesystem": {"denyRead": [], "denyWrite": [], "allowWrite": []},
             },
@@ -2007,6 +1384,8 @@ class TestUS3AcceptanceScenarios:
                 "allow": [],
             },
             "sandbox": {
+                "enabled": True,
+                "allowUnsandboxedCommands": False,
                 "network": {"allowedDomains": []},
                 "filesystem": {"denyRead": [], "denyWrite": [], "allowWrite": []},
             },
@@ -2029,6 +1408,8 @@ class TestUS3AcceptanceScenarios:
                 "allow": [],
             },
             "sandbox": {
+                "enabled": True,
+                "allowUnsandboxedCommands": False,
                 "network": {"allowedDomains": []},
                 "filesystem": {"denyRead": [], "denyWrite": [], "allowWrite": []},
             },
@@ -2158,185 +1539,12 @@ class TestRemovedCommands:
         result = runner.invoke(app, ["init"])
         assert result.exit_code == 2
 
-
-# --- Invariant sync between full and yolo targets ---
-
-
-def _sync_fixture(
-    tmp_path: Path, claude_sync: str | None
-) -> tuple[Path, Path, Path, Path]:
-    """Config with [targets] and optional [claude_sync]; returns
-    (config, full_target, yolo_target, anchor)."""
-    config = _make_config(
-        tmp_path, {}, {"deny": ["rm"], "ask": ["git push"]}, targets=False
-    )
-    claude_dir = tmp_path / ".claude"
-    claude_dir.mkdir(parents=True, exist_ok=True)
-    full_target = claude_dir / "settings.full.json"
-    yolo_target = claude_dir / "settings.yolo.json"
-    anchor = claude_dir / "settings.json"
-    extra = f'\n[targets]\nclaude_settings = "{full_target}"\n'
-    if claude_sync is not None:
-        extra += claude_sync
-    config.write_text(config.read_text() + extra)
-    return config, full_target, yolo_target, anchor
-
-
-_SYNC_TABLE = (
-    "\n[claude_sync]\n"
-    'mode_specific = ["skipDangerousModePermissionPrompt", "hooks.PostToolUse"]\n'
-)
-
-_FULL_SETTINGS = {
-    "permissions": {"deny": ["Bash(old)"], "ask": [], "allow": ["Read"]},
-    "hooks": {
-        "UserPromptSubmit": [{"hooks": [{"command": "old-prompt"}]}],
-        "PostToolUse": [{"hooks": [{"command": "full-post"}]}],
-    },
-    "skipDangerousModePermissionPrompt": False,
-    "effortLevel": "medium",
-}
-
-_YOLO_SETTINGS = {
-    "permissions": {"deny": ["Bash(old)"], "allow": ["Read", "mcp__memory__store"]},
-    "hooks": {
-        "UserPromptSubmit": [{"hooks": [{"command": "new-prompt"}]}],
-        "PostToolUse": [{"hooks": [{"command": "yolo-post"}]}],
-    },
-    "skipDangerousModePermissionPrompt": True,
-    "model": "claude-fable-5-1[1m]",
-    "theme": "dark",
-}
-
-
-class TestInvariantSyncGenerateClaude:
-    """generate -w claude copies unmanaged keys from the file settings.json
-    points to (the donor) into the target, minus declared mode-specific keys."""
-
-    def test_full_generate_syncs_invariants_from_yolo(self, tmp_path: Path) -> None:
-        config, full, yolo, anchor = _sync_fixture(tmp_path, _SYNC_TABLE)
-        full.write_text(json.dumps(_FULL_SETTINGS))
-        yolo.write_text(json.dumps(_YOLO_SETTINGS))
-        anchor.symlink_to("settings.yolo.json")
-
-        result = runner.invoke(app, ["-c", str(config), "generate", "claude", "-w"])
-        assert result.exit_code == 0, result.output
-        assert "Synced invariant settings from settings.yolo.json" in result.output
-
-        written = json.loads(full.read_text())
-        # invariants taken from donor
-        assert written["model"] == "claude-fable-5-1[1m]"
-        assert written["theme"] == "dark"
-        assert (
-            written["hooks"]["UserPromptSubmit"]
-            == _YOLO_SETTINGS["hooks"]["UserPromptSubmit"]
-        )
-        assert "mcp__memory__store" in written["permissions"]["allow"]
-        # deleted in donor, so removed from target
-        assert "effortLevel" not in written
-        # mode-specific keys keep the target's values
-        assert written["skipDangerousModePermissionPrompt"] is False
-        assert written["hooks"]["PostToolUse"] == _FULL_SETTINGS["hooks"]["PostToolUse"]
-        # managed sections regenerated, not synced
-        assert "Bash(rm)" in written["permissions"]["deny"]
-        assert "Bash(old)" not in written["permissions"]["deny"]
-        assert "Bash(git push)" in written["permissions"]["ask"]
-        # yolo untouched, symlink repointed
-        assert json.loads(yolo.read_text()) == _YOLO_SETTINGS
-        import os
-
-        assert os.readlink(str(anchor)) == "settings.full.json"
-
-    def test_yolo_generate_syncs_invariants_from_full(self, tmp_path: Path) -> None:
-        config, full, yolo, anchor = _sync_fixture(tmp_path, _SYNC_TABLE)
-        full.write_text(json.dumps(_FULL_SETTINGS))
-        yolo.write_text(json.dumps(_YOLO_SETTINGS))
-        anchor.symlink_to("settings.full.json")
-
-        result = runner.invoke(
-            app, ["-c", str(config), "generate", "--yolo", "claude", "-w"]
-        )
-        assert result.exit_code == 0, result.output
-        assert "Synced invariant settings from settings.full.json" in result.output
-
-        written = json.loads(yolo.read_text())
-        assert written["effortLevel"] == "medium"
-        assert "model" not in written
-        assert written["skipDangerousModePermissionPrompt"] is True
-        assert written["hooks"]["PostToolUse"] == _YOLO_SETTINGS["hooks"]["PostToolUse"]
-        # yolo mode drops ask entirely
-        assert "ask" not in written["permissions"]
-
-    def test_donor_equals_target_is_noop(self, tmp_path: Path) -> None:
-        config, full, yolo, anchor = _sync_fixture(tmp_path, _SYNC_TABLE)
-        full.write_text(json.dumps(_FULL_SETTINGS))
-        yolo.write_text(json.dumps(_YOLO_SETTINGS))
-        anchor.symlink_to("settings.full.json")
-
-        result = runner.invoke(app, ["-c", str(config), "generate", "claude", "-w"])
-        assert result.exit_code == 0, result.output
-        assert "Synced invariant" not in result.output
-        written = json.loads(full.read_text())
-        assert "model" not in written
-        assert written["effortLevel"] == "medium"
-
-    def test_without_claude_sync_table_nothing_is_synced(self, tmp_path: Path) -> None:
-        config, full, yolo, anchor = _sync_fixture(tmp_path, None)
-        full.write_text(json.dumps(_FULL_SETTINGS))
-        yolo.write_text(json.dumps(_YOLO_SETTINGS))
-        anchor.symlink_to("settings.yolo.json")
-
-        result = runner.invoke(app, ["-c", str(config), "generate", "claude", "-w"])
-        assert result.exit_code == 0, result.output
-        assert "Synced invariant" not in result.output
-        written = json.loads(full.read_text())
-        assert "model" not in written
-        assert written["effortLevel"] == "medium"
-
-    def test_dangling_symlink_skips_sync(self, tmp_path: Path) -> None:
-        config, full, yolo, anchor = _sync_fixture(tmp_path, _SYNC_TABLE)
-        full.write_text(json.dumps(_FULL_SETTINGS))
-        anchor.symlink_to("settings.yolo.json")
-
-        result = runner.invoke(app, ["-c", str(config), "generate", "claude", "-w"])
-        assert result.exit_code == 0, result.output
-        assert "Synced invariant" not in result.output
-        written = json.loads(full.read_text())
-        assert written["effortLevel"] == "medium"
-
-    def test_missing_target_is_bootstrapped_from_donor(self, tmp_path: Path) -> None:
-        config, full, yolo, anchor = _sync_fixture(tmp_path, _SYNC_TABLE)
-        full.write_text(json.dumps(_FULL_SETTINGS))
-        anchor.symlink_to("settings.full.json")
-
-        result = runner.invoke(
-            app, ["-c", str(config), "generate", "--yolo", "claude", "-w"]
-        )
-        assert result.exit_code == 0, result.output
-        assert "Synced invariant settings from settings.full.json" in result.output
-        written = json.loads(yolo.read_text())
-        assert written["effortLevel"] == "medium"
-        assert (
-            written["hooks"]["UserPromptSubmit"]
-            == _FULL_SETTINGS["hooks"]["UserPromptSubmit"]
-        )
-        assert "PostToolUse" not in written["hooks"]
-        assert "skipDangerousModePermissionPrompt" not in written
-        assert "Bash(rm)" in written["permissions"]["deny"]
-
-    def test_preview_reports_sync_without_writing(self, tmp_path: Path) -> None:
-        config, full, yolo, anchor = _sync_fixture(tmp_path, _SYNC_TABLE)
-        full.write_text(json.dumps(_FULL_SETTINGS))
-        yolo.write_text(json.dumps(_YOLO_SETTINGS))
-        anchor.symlink_to("settings.yolo.json")
-
-        result = runner.invoke(app, ["-c", str(config), "generate", "claude"])
-        assert result.exit_code == 0, result.output
-        assert "Synced invariant settings from settings.yolo.json" in result.output
-        assert json.loads(full.read_text()) == _FULL_SETTINGS
-        import os
-
-        assert os.readlink(str(anchor)) == "settings.yolo.json"
+    @pytest.mark.parametrize("command", ["generate", "diff"])
+    def test_yolo_is_not_an_option(self, command: str) -> None:
+        """ADR 0010: a profile selects policy, a launch flag selects prompting."""
+        result = runner.invoke(app, [command, "--yolo"])
+        assert result.exit_code == 2
+        assert "No such option" in result.output
 
 
 # --- Agents are opt-in: a missing [targets] key means "not configured" ---
@@ -2346,7 +1554,7 @@ def _make_config_for_agents(tmp_path: Path, *agents: str) -> Path:
     """Config whose [targets] configures exactly the named agents."""
     config = _make_config(tmp_path, {}, {"deny": ["rm"], "ask": []}, targets=False)
     keys = {
-        "claude": f'claude_settings = "{tmp_path / ".claude" / "settings.full.json"}"',
+        "claude": f'claude_settings = "{tmp_path / ".claude" / "settings.json"}"',
         "copilot": f'copilot_output = "{tmp_path / "copilot-flags.txt"}"',
         "codex": f'codex_config = "{tmp_path / ".codex" / "config.toml"}"',
     }
@@ -2507,10 +1715,8 @@ class TestInitMinimalConfig:
         content = self._init(tmp_path).read_text()
 
         for line in (
-            '# claude_settings = "~/.claude/settings.full.json"',
-            '# claude_settings_yolo = "~/.claude/settings.yolo.json"',
+            '# claude_settings = "~/.claude/settings.json"',
             '# copilot_output = "copilot-flags.txt"',
-            '# copilot_output_yolo = "copilot-flags.yolo.txt"',
             '# codex_config = "~/.codex/config.toml"',
             '# codex_rules = "~/.codex/rules/twsrt.rules"',
         ):
@@ -2524,7 +1730,6 @@ class TestInitMinimalConfig:
         assert config.agent_target("claude") is None
         assert config.agent_target("copilot") is None
         assert config.agent_target("codex") is None
-        assert config.claude_sync is None
 
     def test_the_initial_config_writes_canonical_outputs_next_to_itself(
         self, tmp_path: Path
@@ -2583,20 +1788,6 @@ class TestInitMinimalConfig:
         )
         assert (config_path.parent / "bash/base.jsonc").exists()
 
-    def test_only_the_yolo_safety_override_stays_active(self, tmp_path: Path) -> None:
-        """Yolo skips confirmation: its sandbox hardening is kept on by default."""
-        from twsrt.lib.config import load_config
-
-        config = load_config(self._init(tmp_path))
-
-        assert config.sandbox_overrides == {
-            "yolo": {
-                "enabled": True,
-                "autoAllowBashIfSandboxed": True,
-                "allowUnsandboxedCommands": False,
-            }
-        }
-
 
 def _make_copilot_native_config(
     tmp_path: Path, flags: bool = True, ides: tuple[str, ...] = ()
@@ -2653,19 +1844,6 @@ class TestCopilotNativeTargets:
         written = json.loads((tmp_path / ".copilot" / "settings.json").read_text())
         assert written["sandbox"]["enabled"] is True
         assert not (tmp_path / "copilot-flags.txt").exists()
-
-    def test_yolo_writes_the_same_settings_file(self, tmp_path: Path) -> None:
-        """FR-025: no settings.yolo.json; only the flags get a yolo variant."""
-        config = _make_copilot_native_config(tmp_path)
-
-        result = runner.invoke(
-            app, ["-c", str(config), "generate", "copilot", "-w", "--yolo"]
-        )
-
-        assert result.exit_code == 0, result.output
-        assert (tmp_path / ".copilot" / "settings.json").exists()
-        assert not (tmp_path / ".copilot" / "settings.yolo.json").exists()
-        assert (tmp_path / "copilot-flags.yolo.txt").exists()
 
     def test_all_writes_flags_settings_and_every_ide_file(self, tmp_path: Path) -> None:
         """FR-030."""
@@ -2750,21 +1928,6 @@ class TestCopilotNativeTargets:
         assert result.exit_code == 0, result.output
         assert result.stderr.count("in-process") == 1
 
-    def test_mode_override_is_not_warned_as_an_srt_field(self, tmp_path: Path) -> None:
-        """FR-040: [sandbox_overrides.*] configure Claude, not srt."""
-        config = _make_copilot_native_config(tmp_path)
-        config.write_text(
-            config.read_text()
-            + "[sandbox_overrides.yolo]\nenableWeakerNestedSandbox = true\n"
-        )
-
-        result = runner.invoke(
-            app, ["-c", str(config), "generate", "copilot", "--yolo"]
-        )
-
-        assert result.exit_code == 0, result.output
-        assert "enableWeakerNestedSandbox" not in result.stderr
-
     def test_project_mode_rejects_copilot_jetbrains(self, tmp_path: Path) -> None:
         """FR-041: JetBrains settings are global to the IDE."""
         config = _make_copilot_native_config(tmp_path, ides=("IdeaA",))
@@ -2776,18 +1939,6 @@ class TestCopilotNativeTargets:
         assert result.exit_code == 1
         assert "copilot-jetbrains" in result.stderr
         assert "--project" in result.stderr
-
-    def test_yolo_diff_with_settings_only_reads_the_one_settings_file(
-        self, tmp_path: Path
-    ) -> None:
-        """FR-025: no settings.yolo.json exists or is looked for."""
-        config = _make_copilot_native_config(tmp_path, flags=False)
-        runner.invoke(app, ["-c", str(config), "generate", "copilot", "-w"])
-
-        result = runner.invoke(app, ["-c", str(config), "diff", "copilot", "--yolo"])
-
-        assert result.exit_code == 0, result.output
-        assert "copilot: no drift" in result.stdout
 
     def test_locked_ide_warning_is_red_unlike_other_warnings(
         self, tmp_path: Path

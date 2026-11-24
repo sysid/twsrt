@@ -23,8 +23,9 @@ key allowlists) → `models.py` (`SecurityRule`, `AppConfig`) → generators reg
 - `compatibility_warnings` returns strings, never prints; the CLI deduplicates them.
 - Generators own only their keys/options; everything else in a target is preserved.
 - denyRead implies denyWrite (ADR 0001); composition only adds (ADR 0003).
-- `[sandbox_overrides.*]` are Claude-only: srt-semantic checks read `srt_sandbox_config`, not
-  `sandbox_config`.
+- No modes (ADR 0010): the profile alone decides the output, `ask` is never dropped, prompt skipping
+  is never generated, and Claude's sandbox posture is fixed (`_FIXED_POSTURE`).
+- Nothing in `config.toml` is silently ignored: unknown and removed keys are load errors.
 - Fragments are never written; compiled outputs are never hand-edited.
 
 ## Docs

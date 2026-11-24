@@ -62,7 +62,7 @@ Three ideas explain the whole tool.
               ┌──────────────────────────┼──────────────────────────┐
               ▼                          ▼                          ▼
        Claude generator           Codex generator           Copilot generators
-       settings.full.json         config.toml + .rules      settings.json + flags,
+       settings.json              config.toml + .rules      settings.json + flags,
                                                             github-copilot.xml
 
  twsrt show            prints stage 1      generate <agent>      prints stage 2
@@ -79,9 +79,9 @@ Three ideas explain the whole tool.
 
 | | Canonical config | Agent configs |
 |---|---|---|
-| Files | `~/.srt-settings.json`, `bash-rules.json` | Claude `settings.full.json`, Codex `config.toml` + `.rules`, Copilot `settings.json` + flags, JetBrains `github-copilot.xml` |
+| Files | `~/.srt-settings.json`, `bash-rules.json` | Claude `settings.json`, Codex `config.toml` + `.rules`, Copilot `settings.json` + flags, JetBrains `github-copilot.xml` |
 | Role | Source of truth; SRT enforcement file | Lossy translations into each agent's native model |
-| Depends on | Profile only | Canonical config + agent + `--yolo` |
+| Depends on | Profile only | Canonical config + agent |
 | Inspect | `twsrt show [srt\|bash]` | `twsrt generate <agent>` |
 | Written by | **every** `generate -w`, whichever agent is selected | `generate <that agent> -w` |
 
@@ -157,8 +157,8 @@ Profiles extend each other but only ever *add*:
 | Change the policy | `twsrt edit` → `twsrt generate -w <agent>` | [Configuration](#configuration) |
 | See what an agent would get, without writing | `twsrt generate <agent>` | [Agents](#agents) |
 | See the compiled sandbox file | `twsrt show` | [How it works](#1-one-policy-compiled-in-two-stages) |
-| Run an agent without permission prompts, sandbox as safety net | `twsrt generate --yolo -w <agent>` | [Modes](#claude-code) |
-| Use a different policy set on this machine | `twsrt generate -w -p work <agent>` | [Profiles](#3-profiles-choose-which-fragments-are-in-force) |
+| Run an agent with fewer prompts, or with nobody present | The agent's own launch flag; the policy stays the same | [Prompting](#prompting-is-a-launch-choice) |
+| Use a different policy set on this machine | `twsrt generate -w -p work <agent>` | [Profiles](#3-profiles-choose-which-fragments-are-active) |
 | Relax one rule for one repository only | `twsrt generate claude -w -p slim --project` | [Per-project policy](#per-project-policy) |
 | Check nobody edited generated files | `twsrt diff` | [Verifying](#verifying-the-policy) |
 | Prove the sandbox actually blocks what the policy says | `twsrt test` | [Verifying](#verifying-the-policy) |
@@ -171,21 +171,45 @@ uv tool install twsrt        # or: pip install twsrt
 
 twsrt config --init          # writes ~/.config/twsrt/config.toml + starter fragments
 twsrt edit                   # opens every fragment: deny paths, domains, command rules
-twsrt config                 # enable agents: [targets] claude_settings = "~/.claude/settings.full.json"
+twsrt config                 # enable agents: [targets] claude_settings = "~/.claude/settings.json"
 
 twsrt show                   # print the compiled canonical srt settings
 twsrt generate claude        # preview the Claude translation and the files -w would write
-twsrt generate claude -w     # write the canonical outputs + ~/.claude/settings.full.json
+twsrt generate claude -w     # write the canonical outputs + ~/.claude/settings.json
 twsrt diff                   # exit 0 when every target matches the fragments
 twsrt test                   # prove the sandbox enforces the policy (plain terminal)
 ```
 
-A common launch pattern regenerates the active mode on every start:
+A common launch pattern regenerates the policy on every start:
 
 ```bash
-claude-full() { twsrt generate -w claude; claude "$@"; }
-claude-yolo() { twsrt generate --yolo -w claude; claude --allow-dangerously-skip-permissions "$@"; }
+c() { twsrt generate -w claude && claude "$@"; }
 ```
+
+### Prompting is a launch choice
+
+twsrt compiles **what** is denied and **what** asks. Who answers an `ask` rule is
+decided per session, with the agent's own flag, and never changes a generated
+file ([ADR 0010](doc/adr/0010-no-modes-profiles-select-policy.md)). The sandbox
+settings are the same in every case.
+
+| | Fewer prompts, `ask` rules still ask | Nobody present, `ask` rules deny |
+|---|---|---|
+| Claude Code | `--permission-mode auto` (or `bypassPermissions`) | `--permission-mode dontAsk`, or `--settings '{"permissions":{"denyInsteadOfPrompting":true}}'` (keeps auto mode) |
+| Copilot CLI | `--allow-all-tools`; deny rules still win | `-p` or `--autopilot`: what would prompt is denied |
+| Codex | `-c approvals_reviewer=auto_review` | `-a never` |
+
+> **Traps.** `codex --yolo` removes the sandbox. `copilot --yolo` also drops the
+> path and URL checks, and Copilot's in-process file tools are checked in
+> software only. `claude --allow-dangerously-skip-permissions` skips nothing by
+> itself, it only makes that mode selectable.
+
+Keep `ask` for commands whose effect leaves the sandbox (remote systems,
+published history, new dependencies). Files, secrets and domains are enforced by
+the kernel however a command is spelled; Bash rules match the command text only.
+To let a set of commands run without asking, put their `ask` rules in a fragment
+of their own and [choose a profile](#3-profiles-choose-which-fragments-are-active)
+without it.
 
 ## Configuration
 
@@ -204,7 +228,6 @@ from a plain terminal
 | Fragment | One named `.jsonc` file holding a slice of policy for one source kind. Fragments never include each other |
 | Profile | An ordered selection of fragments per source kind; may `extend` other profiles. `default_profile` applies when `-p` is omitted |
 | Target | An agent config file translated from the canonical output |
-| Mode | `full` (default) keeps ask rules and interactive approval. `--yolo` drops ask rules and writes separate `*.yolo.*` targets, for launches that skip permission prompts |
 
 ### config.toml
 
@@ -235,7 +258,7 @@ srt = ["work"]
 
 # --- targets: agents are opt-in; an unset key means "agent not configured" ---
 [targets]
-claude_settings = "~/.claude/settings.full.json"   # must not be settings.json (symlink anchor)
+claude_settings = "~/.claude/settings.json"        # the file Claude Code reads
 codex_config    = "~/.codex/config.toml"
 codex_rules     = "~/.codex/rules/twsrt.rules"      # optional, needs codex_config: escalation rules
 copilot_settings = "~/.copilot/settings.json"      # Copilot CLI native sandbox (ADR 0009)
@@ -243,29 +266,15 @@ copilot_output  = "~/.config/twsrt/copilot-flags.txt"  # optional, independent o
 copilot_jetbrains_xml = [                          # one file per JetBrains product and version
   "~/Library/Application Support/JetBrains/IntelliJIdea2026.2/options/github-copilot.xml",
 ]
-# claude_settings_yolo / copilot_output_yolo: optional, each needs its full-mode key;
-# default inserts ".yolo" before the suffix
-
-# --- Claude: keep unmanaged settings in sync between full and yolo files ---
-[claude_sync]
-mode_specific = ["skipDangerousModePermissionPrompt", "skipAutoPermissionPrompt"]
-
-# --- Claude: sandbox posture per mode, applied after SRT values ---
-[sandbox_overrides.yolo]
-enabled = true
-autoAllowBashIfSandboxed = true
-allowUnsandboxedCommands = false
-
-[sandbox_overrides.full]
-enabled = false
 ```
 
 Only `schema_version`, `default_profile`, `[sources.srt]` and one profile are
 required. Without `[sources.bash]` no command rules exist: nothing is compiled
 to `bash-rules.json` and no agent gets Bash allow/ask/deny entries; a profile
-must then not name `bash`. `config --init` writes exactly the required keys,
-plus `[sandbox_overrides.yolo]`, and leaves every other key, `[sources.bash]`
-included, commented out with its default value.
+must then not name `bash`. `config --init` writes exactly the required keys
+and leaves every other key, `[sources.bash]` included, commented out with its
+default value. An unknown key, or one removed in 4.0, is an error: nothing in
+`config.toml` is silently ignored.
 
 `output` is optional per source kind and defaults to `srt-settings.json` /
 `bash-rules.json` next to `config.toml`. srt itself reads only
@@ -339,11 +348,11 @@ repository and loaded per launch instead of the global files:
 
 ```
 twsrt generate claude -w -p slim --project
-  → ./.twsrt/srt-settings.json            canonical srt  (instead of ~/.srt-settings.json)
-  → ./.twsrt/bash-rules.json              canonical bash (only with [sources.bash])
-  → ./.twsrt/claude-settings[.yolo].json  Claude target  (instead of ~/.claude/settings.full.json)
-  → ./.twsrt/.gitignore                   "*"
-  stdout: the absolute .twsrt directory
+  → ./.twsrt/slim/srt-settings.json     canonical srt  (instead of ~/.srt-settings.json)
+  → ./.twsrt/slim/bash-rules.json       canonical bash (only with [sources.bash])
+  → ./.twsrt/slim/claude-settings.json  Claude target  (instead of ~/.claude/settings.json)
+  → ./.twsrt/.gitignore                 "*"
+  stdout: the absolute ./.twsrt/slim directory
 ```
 
 ```bash
@@ -354,14 +363,15 @@ srt-p()    { local p=$1 d; shift; d=$(twsrt generate claude -w -p "$p" --project
              srt -s "$d/srt-settings.json" "$@"; }
 ```
 
-**What `--project` changes.** Only where outputs land: `./.twsrt/` of the
-current directory (`cd` first). No symlink flip, no `[claude_sync]` donor,
-no global file touched; the preview works as usual. `all` means
+**What `--project` changes.** Only where outputs land: `./.twsrt/<profile>/` of
+the current directory (`cd` first; it need not be a repository), so sessions
+with different profiles do not overwrite each other (names that differ only in
+case are a load error). A symlinked `./.twsrt` is refused. No global file is touched;
+the preview works as usual. `all` means
 `claude`; Codex, Copilot and Copilot JetBrains are rejected because they read
 no per-launch settings file. Omitting `-p` compiles `default_profile`, the full policy.
-`--project` also adds `./.twsrt` to the compiled `denyWrite`, because Claude
-reloads settings mid-session and an agent able to write them could loosen
-its own policy. `config.toml`, the fragments and the global outputs stay
+`--project` also adds `./.twsrt` to the compiled `denyWrite`, because an agent
+able to write it could loosen the policy of a later launch. `config.toml`, the fragments and the global outputs stay
 write-denied as in every compile.
 
 Evidence, failure directions and how to re-verify after a Claude upgrade:
@@ -373,12 +383,11 @@ Security properties and the residual gap:
 
 | | Claude Code | Codex | Copilot CLI | Copilot in JetBrains |
 |---|---|---|---|---|
-| twsrt writes | `~/.claude/settings.full.json` (+ symlink) | `~/.codex/config.toml` profile + `.rules` | `settings.json` `sandbox`/`allowedUrls`/`deniedUrls` + flag snippet | `github-copilot.xml` sandbox options, per IDE |
-| Kernel layer | native sandbox, opt-in | native sandbox, always on | native sandbox (`copilot_settings`); flags-only mode: run it under `srt` | native sandbox |
+| twsrt writes | `~/.claude/settings.json` | `~/.codex/config.toml` profile + `.rules` | `settings.json` `sandbox`/`allowedUrls`/`deniedUrls` + flag snippet | `github-copilot.xml` sandbox options, per IDE |
+| Kernel layer | native sandbox, always on | native sandbox, always on | native sandbox (`copilot_settings`); flags-only mode: run it under `srt` | native sandbox |
 | App layer | permission rules | escalation rules | CLI flags per launch, URL rules | — |
 | Built-in tools | in-process, app rules only | sandboxed subprocesses | in-process, checked in software | in-process, checked in software |
 | `ask` tier | native | Codex default, not restated | absent: mapped to deny (warned) | — |
-| Full vs yolo output | differs | identical | `settings.json` identical, flags differ | identical |
 | Known trap | relative `sandbox.filesystem` paths anchor at the settings-file root, not the cwd | `sandbox_mode` in any layer disables the profile | path globs are lost (warned) | a running IDE's file is skipped; new IDE versions need a new path |
 
 Rule-by-rule translation:
@@ -386,24 +395,16 @@ Rule-by-rule translation:
 
 ### Claude Code
 
-- **Files and modes.** Claude Code reads only `~/.claude/settings.json`.
-  twsrt writes one file per mode, `settings.full.json` or (with `--yolo`)
-  `settings.yolo.json`, and turns `settings.json` into a symlink to it:
-
-  ```
-  settings.json ──► settings.full.json   after  generate -w claude
-                ──► settings.yolo.json   after  generate --yolo -w claude
-  ```
-
-  The last `-w` decides which mode Claude starts in. A regular
-  `settings.json` found on the first `-w` is moved to the target; both
-  existing at once is an error. Runtime changes Claude makes land in the
-  linked file; `[claude_sync]` carries them to the other mode.
-  [How the link works](doc/REFERENCE.md#claude-settings-symlink).
+- **One file.** twsrt merges its sections into `~/.claude/settings.json`, the
+  file Claude Code reads and writes runtime changes to. A symlink there (twsrt
+  3.x) is replaced by a regular file with the linked file's content;
+  [Migrating from 3.x](#migrating-from-3x).
 - **Selective merge.** `-w` replaces only what twsrt owns:
-  `permissions.deny`/`ask`, the `WebFetch(domain:…)` allows, and the
-  `sandbox` keys SRT defines. Hooks, plugins, model, other allows and
-  Claude-only sandbox keys are kept.
+  `permissions.deny`/`ask`, the `WebFetch(domain:…)` and `Edit(…)` allows, and
+  the `sandbox` keys SRT defines (removed when the policy does not set them).
+  Hooks, plugins, model, other allows and
+  Claude-only sandbox keys (`autoAllowBashIfSandboxed`, `excludedCommands`) are
+  kept.
   [Merge example](doc/REFERENCE.md#claude-merge-example),
   [key mapping](doc/REFERENCE.md#claude-sandbox-key-mapping).
 - **All file paths go through permission rules** ([ADR 0002](doc/adr/0002-claude-file-rules-as-permission-rules.md)).
@@ -416,26 +417,15 @@ Rule-by-rule translation:
   `~/.claude/settings.json` means `~/.claude`). Trade-off: Claude's edit
   tools no longer prompt for files under `allowWrite` paths. twsrt owns every
   `Edit(...)` allow in its target and replaces them on each write.
-- **Modes.** `[sandbox_overrides.yolo]`/`[sandbox_overrides.full]` set
-  `sandbox` keys per mode, after the SRT values. Typical: yolo keeps the
-  kernel sandbox on as the safety net for skipped prompts; full turns it off
-  because every action is approved interactively.
-- **Full ↔ yolo sync.** Claude writes runtime settings (model, theme, hooks
-  added in the UI) into whichever file the symlink points to. With
-  `[claude_sync]`, every mode switch first copies those unmanaged keys from
-  the current file into the target, so both converge.
-  [Sync rules](doc/REFERENCE.md#claude-full-and-yolo-sync).
-- **Adding your own settings.** Keys outside twsrt's sections (hooks,
-  plugins, `env`, `statusLine`, non-`WebFetch`/`Edit` allows, Claude-only
-  sandbox keys) survive every `-w`. Edit them in the file `settings.json`
-  links to, through the link itself: with `[claude_sync]` that file is the
-  donor on the next mode switch and overwrites the other mode's unmanaged
-  keys, so edits made only in the inactive file are lost. Without
-  `[claude_sync]`, add the key to both mode files. A key that should differ
-  per mode goes into `[claude_sync] mode_specific`. Keep `settings.json` a
-  symlink; a tool that replaces it with a regular file makes `-w` stop.
-  Anything in twsrt's sections belongs in the policy: hand edits there are
-  replaced. Preview the merged result with `twsrt generate claude` (no `-w`).
+- **Fixed sandbox posture.** twsrt always writes `sandbox.enabled: true` and
+  `sandbox.allowUnsandboxedCommands: false`; a policy with `enabled: false` is
+  refused, as for Codex and Copilot. One session without sandbox:
+  `claude --settings '{"sandbox":{"enabled":false}}'`.
+- **Adding your own settings.** Keys outside twsrt's sections survive every
+  `-w`; edit them in `settings.json` or through Claude. Anything in twsrt's
+  sections belongs in the policy: hand edits there are replaced, and
+  `twsrt diff` reports them. Preview the merged result with
+  `twsrt generate claude` (no `-w`).
 - **Gotcha.** Relative entries in a hand-written `sandbox.filesystem`
   (e.g. a repo's `.claude/settings.json`) anchor at that file's root, not
   the launch cwd; `twsrt doctor` reports them as `claude-relative-sandbox-path`.
@@ -475,8 +465,8 @@ srt.
 `allowBypass: false`), `allowedUrls` and `deniedUrls`. Every other key
 (model, theme, …) is kept. twsrt owns these three keys outright: a URL you
 approve permanently inside Copilot shows up in `twsrt diff` and disappears on
-the next `-w`, so add it to the policy instead. The same file serves full and
-yolo mode. What does not translate is warned on every `generate`:
+the next `-w`, so add it to the policy instead. What does not translate is
+warned on every `generate`:
 
 - Path wildcards: Copilot paths are literal. A glob below a fixed prefix
   (`~/.rsenv/vaults/*/envs`) is expanded once at generate time; `/**/.env`,
@@ -502,10 +492,8 @@ srt -c "copilot --allow-tool 'shell' --deny-tool 'shell(rm)' --allow-url 'github
 In the flags file, ask rules become `--deny-tool` with a warning. Bash
 deny and ask rules exist only as `--deny-tool` flags, so with
 `copilot_settings` alone (no `copilot_output`) they are not enforced for
-Copilot CLI, and twsrt warns. With `--yolo`
-the snippet starts with `--yolo` and keeps only `--deny-tool` (and
-`--deny-url` in flags-only mode); deny flags still take precedence over
-`--yolo`. [Copilot flags](doc/REFERENCE.md#copilot-flags),
+Copilot CLI, and twsrt warns. Deny flags take precedence over every allow,
+`--allow-all-tools` included. [Copilot flags](doc/REFERENCE.md#copilot-flags),
 [Copilot native sandbox](doc/REFERENCE.md#copilot-native-sandbox).
 
 ### Copilot in JetBrains IDEs
@@ -605,9 +593,8 @@ Threat model, rationale and every known gap:
 | `twsrt show [srt\|bash] [-p P]` | Print the compiled canonical document exactly as `-w` would write it. Writes nothing |
 | `twsrt generate [agent] [-p P]` | Preview: print the agent translation (`claude`, `codex`, `copilot`, `copilot-jetbrains`, default `all`) to stdout and list every file `-w` would write on stderr. Runs the same compile and merge checks as `-w`. Writes nothing |
 | `twsrt generate [agent] -w` | Write those files: the canonical outputs (always, whichever agent) and the agent targets |
-| `twsrt generate [agent] --yolo` | Yolo mode: no ask rules, `*.yolo.*` targets, yolo sandbox overrides |
-| `twsrt generate claude -w -p P --project` | Write profile `P` to `./.twsrt/`; nothing global is written |
-| `twsrt diff [agent] [--yolo] [-p P]` | Compare compiled policy against the files on disk |
+| `twsrt generate claude -w -p P --project` | Write profile `P` to `./.twsrt/P/`; nothing global is written |
+| `twsrt diff [agent] [-p P]` | Compare compiled policy against the files on disk |
 | `twsrt test [-p P] [-k TEXT] [--json] [--timeout S]` | Probe the sandbox for every effective SRT rule |
 | `twsrt doctor` | Lint every profile and fragment |
 
@@ -616,11 +603,35 @@ Threat model, rationale and every known gap:
   arguments (`nvim -O`, `code -w`) is passed through. `twsrt -v edit -n`
   prints the command line.
 - **Output streams.** stdout carries the result (generated config, reports,
-  the `.twsrt` path for `--project -w`); errors, warnings and write
+  the `.twsrt/<profile>` path for `--project -w`); errors, warnings and write
   narration go to stderr, so `-w` output can be captured. `-v` before the
   subcommand adds debug output that never prints policy contents, except
   under `test`, where it traces every executed command.
   [Diagnostic output](doc/REFERENCE.md#diagnostic-output).
+
+## Migrating from 3.x
+
+4.0 removes modes. Every removed key is a load error that names its replacement.
+
+| 3.x | 4.0 |
+|---|---|
+| `generate --yolo`, `diff --yolo` | A [launch flag](#prompting-is-a-launch-choice), or a profile without the `ask` fragment |
+| `claude_settings = "…/settings.full.json"` | `claude_settings = "…/settings.json"` |
+| `claude_settings_yolo`, `copilot_output_yolo`, `[claude_sync]` | Delete |
+| `[sandbox_overrides.*]` | Delete; the sandbox is always on |
+| `./.twsrt/claude-settings[.yolo].json` | `./.twsrt/<profile>/claude-settings.json` |
+
+Close running Claude sessions, then run `twsrt generate claude -w`: it reads
+through the old `settings.json` symlink, so the active mode's hooks, plugins and
+model are kept, and replaces the link by a regular file. Check with
+`twsrt diff claude`, then delete `settings.full.json`, `settings.yolo.json` and
+`copilot-flags.yolo.txt`. `ask` rules that yolo dropped now prompt: review them
+first.
+
+Delete the 3.x files directly under each `./.twsrt` (`srt-settings.json`,
+`bash-rules.json`, `claude-settings[.yolo].json`) and point launchers at the
+directory `generate --project -w` prints. Until then `--project` fails, so an
+old launcher cannot keep running a frozen policy unnoticed.
 
 ## Documentation map
 

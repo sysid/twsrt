@@ -18,6 +18,19 @@ def load(path: Path) -> dict[str, Any]:
     return loads(path.read_text(), path)
 
 
+def read_json_object(target: Path) -> dict[str, Any]:
+    """An agent's existing JSON settings file; {} when it is absent."""
+    if not target.exists():
+        return {}
+    try:
+        document = json.loads(target.read_text())
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{target} is not valid JSON: {exc}") from exc
+    if not isinstance(document, dict):
+        raise ValueError(f"{target} must contain a JSON object")
+    return document
+
+
 def loads(text: str, source: Path) -> dict[str, Any]:
     """Parse strict JSON extended only with line and block comments."""
     uncommented = _replace_comments(text, source)

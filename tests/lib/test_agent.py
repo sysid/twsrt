@@ -24,7 +24,7 @@ class TestAgentGeneratorContract:
     def test_generate_returns_string(self, tmp_path: Path) -> None:
         """Generators only run for configured agents, so every target is set."""
         config = AppConfig(
-            claude_settings_path=tmp_path / "settings.full.json",
+            claude_settings_path=tmp_path / "settings.json",
             copilot_output_path=tmp_path / "copilot-flags.txt",
             codex_config_path=tmp_path / "config.toml",
         )
