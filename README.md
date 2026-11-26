@@ -5,8 +5,6 @@
 One security policy, compiled into the native permission and sandbox
 configuration of every AI coding agent you run.
 
-![demo](./doc/demo.gif)
-
 ## Contents
 
 1. [Why twsrt](#why-twsrt)

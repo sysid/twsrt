@@ -1,0 +1,1063 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sandboxing agents with srt and twsrt</title>
+<style>
+/* tw-html-explainer — GitHub Primer light. Inline this whole file into <style>.
+   Colour carries meaning only: accent = info/you, success = new/good,
+   danger = old/bad, attention = caution/cost. Never use colour as decoration. */
+:root {
+  --ink: #1f2328; --muted: #59636e; --line: #d1d9e0; --subtle: #f6f8fa; --bg: #ffffff;
+  --accent: #0969da; --success: #1a7f37; --danger: #d1242f; --attention: #9a6700; --done: #8250df;
+  --neutral-line: #818b98;   /* arrows, connectors, axes in SVG */
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+       color: var(--ink); background: var(--bg); }
+a { color: var(--accent); }
+
+/* Layout: sticky side nav + main column */
+.layout { display: grid; grid-template-columns: 256px minmax(0, 1fr); max-width: 1280px; margin: 0 auto; }
+nav { position: sticky; top: 0; height: 100vh; padding: 24px 16px; border-right: 1px solid var(--line); overflow-y: auto; }
+nav b { display: block; font-size: 14px; font-weight: 600; margin: 0 8px 12px; }
+nav a { display: block; padding: 4px 8px; border-radius: 6px; color: var(--ink); text-decoration: none; font-size: 14px; }
+nav a:hover { background: rgba(129, 139, 152, .15); }
+nav .act { font-size: 12px; font-weight: 600; color: var(--muted); margin: 16px 8px 4px; }
+main { padding: 32px 40px 80px; min-width: 0; max-width: 1060px; }
+@media (max-width: 960px) { .layout { grid-template-columns: 1fr; } nav { display: none; } main { padding: 24px 16px; } }
+
+/* Hero: plain, no banner */
+header.hero { padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+header.hero .kicker { font-size: 14px; color: var(--muted); }
+header.hero h1 { font-size: 32px; font-weight: 600; line-height: 1.25; margin: 8px 0; }
+header.hero p { color: var(--muted); max-width: 860px; margin: 0; }
+
+/* Headings and text */
+section { margin-top: 48px; }
+h2 { font-size: 24px; font-weight: 600; line-height: 1.25; margin: 0 0 16px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+h2 .num { display: inline-block; min-width: 32px; color: var(--muted); font-weight: 400; }
+h3 { font-size: 16px; font-weight: 600; margin: 24px 0 8px; }
+h4 { font-weight: 600; }
+p { max-width: 900px; }
+.lede { color: var(--muted); margin: 0 0 16px; max-width: 900px; }
+.muted { color: var(--muted); }
+
+/* Code */
+code { font: 85%/1.45 var(--mono); background: rgba(129, 139, 152, .15); padding: .2em .4em; border-radius: 6px; }
+pre { background: var(--subtle); color: var(--ink); padding: 16px; border-radius: 6px; overflow-x: auto; margin: 0;
+      font: 13.6px/1.45 var(--mono); border: 1px solid var(--line); }
+pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+/* GitHub light syntax: comment, keyword, value, string */
+pre .c { color: #59636e; } pre .k { color: #116329; } pre .v { color: #0550ae; } pre .s { color: #0a3069; }
+/* Numbered annotation markers in a left gutter; .m0 keeps unmarked lines aligned */
+pre .m, pre .m0 { display: inline-block; width: 18px; height: 18px; margin-right: 12px; vertical-align: -3px; }
+pre .m { background: var(--accent); color: #fff; border-radius: 50%; text-align: center; font: 600 11px/18px sans-serif; }
+.formula { font: 14px/1.5 var(--mono); background: var(--subtle); border: 1px solid var(--line); border-radius: 6px;
+           padding: 12px 16px; display: inline-block; }
+
+/* Cards and grids (no shadows) */
+.card { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 16px; }
+.card > h4:first-child { margin: 0 0 6px; font-size: 14px; }
+.card > p:last-child { margin-bottom: 0; }
+.grid { display: grid; gap: 16px; }
+.g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.g4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 960px) { .g2, .g3, .g4 { grid-template-columns: 1fr; } }
+
+/* TL;DR cards: coloured title only */
+.tldr { margin-top: 24px; }
+.tldr p { margin: 0; font-size: 14px; }
+.tldr .danger h4 { color: var(--danger); } .tldr .success h4 { color: var(--success); } .tldr .accent h4 { color: var(--accent); }
+
+/* GitHub Label */
+.pill { display: inline-block; font-size: 12px; font-weight: 500; line-height: 18px; padding: 0 7px; border-radius: 2em;
+        border: 1px solid var(--line); color: var(--muted); vertical-align: middle; white-space: nowrap; }
+.pill.accent { border-color: rgba(9, 105, 218, .4); color: var(--accent); }
+.pill.success { border-color: rgba(26, 127, 55, .4); color: var(--success); }
+.pill.danger { border-color: rgba(209, 36, 47, .4); color: var(--danger); }
+.pill.attention { border-color: rgba(154, 103, 0, .4); color: var(--attention); }
+
+/* GitHub alert (> [!NOTE] …): left border + coloured title, no fill */
+.callout { border-left: .25em solid var(--accent); padding: 8px 16px; margin: 16px 0; max-width: 940px; }
+.callout b:first-child { color: var(--accent); }
+.callout.success { border-color: var(--success); } .callout.success b:first-child { color: var(--success); }
+.callout.danger { border-color: var(--danger); } .callout.danger b:first-child { color: var(--danger); }
+.callout.attention { border-color: var(--attention); } .callout.attention b:first-child { color: var(--attention); }
+.callout p { margin: 4px 0; }
+
+/* Fan-in: many sources -> one sink (connectors drawn in inline SVG) */
+.fanin { display: grid; grid-template-columns: minmax(0, 1.25fr) 70px minmax(0, 1fr); align-items: center; }
+.fanin .sources { display: grid; gap: 8px; }
+.fanin .src { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 10px 14px; }
+.fanin .src .t { font-weight: 600; } .fanin .src .d { font-size: 14px; color: var(--muted); }
+.fanin .arrows svg { width: 70px; height: 100%; min-height: 200px; }
+.fanin .sink { background: #fff; border: 1px dashed var(--line); border-radius: 6px; padding: 16px; text-align: center; }
+.fanin .sink .formula { display: block; margin: 10px 0; }
+@media (max-width: 960px) { .fanin { grid-template-columns: 1fr; } .fanin .arrows { display: none; } }
+
+/* Swimlanes: actor column + chips of steps. minmax(0, 1fr) lets the chips wrap instead of widening the page. */
+.lanes { display: grid; grid-template-columns: 150px minmax(0, 1fr); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+@media (max-width: 600px) { .lanes { grid-template-columns: 1fr; } .lanes .lane { border-right: 0; } }
+.lanes .lane { padding: 12px 14px; font-weight: 600; font-size: 14px; background: var(--subtle); border-bottom: 1px solid var(--line);
+               border-right: 1px solid var(--line); display: flex; align-items: center; }
+.lanes .steps { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; border-bottom: 1px solid var(--line); align-items: center; }
+.lanes .lane:nth-last-child(2), .lanes .steps:last-child { border-bottom: 0; }
+/* .chain: the same chips outside a lane, e.g. an everyday task old vs new */
+.chain { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.step { font-size: 13px; padding: 3px 10px; border-radius: 1em; background: #fff; border: 1px solid var(--line); overflow-wrap: anywhere; }
+.step code { font-size: 12px; }
+.step.danger { border-color: rgba(209, 36, 47, .4); color: var(--danger); }
+.step.success { border-color: rgba(26, 127, 55, .4); color: var(--success); }
+.step.attention { border-color: rgba(154, 103, 0, .4); color: var(--attention); }
+.chev { color: var(--muted); font-size: 14px; }
+
+/* Annotated code: <pre> with .m markers left, numbered legend right */
+.anno { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 960px) { .anno { grid-template-columns: 1fr; } }
+.legend ol { list-style: none; padding: 0; margin: 0; counter-reset: n; }
+.legend li { counter-increment: n; position: relative; padding: 8px 0 8px 32px; border-bottom: 1px solid var(--line); font-size: 14px; }
+.legend li:last-child { border-bottom: 0; }
+.legend li::before { content: counter(n); position: absolute; left: 0; top: 10px; width: 18px; height: 18px; border-radius: 50%;
+                     background: var(--accent); color: #fff; font: 600 11px/18px sans-serif; text-align: center; }
+
+/* Charts: SVG inside a bordered box */
+.chart { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 12px; overflow-x: auto; }
+.chart svg { width: 100%; height: auto; display: block; }
+
+/* Pipeline, styled like a GitHub timeline */
+.pipe { display: grid; gap: 8px; }
+.stage { display: grid; grid-template-columns: 44px minmax(0, 1fr) 140px; gap: 12px; align-items: start; background: #fff;
+         border: 1px solid var(--line); border-radius: 6px; padding: 12px 16px; }
+.stage .n { width: 32px; height: 32px; border-radius: 50%; background: #eff2f5; color: var(--ink); font-weight: 600;
+            border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; font-size: 14px; }
+.stage h4 { margin: 0 0 4px; font-size: 15px; }
+.stage p { margin: 0; font-size: 14px; color: var(--muted); }
+.stage .side { text-align: right; }
+.stage .side .pill { margin-bottom: 4px; }
+.stage.nested { margin-left: 44px; border-color: rgba(9, 105, 218, .4); background: var(--subtle); }
+
+/* Include/exclude file list */
+.files { font: 13px/1.9 var(--mono); }
+.files .in::before { content: "✓ "; color: var(--success); font-weight: 600; }
+.files .out::before { content: "✕ "; color: var(--danger); font-weight: 600; }
+
+/* Horizontal event timeline (commits, releases, …) */
+.timeline { position: relative; padding: 20px 0 6px; }
+.timeline .rail { position: absolute; left: 0; right: 0; top: 45px; height: 2px; background: var(--line); }
+.timeline .events { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; position: relative; gap: 8px; }
+.event { text-align: center; font-size: 13px; }
+.event .dot { width: 16px; height: 16px; border-radius: 50%; margin: 17px auto 10px; border: 3px solid #fff;
+              box-shadow: 0 0 0 1px var(--line); background: var(--line); }
+.event .dot.attention { background: #bf8700; } .event .dot.success { background: var(--success); }
+.event .dot.danger { background: var(--danger); } .event .dot.accent { background: var(--accent); }
+.event .what { font-weight: 600; } .event .res { color: var(--muted); }
+
+/* Proportion bar */
+.bar { height: 20px; border-radius: 6px; display: flex; overflow: hidden; font-size: 12px; color: #fff; font-weight: 600; background: var(--subtle); }
+.bar span { display: flex; align-items: center; padding: 0 8px; white-space: nowrap; }
+
+/* Folder tree */
+.tree { font: 13.6px/1.9 var(--mono); background: var(--subtle); border: 1px solid var(--line); border-radius: 6px; padding: 16px; }
+.tree .cm { color: var(--muted); }
+
+/* Markdown tables; before/after: old column muted, new column normal ink.
+   Wrap every table in .tbl so a wide one scrolls inside its box, not the page. */
+.tbl { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 6px 13px; border: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; background: #fff; }
+tr:nth-child(2n) td { background: var(--subtle); }
+td.old { color: var(--muted); }
+table.rowhead td:first-child { font-weight: 600; }
+
+/* Hero key box: the one interface the reader will touch (dispatch inputs, a command, an endpoint) */
+.hero-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+@media (max-width: 960px) { .hero-grid { grid-template-columns: 1fr; } }
+.keybox { background: var(--subtle); border: 1px solid var(--line); border-radius: 6px; padding: 16px; display: grid; gap: 8px; font-size: 14px; }
+.keybox .field { display: grid; grid-template-columns: 7rem minmax(0, 1fr); gap: 8px; align-items: center; }
+.keybox .field code { display: block; background: #fff; border: 1px solid var(--line); padding: 4px 8px; overflow-wrap: anywhere; }
+
+/* Buckets: which class of input leads to which outcome; the rule behind a timeline or lane */
+.buckets { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+.bucket { border: 1px solid var(--line); border-radius: 6px; padding: 12px 16px; min-width: 0; }
+.bucket.success { border-color: rgba(26, 127, 55, .5); } .bucket.danger { border-color: rgba(209, 36, 47, .5); }
+.bucket.attention { border-color: rgba(154, 103, 0, .5); }
+.bucket h4 { margin: 0 0 6px; font-size: 14px; display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.bucket ul { margin: 0 0 8px; padding-left: 18px; font: 13px/1.7 var(--mono); overflow-wrap: anywhere; }
+.bucket p { margin: 0; font-size: 14px; color: var(--muted); }
+
+/* Matrix: rows = components, columns = stages or environments; shows what is coupled to what */
+.matrix-wrap { overflow-x: auto; }
+.matrix { display: grid; grid-template-columns: 9rem repeat(var(--cols, 3), minmax(120px, 1fr)); gap: 6px; min-width: 520px; font-size: 13px; }
+.matrix .h { font-weight: 600; text-align: center; }
+.matrix .rl { font-weight: 600; color: var(--muted); align-self: center; }
+.matrix .c { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; background: var(--subtle); min-width: 0; overflow-wrap: anywhere; }
+.matrix .c small { display: block; color: var(--muted); }
+.matrix .c.danger { border: 1px dashed rgba(209, 36, 47, .6); } .matrix .c.success { border-color: rgba(26, 127, 55, .6); }
+
+/* Entry + core: several entry points share one implementation */
+.entry { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.core { border: 1px solid var(--accent); border-radius: 6px; padding: 12px 16px; margin-top: 12px; }
+.core ul { columns: 2 16rem; margin: 6px 0 0; padding-left: 18px; font-size: 14px; }
+
+/* Layers: a stack, top = closest to the user; .x on the right = a concern that cuts across all layers */
+.layers { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.layers .stack { display: grid; gap: 6px; }
+.layer { display: grid; grid-template-columns: 9rem minmax(0, 1fr); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.layer > b { background: var(--subtle); border-right: 1px solid var(--line); padding: 8px 12px; font-size: 14px; }
+.layer > div { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; align-items: center; }
+.layer.accent { border-color: rgba(9, 105, 218, .5); }
+.layers .xs { display: flex; gap: 6px; }
+.layers .x { border: 1px dashed var(--neutral-line); border-radius: 6px; padding: 8px 4px; writing-mode: vertical-rl;
+             transform: rotate(180deg); font-size: 13px; color: var(--muted); text-align: center; }
+@media (max-width: 600px) { .layer { grid-template-columns: 1fr; } .layer > b { border-right: 0; border-bottom: 1px solid var(--line); } }
+
+/* SVG diagrams drawn by boxDiagram() and sequence() in the skeleton. Colour by meaning, via classes.
+   The svg gets a min-width, so on a phone the diagram scrolls inside .diagram instead of shrinking text. */
+.diagram { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 12px; overflow-x: auto; }
+.diagram svg { display: block; width: 100%; height: auto; }
+.diagram text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+svg .n rect, svg .n circle.box { fill: #fff; stroke: var(--neutral-line); stroke-width: 1.5; }
+svg .n.accent rect { stroke: var(--accent); } svg .n.success rect { stroke: var(--success); }
+svg .n.danger rect { stroke: var(--danger); } svg .n.attention rect { stroke: var(--attention); }
+svg .n.muted rect { stroke: var(--line); stroke-dasharray: 4 3; }
+svg .n text { font-size: 13px; font-weight: 600; fill: var(--ink); }
+svg .n text.sub { font-size: 11px; font-weight: 400; fill: var(--muted); }
+svg .n.start circle { fill: var(--ink); stroke: none; }
+svg .e { fill: none; stroke: var(--neutral-line); stroke-width: 1.5; }
+svg .e.dashed { stroke-dasharray: 5 4; }
+svg .e.strong { stroke-width: 2.5; }
+svg .n text.ln { font-size: 11.5px; font-weight: 400; fill: var(--ink); }
+svg .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-weight: 400; }
+svg .lg { font-size: 12px; fill: var(--muted); }
+svg .e.accent { stroke: var(--accent); } svg .e.success { stroke: var(--success); }
+svg .e.danger { stroke: var(--danger); } svg .e.attention { stroke: var(--attention); }
+svg .el { font-size: 11px; fill: var(--muted); paint-order: stroke; stroke: #fff; stroke-width: 4px; stroke-linejoin: round; }
+svg .grp rect { fill: var(--subtle); stroke: var(--line); stroke-dasharray: 6 4; }
+svg .grp text { font-size: 12px; font-weight: 600; fill: var(--muted); }
+svg .life { stroke: var(--line); stroke-dasharray: 4 4; }
+svg .note rect { fill: var(--subtle); stroke: var(--line); }
+svg .note text { font-size: 12px; fill: var(--ink); }
+
+/* Full-screen view, opened by zoomable() in the skeleton: svg mode for .diagram/.chart, opt-in HTML mode for [data-zoom]. */
+.diagram, .chart, [data-zoom] { cursor: zoom-in; }
+.diagram:focus-visible, .chart:focus-visible, [data-zoom]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+dialog.zoom { width: 96vw; max-width: none; height: 92vh; max-height: none; padding: 16px; background: #fff; overflow: auto;
+              border: 1px solid var(--line); border-radius: 6px; cursor: zoom-out; }
+dialog.zoom[open] { display: flex; align-items: center; justify-content: center; }
+dialog.zoom::backdrop { background: rgba(31, 35, 40, .5); }
+/* The helpers give every svg a min-width for phone scrolling; in the overlay it must fit the window instead.
+   align-self: stretch, because the flex centering used for HTML copies would shrink the svg. */
+dialog.zoom > svg { display: block; width: 100%; height: 100%; min-width: 0 !important; flex: 1 1 auto; align-self: stretch; }
+dialog.zoom .zoom-html { display: block; margin: auto; }
+
+ul.spaced li { margin: 8px 0; max-width: 940px; }
+footer { margin-top: 64px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+/* page extension: label on the fan-in arrows */
+.fanin .arrows { position: relative; align-self: stretch; }
+.fanin .arrows path { vector-effect: non-scaling-stroke; }
+.matrix .sep { grid-column: 1 / -1; border-top: 1px solid var(--neutral-line); margin-top: 8px; padding-top: 8px; font-weight: 600; color: var(--muted); }
+.fanin .arrows .lbl { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -150%); font-size: 12px; color: var(--muted); background: #fff; padding: 0 3px; }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav>
+  <b>srt and twsrt</b>
+  <div class="act">Why a sandbox</div>
+  <a href="#why">1 · Two steps to leak a secret</a>
+  <a href="#vm">2 · Sandbox vs VM</a>
+  <div class="act">How srt works</div>
+  <a href="#arch">3 · Profile and proxy</a>
+  <a href="#request">4 · One network request</a>
+  <div class="act">Keys and protection levels</div>
+  <a href="#files">5 · Files</a>
+  <a href="#levels">6 · Protection levels</a>
+  <div class="act">Fragments and generation</div>
+  <a href="#fragments">7 · Profiles and fragments</a>
+  <a href="#compile">8 · Compile rules</a>
+  <div class="act">Reference</div>
+  <a href="#cheat">9 · Cheat sheet</a>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="kicker">cobra-guidelines · <code>tools/sandbox/srt</code> · sandbox-runtime v0.0.83 · twsrt v4.0.0</div>
+  <div class="hero-grid">
+    <div>
+      <h1>srt confines a command with operating-system rules; twsrt builds those rules from fragments</h1>
+      <p>A coding agent runs shell commands as you. <code>srt</code> (Anthropic sandbox-runtime) runs such a command
+         under the macOS or Linux sandbox, with a file policy and a network allowlist. <code>twsrt</code> compiles the
+         policy from commented <code>.jsonc</code> fragments, so the Cobra team standard and individual additions stay
+         separate and reviewable.</p>
+    </div>
+    <div class="keybox" aria-label="The three things a Cobra developer touches">
+      <span class="muted">paths relative to the repo root</span>
+      <div class="field"><b>edit</b><code>tools/sandbox/srt/twsrt/srt/*.jsonc</code></div>
+      <div class="field"><b>compile</b><code>twsrt -c tools/sandbox/srt/twsrt/config.toml generate -w</code></div>
+      <div class="field"><b>run</b><code>srt -s tools/sandbox/srt/twsrt/srt-settings.json -c "copilot"</code></div>
+      <span class="muted">The generated <code>srt-settings.json</code> is git-ignored. Edit fragments, not the JSON.</span>
+    </div>
+  </div>
+</header>
+
+<div class="grid g3 tldr">
+  <div class="card"><h4>What srt is</h4><p>A wrapper that starts one command under the OS sandbox: Seatbelt on macOS,
+    bubblewrap on Linux. The command keeps your user, files and toolchain. There is no VM and no image.</p></div>
+  <div class="card success"><h4>What it enforces</h4><p>Writes are denied unless a path is listed. Reads are allowed
+    unless a path is listed. Network is denied unless the host is on the allowlist; every connection goes through a
+    proxy that srt runs on localhost.</p></div>
+  <div class="card accent"><h4>For you</h4><p>Change a fragment, run <code>twsrt … generate -w</code>, start the agent
+    with <code>srt -s …</code>. The <code>default</code> profile allows 92 domains and 19 write roots.</p></div>
+</div>
+
+<!-- ============================================================ 1 -->
+<section id="why">
+  <h2><span class="num">1</span>A command started by an agent has your file and network access</h2>
+  <p class="lede">Leaking a secret takes two steps: read it, then send it. srt places a check on each step.</p>
+  <p>Without a sandbox, a command run by Copilot, Claude Code or a local MCP server can read every file your user
+     can read, for example <code>~/.aws/credentials</code>, and connect to any host. Text in a README, an issue or a
+     web page that the agent reads can ask it to do both (prompt injection). srt does not judge the command. It limits
+     what any command in the process tree can reach.</p>
+  <div class="diagram" id="d-why"></div>
+  <p>The srt README calls this the dual isolation model: without file isolation a process can read SSH keys; without
+     network isolation it can send whatever it can read. A sandbox that applies only one of the two does not prevent
+     the leak.</p>
+</section>
+
+<!-- ============================================================ 2 -->
+<section id="vm">
+  <h2><span class="num">2</span>A sandbox filters a process on the host kernel; a VM runs a second kernel</h2>
+  <p class="lede">srt keeps the command on your machine, with your tools and files, and restricts what it may touch.
+     A VM gives the command a separate machine instead.</p>
+  <div class="grid g2" data-zoom="VM isolation compared with srt sandboxing">
+    <div class="card"><h4>Virtual machine</h4>
+      <div class="layers"><div class="stack">
+        <div class="layer"><b>Process</b><div><span class="step">agent command</span></div></div>
+        <div class="layer"><b>Guest OS</b><div><span class="step">own kernel</span><span class="step">own disk</span><span class="step">own toolchain</span></div></div>
+        <div class="layer accent"><b>Boundary</b><div><span class="step">hypervisor, virtual hardware</span></div></div>
+        <div class="layer"><b>Host</b><div><span class="step">host kernel</span><span class="step">your files</span></div></div>
+      </div></div>
+      <p class="muted">The command sees only what is copied or shared into the guest.</p></div>
+    <div class="card"><h4>srt sandbox</h4>
+      <div class="layers"><div class="stack">
+        <div class="layer"><b>Process</b><div><span class="step">agent command, as your user</span></div></div>
+        <div class="layer accent"><b>Boundary</b><div><span class="step">Seatbelt profile (macOS)</span><span class="step">namespaces + seccomp (Linux)</span><span class="step">srt proxy</span></div></div>
+        <div class="layer"><b>Host</b><div><span class="step">host kernel</span><span class="step">your files</span><span class="step">your toolchain</span></div></div>
+      </div></div>
+      <p class="muted">The command sees your real file system, filtered by the policy.</p></div>
+  </div>
+  <h3>What each model gives and costs</h3>
+  <div class="tbl"><table class="rowhead">
+    <tr><th>Aspect</th><th>Virtual machine</th><th>Container (Docker)</th><th>srt sandbox</th></tr>
+    <tr><td>Isolation boundary</td><td>hypervisor; separate guest kernel</td><td>namespaces and cgroups on a shared kernel</td><td>kernel policy on the unchanged host</td></tr>
+    <tr><td>File system the command sees</td><td>guest disk; repo only if shared in</td><td>image; repo only if mounted</td><td>your real home and repo, minus denied paths</td></tr>
+    <tr><td>Toolchain</td><td>installed in the guest</td><td>installed in the image</td><td>the host's (Gradle, uv, Copilot CLI)</td></tr>
+    <tr><td>Start-up</td><td>boots a guest OS</td><td>needs an image</td><td>generates a profile, then execs the command</td></tr>
+    <tr><td>Network control</td><td>virtual NIC, host firewall</td><td>network namespace, bridge</td><td>localhost proxy with a domain allowlist</td></tr>
+    <tr><td>An escape requires</td><td>a hypervisor flaw</td><td>a kernel flaw or a mounted control socket</td><td>a kernel flaw, or a hole the policy opens (chapter 6)</td></tr>
+  </table></div>
+  <p class="muted">This chapter is general background and is not derived from the srt sources. On macOS, Docker Desktop
+     runs containers inside a Linux VM. On Linux, srt uses bubblewrap, which builds on the same namespaces as containers.</p>
+  <div class="callout"><p><b>Consequence:</b> srt and the command share one kernel and one user account. The
+     protection is exactly the policy: anything the settings file allows, the command can do as you.</p></div>
+</section>
+
+<!-- ============================================================ 3 -->
+<section id="arch">
+  <h2><span class="num">3</span>srt generates a kernel profile per command and routes all network traffic through its own proxy</h2>
+  <p class="lede">The kernel checks every file access. Network access is closed except for the localhost ports where
+     srt's proxies listen; the proxies apply the domain lists.</p>
+  <div class="diagram" id="d-arch"></div>
+  <p>The diagram shows macOS. For each command srt writes a Seatbelt profile that starts with
+     <code>(deny default)</code> and adds the allowed operations, then runs the command with
+     <code>/usr/bin/sandbox-exec</code>. The restrictions apply to the whole process tree, so a shell, a Gradle daemon or
+     a sub-agent started by the command is confined too (<a href="#tree">process tree</a> below).</p>
+  <div class="tbl"><table class="rowhead">
+    <tr><th>Mechanism</th><th>macOS</th><th>Linux</th></tr>
+    <tr><td>Sandbox primitive</td><td><code>sandbox-exec</code> with a generated Seatbelt profile</td><td>bubblewrap with bind mounts</td></tr>
+    <tr><td>Network cut-off</td><td>profile allows outbound only to the proxy ports on localhost</td><td><code>--unshare-net</code> removes the network; <code>socat</code> bridges to the proxies over Unix sockets</td></tr>
+    <tr><td>Process tree</td><td>children inherit the profile at fork and exec; <code>process-info</code> and <code>signal</code> only towards <code>same-sandbox</code></td><td>own PID namespace (<code>--unshare-pid</code>) with a fresh <code>/proc</code>; <code>--new-session --die-with-parent</code></td></tr>
+    <tr><td>Path globs</td><td>supported in all four lists</td><td>read-deny globs are expanded at start; glob entries in <code>allowWrite</code>/<code>denyWrite</code> are skipped</td></tr>
+    <tr><td>Unix sockets</td><td>blocked; <code>allowUnixSockets</code> lists allowed paths</td><td>socket creation blocked by seccomp; path list ignored</td></tr>
+    <tr><td>Violation log</td><td><code>log stream --predicate 'process == "sandbox-exec"'</code></td><td>none built in; use <code>strace</code></td></tr>
+  </table></div>
+  <p class="muted">Windows support exists as an alpha with a separate account and firewall filters; it is not used in Cobra.</p>
+
+  <h3>What a sandboxed command sees in its environment</h3>
+  <p>srt points tools at its proxy with environment variables. Observed in a shell running under srt v0.0.83 on macOS
+     (proxy token replaced):</p>
+<pre><code><span class="k">HTTPS_PROXY</span>=<span class="s">http://&lt;token&gt;@localhost:49374</span>         <span class="c"># also HTTP_PROXY, ALL_PROXY and lower-case forms</span>
+<span class="k">JAVA_TOOL_OPTIONS</span>=<span class="s">-javaagent:…srt-proxy-agent.jar</span>  <span class="c"># JVMs ignore *_PROXY; the agent sets proxy properties</span>
+<span class="k">SRT_SSH_PROXY_COMMAND</span>=<span class="s">…</span>                            <span class="c"># GIT_SSH_COMMAND uses it: git over SSH via the proxy</span>
+<span class="k">SANDBOX_RUNTIME</span>=<span class="v">1</span>                                  <span class="c"># marker that the process runs under srt</span></code></pre>
+  <p class="muted">The port changes per run <span class="pill">example</span>. A process that ignores the variables
+     cannot bypass the proxy: the kernel refuses its direct connection.</p>
+
+  <h3 id="tree">Every process started inside the sandbox inherits the profile</h3>
+  <p><code>sandbox-exec</code> applies the profile to its own process and then replaces itself with
+     <code>bash -c &lt;command&gt;</code>. Every process that the shell forks or execs carries the same profile, and the
+     kernel refuses any attempt to replace or widen it. The tree below is an example <span class="pill">example</span>;
+     the rule holds for any command.</p>
+  <div class="diagram" id="d-tree"></div>
+  <p>Observed in a shell running under srt v0.0.83 on macOS:</p>
+  <div class="tbl"><table>
+    <tr><th>Probe</th><th>Result</th></tr>
+    <tr><td><code>cat ~/.aws/credentials</code></td><td>Operation not permitted</td></tr>
+    <tr><td>the same read two shells deeper: <code>bash -c 'sh -c "cat …"'</code></td><td>Operation not permitted</td></tr>
+    <tr><td>double fork plus <code>setsid</code>; the grandchild reads after its parent has exited and runs with ppid 1</td><td>Operation not permitted</td></tr>
+    <tr><td><code>sandbox-exec -p '(version 1)(allow default)' cat …</code>, a nested, open profile</td><td><code>sandbox_apply: Operation not permitted</code></td></tr>
+    <tr><td><code>curl https://github.com</code> with all <code>*_PROXY</code> variables removed</td><td><code>Couldn't connect to server</code> (curl exit 7)</td></tr>
+    <tr><td><code>curl https://github.com</code> with the variables</td><td>200</td></tr>
+  </table></div>
+  <div class="buckets">
+    <div class="bucket success"><h4>Inside the tree <span class="pill success">confined</span></h4>
+      <ul><li>every process forked or exec'd below <code>sandbox-exec</code></li><li>interpreters and daemons: <code>java</code>, <code>python</code>, <code>node</code></li><li>detached processes, also after their parent exits</li></ul>
+      <p>Same file and network rules; signals and process info only within the sandbox.</p></div>
+    <div class="bucket attention"><h4>Outside the tree <span class="pill attention">own rights</span></h4>
+      <ul><li>srt and its proxies</li><li>processes started before or beside srt</li><li>daemons reached over an allowed Unix socket or Mach service, e.g. the Docker daemon in the <code>docker</code> profile</li></ul>
+      <p>A request to such a daemon runs with the daemon's rights. <code>docker.jsonc</code> calls its sockets
+         "equivalent to a sandbox escape".</p></div>
+  </div>
+</section>
+
+<!-- ============================================================ 4 -->
+<section id="request">
+  <h2><span class="num">4</span>The proxy decides on the host name: denylist first, then allowlist</h2>
+  <p class="lede">A connection is forwarded only if no <code>deniedDomains</code> entry matches, an
+     <code>allowedDomains</code> entry matches, and the name does not resolve to a local address.</p>
+  <div class="diagram" id="d-seq"></div>
+  <p>Observed in a sandboxed shell under the Cobra policy:</p>
+<pre><code><span class="c">$ curl -sS -o /dev/null -w '%{http_code}\n' https://github.com</span>
+<span class="v">200</span>
+<span class="c">$ curl -sS -o /dev/null -w '%{http_code}\n' https://example.com      # not on the allowlist</span>
+curl: (56) CONNECT tunnel failed, response <span class="v">403</span>
+<span class="c">$ curl -sS -o /dev/null -w '%{http_code}\n' https://webhook.site     # on the denylist</span>
+curl: (56) CONNECT tunnel failed, response <span class="v">403</span></code></pre>
+  <h3>The rule behind it</h3>
+  <div class="buckets">
+    <div class="bucket"><h4>Matches deniedDomains <span class="pill">403</span></h4>
+      <ul><li>webhook.site</li><li>*.ngrok.io</li><li>pastebin.com</li></ul>
+      <p>Checked first. An allowlist wildcard cannot re-open it.</p></div>
+    <div class="bucket success"><h4>Matches allowedDomains <span class="pill success">forwarded</span></h4>
+      <ul><li>github.com</li><li>*.gradle.org</li><li>pypi.org</li></ul>
+      <p>Then DNS; addresses on loopback, link-local, cloud metadata or this host's own interfaces are dropped.</p></div>
+    <div class="bucket"><h4>Matches neither <span class="pill">403</span></h4>
+      <ul><li>example.com</li><li>any new host</li></ul>
+      <p>Default for network: denied.</p></div>
+  </div>
+  <h3>How a pattern matches</h3>
+  <div class="tbl"><table>
+    <tr><th>Entry</th><th>Matches</th><th>Does not match</th></tr>
+    <tr><td><code>github.com</code></td><td><code>github.com</code>, any port</td><td><code>api.github.com</code></td></tr>
+    <tr><td><code>*.github.com</code></td><td><code>api.github.com</code>, <code>a.b.github.com</code></td><td><code>github.com</code> (the apex)</td></tr>
+    <tr><td><code>api.example.com:443</code></td><td>that host on port 443 only</td><td>the same host on port 22</td></tr>
+  </table></div>
+  <p class="muted">That is why the fragments list both <code>github.com</code> and <code>*.github.com</code>.
+     <code>twsrt doctor --info</code> lists wildcards whose apex is missing.</p>
+  <div class="callout attention"><p><b>Limit:</b> the Cobra policy sets no <code>tlsTerminate</code>, so the proxy
+     sees host and port only, not the request. An allowed host can receive any data: with <code>github.com</code>
+     allowed, a process can push to any repository (srt README, Security Limitations).</p></div>
+</section>
+
+<!-- ============================================================ 5 -->
+<section id="files">
+  <h2><span class="num">5</span>Reads are open unless denied; writes are closed unless allowed</h2>
+  <p class="lede">The two pairs use opposite precedence: <code>allowRead</code> wins over <code>denyRead</code>,
+     <code>denyWrite</code> wins over <code>allowWrite</code>.</p>
+  <div class="grid g2" data-zoom="read and write precedence">
+    <div class="card"><h4>Read</h4>
+      <div class="chain"><span class="step">default: every path readable</span><span class="chev">→</span>
+        <span class="step"><code>denyRead</code> hides a path</span><span class="chev">→</span>
+        <span class="step"><b><code>allowRead</code> re-opens inside it, wins</b></span></div>
+      <p class="muted">Cobra: 22 <code>denyRead</code> entries, no <code>allowRead</code>.</p></div>
+    <div class="card"><h4>Write</h4>
+      <div class="chain"><span class="step">default: nothing writable</span><span class="chev">→</span>
+        <span class="step"><code>allowWrite</code> opens a root</span><span class="chev">→</span>
+        <span class="step"><b><code>denyWrite</code> closes inside it, wins</b></span><span class="chev">→</span>
+        <span class="step">built-in denies, always</span></div>
+      <p class="muted">Cobra: 19 <code>allowWrite</code> roots, 70 <code>denyWrite</code> entries after compile.</p></div>
+  </div>
+
+  <h3>How a path entry is read</h3>
+  <div class="anno" data-zoom="how a path entry is read">
+<pre><code><span class="m0"></span><span class="k">"filesystem"</span>: {
+<span class="m0"></span>  <span class="k">"denyRead"</span>: [
+<span class="m">1</span>    <span class="s">"~/.ssh"</span>, <span class="s">"~/.aws/credentials"</span>, …
+<span class="m0"></span>  ],
+<span class="m0"></span>  <span class="k">"allowWrite"</span>: [
+<span class="m">2</span>    <span class="s">"."</span>, <span class="s">"/tmp"</span>, <span class="s">"~/.gradle"</span>, …
+<span class="m0"></span>  ],
+<span class="m0"></span>  <span class="k">"denyWrite"</span>: [
+<span class="m">3</span>    <span class="s">".git/config"</span>,
+<span class="m">4</span>    <span class="s">"/**/.env"</span>, <span class="s">"/**/id_rsa"</span>,
+<span class="m">5</span>    <span class="s">"**/*.pem"</span>, <span class="s">"**/*.key"</span>
+<span class="m0"></span>  ]
+<span class="m0"></span>}</code></pre>
+    <div class="card legend"><ol>
+      <li><b>denyRead</b>: the command cannot open these paths. <code>~</code> is your home directory. twsrt also
+        copies each entry into <code>denyWrite</code> (chapter 8).</li>
+      <li><b><code>.</code></b> is the directory srt is started in. Started from <code>$HOME</code>, the whole home
+        directory becomes writable.</li>
+      <li><b>Relative entry</b>: only <code>.git/config</code> of the start directory. srt's built-in denies cover
+        <code>.git/config</code> in sub-directories.</li>
+      <li><b>Starts with <code>/</code></b>: <code>/**/.env</code> matches a <code>.env</code> anywhere on disk (macOS).</li>
+      <li><b>Relative glob</b>: <code>**/*.pem</code> matches only beneath the start directory. Observed: writing
+        <code>/tmp/probe.pem</code> succeeds in a sandboxed shell.</li>
+    </ol></div>
+  </div>
+
+  <h3>Built-in write denies</h3>
+  <p>srt adds these to every policy, in the start directory and beneath it, even inside <code>allowWrite</code>.
+     They protect files that other programs execute or trust.</p>
+  <div class="tbl"><table class="rowhead">
+    <tr><th>Kind</th><th>Paths (sandbox-runtime v0.0.83, <code>sandbox-utils.ts</code>)</th></tr>
+    <tr><td>Shell start-up</td><td><code>.bashrc</code> <code>.bash_profile</code> <code>.zshrc</code> <code>.zprofile</code> <code>.profile</code></td></tr>
+    <tr><td>Git</td><td><code>.gitconfig</code> <code>.gitmodules</code> <code>.git/hooks/</code> <code>.git/config</code></td></tr>
+    <tr><td>Tools and IDEs</td><td><code>.ripgreprc</code> <code>.mcp.json</code> <code>.vscode/</code> <code>.idea/</code> <code>.claude/commands/</code> <code>.claude/agents/</code></td></tr>
+  </table></div>
+  <div class="callout attention"><p><b>Caution:</b> relative entries depend on the directory srt starts in. Start
+     agents from the repository root. On Linux, srt skips glob entries in <code>allowWrite</code> and
+     <code>denyWrite</code>; <code>twsrt doctor --info</code> reports 27 such <code>denyWrite</code> entries in the
+     Cobra profiles, which hold on macOS only.</p></div>
+</section>
+
+<!-- ============================================================ 6 -->
+<section id="levels">
+  <h2><span class="num">6</span>Each key opens a defined part of the sandbox</h2>
+  <p class="lede">Sorted by how much they open: keys that keep the default, narrow openings, wide openings, and
+     openings that give a route out of the sandbox.</p>
+  <div class="buckets" style="grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr))">
+    <div class="bucket success"><h4>Closed <span class="pill success">default kept</span></h4>
+      <ul><li>deniedDomains (20)</li><li>denyRead (22)</li><li>enableWeakerNestedSandbox: false</li><li>allowAppleEvents: unset</li></ul>
+      <p>Add restrictions or keep srt's default.</p></div>
+    <div class="bucket"><h4>Narrow <span class="pill">named items</span></h4>
+      <ul><li>allowPty: true</li><li>allowMachLookup (4)</li><li>ignoreViolations</li></ul>
+      <p>Open named services or change reporting only.</p></div>
+    <div class="bucket attention"><h4>Wide <span class="pill attention">many targets</span></h4>
+      <ul><li>allowedDomains (92)</li><li>allowWrite (19)</li><li>allowLocalBinding: true</li><li>enableWeakerNetworkIsolation: true</li></ul>
+      <p>Each entry is a place data can go to or code can be written to.</p></div>
+    <div class="bucket danger"><h4>Route out <span class="pill danger">escape</span></h4>
+      <ul><li>allowUnixSockets: /private/tmp</li><li>docker.sock (docker profile)</li></ul>
+      <p>A socket to a process that runs outside the sandbox lets the command act through it.</p></div>
+  </div>
+
+  <h3>All keys in the compiled <code>default</code> profile</h3>
+  <div class="tbl"><table class="rowhead">
+    <tr><th>Key</th><th>srt default</th><th>Cobra value</th><th>What it opens</th></tr>
+    <tr><td>network.allowedDomains</td><td class="old">empty: no network</td><td>92 (82 base + 10 bmw)</td>
+      <td>Outbound connections to these hosts. <code>*.amazonaws.com</code> includes other AWS tenants (base.jsonc comment).</td></tr>
+    <tr><td>network.deniedDomains</td><td class="old">empty</td><td>20 paste, webhook and tunnel hosts</td>
+      <td>Nothing; checked before the allowlist.</td></tr>
+    <tr><td>network.allowUnixSockets</td><td class="old">all blocked</td><td><code>/tmp</code>, <code>/private/tmp</code>, <code>/var/folders</code>, <code>/private/var/run/mDNSResponder</code></td>
+      <td>Every socket in the temp directories, including tmux and nvim servers that run unsandboxed (base.jsonc
+        comment); the JVM attach socket that Mockito needs; DNS for web fetch.</td></tr>
+    <tr><td>network.allowLocalBinding</td><td class="old">false</td><td>true</td>
+      <td>Bind any local port and connect to any localhost port: every local service becomes reachable.</td></tr>
+    <tr><td>network.allowMachLookup</td><td class="old">none</td><td>configd, FSEvents, pasteboard, <code>org.chromium.*</code></td>
+      <td>Named macOS XPC services, including clipboard access. The base.jsonc comment notes that
+        <code>org.chromium.*</code> does not work yet.</td></tr>
+    <tr><td>enableWeakerNetworkIsolation</td><td class="old">false</td><td>true</td>
+      <td>Access to <code>com.apple.trustd.agent</code> for TLS verification by Go tools; the srt README lists it as a
+        possible exfiltration channel.</td></tr>
+    <tr><td>allowPty</td><td class="old">false</td><td>true</td><td>Pseudo-terminals for editors and TUIs (macOS).</td></tr>
+    <tr><td>enableWeakerNestedSandbox</td><td class="old">false</td><td>false</td><td>Nothing; Linux-in-Docker mode.</td></tr>
+    <tr><td>allowAppleEvents</td><td class="old">false</td><td>not set</td><td>Nothing. If set, the command could start apps outside the sandbox.</td></tr>
+    <tr><td>ignoreViolations</td><td class="old">none</td><td>3 command patterns</td><td>Nothing; suppresses violation reports only.</td></tr>
+    <tr><td>enabled</td><td class="old">not an srt key</td><td>true</td><td>Nothing in srt, which drops unknown keys. twsrt passes it to Claude Code as <code>sandbox.enabled</code>.</td></tr>
+  </table></div>
+  <div class="callout danger"><p><b>Escape route:</b> the <code>docker</code> profile adds
+     <code>/var/run/docker.sock</code> and <code>~/.docker/run/docker.sock</code>. A command that can talk to the Docker
+     daemon can start a container that mounts your home directory. docker.jsonc describes this as equivalent to a
+     sandbox escape; select the profile only for sessions that run Testcontainers or Docker builds.</p></div>
+</section>
+
+<!-- ============================================================ 7 -->
+<section id="fragments">
+  <h2><span class="num">7</span>A profile selects fragments; twsrt unions them into one settings file</h2>
+  <p class="lede">Fragments are split by audience, so the generic part can be shared while employer and personal
+     additions stay in their own files.</p>
+  <div class="fanin" data-zoom="fragments compile into srt-settings.json">
+    <div class="sources">
+      <div class="src"><div class="t">base.jsonc</div><div class="d">Generic macOS policy, safe to share. 82 domains,
+        20 denied, 19 write roots, every scalar switch.</div></div>
+      <div class="src"><div class="t">bmw.jsonc</div><div class="d">+10 BMW hosts (GHE, LOS services, AWS MCP).</div></div>
+      <div class="src"><div class="t">personal.jsonc</div><div class="d">Own repos and notes; never shared. Empty lists today.</div></div>
+      <div class="src"><div class="t">docker.jsonc</div><div class="d">+2 daemon sockets, +3 registry domains.</div></div>
+    </div>
+    <div class="arrows"><span class="lbl">compile</span>
+      <svg viewBox="0 0 70 240" preserveAspectRatio="none" aria-hidden="true">
+        <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="#818b98"/></marker></defs>
+        <g fill="none" stroke="#818b98" stroke-width="1.5" marker-end="url(#ah)">
+          <path d="M0,30 C40,30 30,120 68,120"/><path d="M0,90 C40,90 30,120 68,120"/>
+          <path d="M0,150 C40,150 30,120 68,120"/><path d="M0,210 C40,210 30,120 68,120"/>
+        </g>
+      </svg>
+    </div>
+    <div class="sink"><b>srt-settings.json</b>
+      <p class="muted">Strict JSON, written next to <code>config.toml</code>. This is the file <code>srt -s</code> reads.</p></div>
+  </div>
+
+  <h3>Profiles in <code>config.toml</code></h3>
+  <div class="anno">
+<pre><code><span class="m">1</span><span class="k">default_profile</span> = <span class="s">"default"</span>
+<span class="m0"></span>
+<span class="m0"></span>[<span class="k">sources.srt.fragments.base</span>]
+<span class="m">2</span><span class="k">path</span> = <span class="s">"srt/base.jsonc"</span>
+<span class="m0"></span><span class="c"># … bmw, docker, personal</span>
+<span class="m0"></span>
+<span class="m">3</span>[<span class="k">profiles.shared</span>]
+<span class="m0"></span><span class="k">srt</span> = [<span class="s">"base"</span>]
+<span class="m0"></span>
+<span class="m">4</span>[<span class="k">profiles.default</span>]
+<span class="m0"></span><span class="k">extends</span> = [<span class="s">"shared"</span>]
+<span class="m0"></span><span class="k">srt</span> = [<span class="s">"bmw"</span>, <span class="s">"personal"</span>]
+<span class="m0"></span>
+<span class="m">5</span>[<span class="k">profiles.docker</span>]
+<span class="m0"></span><span class="k">extends</span> = [<span class="s">"default"</span>]
+<span class="m0"></span><span class="k">srt</span> = [<span class="s">"docker"</span>]</code></pre>
+    <div class="card legend"><ol>
+      <li><b>default_profile</b>: used when <code>--profile</code> is omitted.</li>
+      <li><b>Fragment registry</b>: a name and a <code>.jsonc</code> path, relative to <code>config.toml</code>. No
+        <code>output</code> key is set, so the result goes to <code>srt-settings.json</code> in the same directory.</li>
+      <li><b>shared</b>: base only; the policy you can hand to another team.</li>
+      <li><b>default</b>: <code>extends</code> resolves the parent first, then adds this profile's fragments.</li>
+      <li><b>docker</b>: everything in default plus the Docker sockets (chapter 6).</li>
+    </ol></div>
+  </div>
+
+  <h3>What each profile contains after compile</h3>
+  <div class="matrix-wrap" data-zoom="what each profile contains after compile"><div class="matrix" style="--cols: 3">
+    <span></span><span class="h">shared</span><span class="h">default</span><span class="h">docker</span>
+    <span class="rl">base.jsonc</span>
+    <div class="c success">selected</div><div class="c success">selected<small>via shared</small></div><div class="c success">selected<small>via default</small></div>
+    <span class="rl">bmw.jsonc</span>
+    <div class="c">not selected</div><div class="c success">selected</div><div class="c success">selected<small>via default</small></div>
+    <span class="rl">personal.jsonc</span>
+    <div class="c">not selected</div><div class="c success">selected<small>empty lists</small></div><div class="c success">selected<small>via default</small></div>
+    <span class="rl">docker.jsonc</span>
+    <div class="c">not selected</div><div class="c">not selected</div><div class="c danger">selected<small>daemon sockets</small></div>
+    <div class="sep">compiled <code>srt-settings.json</code>: entries per key</div>
+    <span class="rl">allowedDomains</span>
+    <div class="c">82</div><div class="c">92</div><div class="c">95</div>
+    <span class="rl">allowUnixSockets</span>
+    <div class="c">4</div><div class="c">4</div><div class="c danger">6<small>incl. docker.sock</small></div>
+    <span class="rl">denyWrite</span>
+    <div class="c">70</div><div class="c">70</div><div class="c">70</div>
+  </div></div>
+  <p class="muted">Counts from <code>twsrt -c tools/sandbox/srt/twsrt/config.toml show -p &lt;profile&gt;</code>.</p>
+</section>
+
+<!-- ============================================================ 8 -->
+<section id="compile">
+  <h2><span class="num">8</span>Fragments can only add: lists are unioned, conflicting values stop the compile</h2>
+  <p class="lede">twsrt fails rather than let one fragment change a value another fragment set.</p>
+  <div class="pipe">
+    <div class="stage"><div class="n">1</div><div><h4>Resolve the profile</h4>
+      <p>Walk <code>extends</code> depth-first, parents first. A fragment named twice is used once.</p></div>
+      <div class="side"><span class="pill">config.toml</span></div></div>
+    <div class="stage"><div class="n">2</div><div><h4>Load and validate each fragment</h4>
+      <p>Strip JSONC comments. The path and domain lists must be lists of strings; <code>enabled</code> must be a boolean.</p></div>
+      <div class="side"><span class="pill">*.jsonc</span></div></div>
+    <div class="stage"><div class="n">3</div><div><h4>Reject contradicting lists</h4>
+      <p>A value in <code>allowedDomains</code> of one fragment and <code>deniedDomains</code> of another fails, as
+        does a path in both <code>allowWrite</code> and <code>denyWrite</code>.</p></div>
+      <div class="side"><span class="pill attention">can fail</span></div></div>
+    <div class="stage"><div class="n">4</div><div><h4>Union</h4>
+      <p>Objects merge key by key. Lists gain the items they lack. Equal scalars pass; unequal scalars or different
+        types fail.</p></div>
+      <div class="side"><span class="pill attention">can fail</span></div></div>
+    <div class="stage"><div class="n">5</div><div><h4>Sort</h4>
+      <p>Path lists, domain lists, <code>allowUnixSockets</code> and <code>ignoreViolations</code> are sorted, so the
+        output does not depend on fragment order and diffs stay small.</p></div>
+      <div class="side"><span class="pill">stable output</span></div></div>
+    <div class="stage"><div class="n">6</div><div><h4>Add implied write denies</h4>
+      <p>Every <code>denyRead</code> entry, <code>config.toml</code>, each fragment and the output file go into
+        <code>denyWrite</code>. A path in both <code>denyRead</code> and <code>allowWrite</code> fails.</p></div>
+      <div class="side"><span class="pill success">self-protection</span></div></div>
+    <div class="stage"><div class="n">7</div><div><h4>Write</h4>
+      <p><code>generate -w</code> writes strict JSON to <code>tools/sandbox/srt/twsrt/srt-settings.json</code>. Every
+        profile writes to this same file.</p></div>
+      <div class="side"><span class="pill">git-ignored</span></div></div>
+  </div>
+  <p>Step 6 exists because srt turns <code>denyRead</code> into a read deny only: inside a writable root, a file the
+     command cannot read could still be overwritten. In the Cobra profiles the 70 <code>denyWrite</code> entries are
+     42 from base.jsonc, 22 implied by <code>denyRead</code> and 6 policy files.</p>
+
+  <h3>The rule by value type</h3>
+  <div class="buckets">
+    <div class="bucket success"><h4>List <span class="pill success">union</span></h4>
+      <ul><li>allowedDomains</li><li>denyWrite</li><li>allowMachLookup</li></ul>
+      <p>Items from all fragments, without duplicates. A fragment cannot remove an item.</p></div>
+    <div class="bucket"><h4>Object <span class="pill">recurse</span></h4>
+      <ul><li>network</li><li>filesystem</li><li>ignoreViolations</li></ul>
+      <p>Keys merge one by one; the rule applies again to each value.</p></div>
+    <div class="bucket attention"><h4>Scalar <span class="pill attention">must agree</span></h4>
+      <ul><li>allowPty</li><li>allowLocalBinding</li><li>enableWeaker…</li></ul>
+      <p>The same value in two fragments passes. A different value fails. Set scalars in base.jsonc only.</p></div>
+  </div>
+
+  <h3>Error messages</h3>
+  <p>Output of twsrt 4.0.0 on a scratch configuration with deliberately conflicting fragments
+     <span class="pill">example</span>:</p>
+<pre><code><span class="c"># scalar.jsonc sets "allowPty": false, base.jsonc sets true</span>
+Error: profile 'a' source 'srt' conflict at /allowPty: srt/base.jsonc and srt/scalar.jsonc contain unequal values
+<span class="c"># cross.jsonc denies a domain that base.jsonc allows</span>
+Error: profile 'b' source 'srt': 'github.com' appears in network.allowedDomains (srt/base.jsonc) and network.deniedDomains (srt/cross.jsonc)
+<span class="c"># rw.jsonc hides ~/x and also makes it writable</span>
+Error: profile 'c': ~/x is in both filesystem.denyRead and filesystem.allowWrite; denyRead implies denyWrite, so a write-only path cannot be expressed</code></pre>
+</section>
+
+<!-- ============================================================ 9 -->
+<section id="cheat">
+  <h2><span class="num">9</span>Cheat sheet</h2>
+  <p class="lede">Commands for daily use, run from the repository root.</p>
+  <div class="callout attention"><p><b>State today:</b> the checked-in <code>srt-settings.base.json</code>, used in the
+     README's Operations section, is older than the fragments. Compared with
+     <code>twsrt show -p default</code> it lacks <code>/private/var/run/mDNSResponder</code> in
+     <code>allowUnixSockets</code> and 7 <code>denyWrite</code> entries (<code>~/sandbox.read.test</code> and the 6
+     policy files). Generate the file instead.</p>
+    <p><b>Settings path:</b> <code>srt</code> without <code>-s</code> reads <code>~/.srt-settings.json</code>.
+     This <code>config.toml</code> writes <code>tools/sandbox/srt/twsrt/srt-settings.json</code>, so pass
+     <code>-s</code> explicitly.</p></div>
+
+  <h3>Build and inspect the policy</h3>
+<pre><code><span class="c"># compile the default profile → tools/sandbox/srt/twsrt/srt-settings.json</span>
+twsrt -c tools/sandbox/srt/twsrt/config.toml generate -w
+<span class="c"># compile with Docker access (overwrites the same file; regenerate default afterwards)</span>
+twsrt -c tools/sandbox/srt/twsrt/config.toml generate -w --profile docker
+
+<span class="c"># print the compiled JSON without writing</span>
+twsrt -c tools/sandbox/srt/twsrt/config.toml show -p default
+<span class="c"># list profiles and the fragments they resolve to</span>
+twsrt -c tools/sandbox/srt/twsrt/config.toml profiles
+<span class="c"># check fragments for conflicts, redundant rules and glob traps</span>
+twsrt -c tools/sandbox/srt/twsrt/config.toml doctor --info
+<span class="c"># edit fragments or config.toml in $EDITOR</span>
+twsrt -c tools/sandbox/srt/twsrt/config.toml edit
+twsrt -c tools/sandbox/srt/twsrt/config.toml config</code></pre>
+
+  <h3>Run and check</h3>
+<pre><code><span class="c"># start an agent in the sandbox (from the repo root: "." becomes writable)</span>
+srt -s tools/sandbox/srt/twsrt/srt-settings.json -c "copilot"
+
+<span class="c"># is a host allowed? 403 = blocked by the proxy</span>
+srt -s tools/sandbox/srt/twsrt/srt-settings.json -c "curl -sS -o /dev/null -w '%{http_code}\n' https://example.com"
+<span class="c"># is a file readable? "Operation not permitted" = denied</span>
+srt -s tools/sandbox/srt/twsrt/srt-settings.json -c "cat ~/.aws/credentials"
+
+<span class="c"># probe every rule of the effective settings</span>
+twsrt -c tools/sandbox/srt/twsrt/config.toml test
+<span class="c"># see what was blocked (macOS), or run srt with debug output</span>
+log stream --predicate 'process == "sandbox-exec"' --style syslog
+srt -d -s tools/sandbox/srt/twsrt/srt-settings.json -c "&lt;command&gt;"</code></pre>
+
+  <h3>Symptoms and causes</h3>
+  <div class="tbl"><table class="rowhead">
+    <tr><th>Symptom</th><th>Cause</th><th>Action</th></tr>
+    <tr><td><code>CONNECT tunnel failed, response 403</code></td><td>host not on the allowlist, or on the denylist</td><td>add it to the fitting fragment (base, bmw or personal) and regenerate</td></tr>
+    <tr><td><code>Operation not permitted</code> on a file</td><td>path in <code>denyRead</code>, outside <code>allowWrite</code>, or a built-in deny</td><td>check the start directory first; relative entries depend on it</td></tr>
+    <tr><td>Testcontainers cannot reach Docker</td><td>daemon socket not allowed</td><td>use the <code>docker</code> profile for that session</td></tr>
+    <tr><td><code>sandbox_apply: Operation not permitted</code></td><td>srt started inside another srt sandbox; nesting is refused</td><td>run srt from an unsandboxed shell</td></tr>
+  </table></div>
+</section>
+
+<footer>Sources: <code>tools/sandbox/srt/README.md</code>, <code>tools/sandbox/srt/srt-settings.base.json</code>,
+  <code>tools/sandbox/srt/twsrt/config.toml</code>, <code>tools/sandbox/srt/twsrt/srt/{base,bmw,docker,personal}.jsonc</code>
+  in cobra-guidelines at <code>27fb695</code>;
+  <a href="https://github.com/anthropics/sandbox-runtime">anthropics/sandbox-runtime</a> v0.0.83 (<code>0bbebed</code>):
+  <code>README.md</code>, <code>src/sandbox/{sandbox-config,sandbox-utils,macos-sandbox-utils,sandbox-manager,domain-pattern,linux-sandbox-utils}.ts</code>;
+  twsrt v4.0.0 (<code>72ab6e9</code>): <code>src/twsrt/lib/{profiles,composition,sources,config}.py</code>;
+  compiled output of <code>twsrt show</code> for all three profiles.</footer>
+</main>
+</div>
+
+<script>
+const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+
+// Arrowheads, one per meaning colour. Ids carry the diagram's id so several diagrams can share a page.
+// userSpaceOnUse keeps heads at 10 px whatever the stroke width; the default (strokeWidth) balloons them on strong edges.
+function markers(p) {
+  const c = { neutral: '#818b98', accent: '#0969da', success: '#1a7f37', danger: '#d1242f', attention: '#9a6700' };
+  return '<defs>' + Object.entries(c).map(([k, v]) =>
+    `<marker id="${p}-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto">` +
+    `<path d="M0,0 L10,5 L0,10 z" fill="${v}"/></marker>`).join('') + '</defs>';
+}
+
+// Boxes on a grid plus labelled arrows: architecture, network paths, data flow, dependencies, state machines.
+// spec = { title, cols, rows, cellW?, cellH?, boxW?,
+//   nodes:  [{id, label, sub?, lines?: [...], w?, col, row, kind?: accent|success|danger|attention|muted,
+//             shape?: 'state'|'start'}],     // col/row may be fractional (2.5 = between cells)
+//   edges:  [{from, to, label?, kind?, dashed?, strong?, bend?, route?: 'hv'|'vh'}],
+//   groups: [{label, cols: [first, last], rows: [first, last], pad?}],   // dashed boundary: account, VPC, cluster
+//   legend: [{text, kind?, dashed?, strong?}] }                          // one entry per edge meaning, drawn on top
+// lines: extra fact rows (port, protocol, role); the box grows and the text goes left-aligned. `x` in a line is mono.
+// w: per-node box width. Groups are drawn in array order: list the outer one first and give the inner one pad: 14.
+// from === to draws a self-loop above the box. bend (px) curves an edge sideways; give A→B and B→A the same bend.
+// route 'hv' runs horizontal first, then vertical into the target ('vh' the other way): right-angle edges for
+// network paths. Attachment is at box centres.
+// ponytail: no automatic routing around boxes and no per-edge attachment offsets. Place nodes (fractional cells
+// are fine) so no edge crosses a box; if two edges must enter one side, give the nodes different rows or columns.
+function boxDiagram(el, spec) {
+  const CW = spec.cellW || 220, CH = spec.cellH || 110, BW = spec.boxW || 150, BH = 52, LH = 16, p = el.id || 'd';
+  const at = {};
+  for (const n of spec.nodes) {
+    const h = n.lines ? 32 + (n.sub ? LH : 0) + n.lines.length * LH : BH;
+    at[n.id] = { x: n.col * CW + CW / 2, y: n.row * CH + CH / 2, w: n.w || BW, h, n };
+  }
+  // Where the line from a's centre towards (tx, ty) leaves a's box
+  const exit = (a, tx, ty) => {
+    const r = a.n.shape === 'start' ? 10 : 0, hw = r || a.w / 2 + 3, hh = r || a.h / 2 + 3;
+    const dx = tx - a.x, dy = ty - a.y;
+    const t = Math.min(dx ? hw / Math.abs(dx) : Infinity, dy ? hh / Math.abs(dy) : Infinity);
+    return [a.x + dx * t, a.y + dy * t];
+  };
+  const ecls = e => `e ${e.kind || ''}${e.dashed ? ' dashed' : ''}${e.strong ? ' strong' : ''}`;
+  const mono = s => esc(s).replace(/`([^`]+)`/g, '<tspan class="mono">$1</tspan>');
+  let back = '', lines = '', boxes = '', labels = '', top = 0;
+  for (const gr of spec.groups || []) {
+    const pd = gr.pad || 0, x = gr.cols[0] * CW + 6 + pd, y = gr.rows[0] * CH + 4 + pd;
+    const w = (gr.cols[1] - gr.cols[0] + 1) * CW - 12 - 2 * pd, h = (gr.rows[1] - gr.rows[0] + 1) * CH - 8 - 2 * pd;
+    back += `<g class="grp"><rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8"/><text x="${x + 10}" y="${y + 16}">${mono(gr.label)}</text></g>`;
+  }
+  for (const e of spec.edges) {
+    const a = at[e.from], b = at[e.to], mk = `marker-end="url(#${p}-${e.kind || 'neutral'})"`;
+    let d, lx, ly, anchor = 'middle';
+    if (a === b) {
+      const y = a.y - a.h / 2;
+      d = `M${a.x - 18},${y} C${a.x - 44},${y - 48} ${a.x + 44},${y - 48} ${a.x + 18},${y}`;
+      lx = a.x; ly = y - 42; top = Math.min(top, y - 54);
+    } else if (e.route) {
+      // Right angle: leave a on the side facing the corner, enter b on the side facing the corner
+      const hv = e.route === 'hv', cx = hv ? b.x : a.x, cy = hv ? a.y : b.y;
+      const s = hv ? [a.x + Math.sign(b.x - a.x) * (a.w / 2 + 3), a.y] : [a.x, a.y + Math.sign(b.y - a.y) * (a.h / 2 + 3)];
+      const t = hv ? [b.x, b.y - Math.sign(b.y - a.y) * (b.h / 2 + 3)] : [b.x - Math.sign(b.x - a.x) * (b.w / 2 + 3), b.y];
+      d = `M${s} L${cx},${cy} L${t}`;
+      // Label the longer leg: above a horizontal leg, beside a vertical one
+      const [p1, p2] = Math.hypot(cx - s[0], cy - s[1]) >= Math.hypot(t[0] - cx, t[1] - cy) ? [s, [cx, cy]] : [[cx, cy], t];
+      if (p1[1] === p2[1]) { lx = (p1[0] + p2[0]) / 2; ly = p1[1] - 6; }
+      else { lx = p1[0] + 6; ly = (p1[1] + p2[1]) / 2 + 4; anchor = 'start'; }
+    } else {
+      const len = Math.hypot(b.x - a.x, b.y - a.y), k = (e.bend || 0) / len;
+      const qx = (a.x + b.x) / 2 + (b.y - a.y) * k, qy = (a.y + b.y) / 2 - (b.x - a.x) * k;
+      const [sx, sy] = exit(a, qx, qy), [ex, ey] = exit(b, qx, qy);
+      d = `M${sx},${sy} Q${qx},${qy} ${ex},${ey}`;
+      lx = (sx + 2 * qx + ex) / 4; ly = (sy + 2 * qy + ey) / 4 - 5;
+    }
+    lines += `<path class="${ecls(e)}" d="${d}" ${mk}/>`;
+    if (e.label) labels += `<text class="el" x="${lx}" y="${ly}" text-anchor="${anchor}">${mono(e.label)}</text>`;
+  }
+  for (const { x, y, w, h, n } of Object.values(at)) {
+    if (n.shape === 'start') { boxes += `<g class="n start"><circle cx="${x}" cy="${y}" r="8"/></g>`; continue; }
+    const rx = n.shape === 'state' ? BH / 2 : 6;
+    let txt;
+    if (n.lines) {
+      const x0 = x - w / 2 + 12, rows = [['', n.label], ...(n.sub ? [[' class="sub"', n.sub]] : []), ...n.lines.map(l => [' class="ln"', l])];
+      txt = rows.map(([c, s], i) => `<text${c} x="${x0}" y="${y - h / 2 + 21 + i * LH}">${mono(s)}</text>`).join('');
+    } else {
+      const t = (dy, cls, s) => `<text${cls} x="${x}" y="${y + dy}" text-anchor="middle">${mono(s)}</text>`;
+      txt = n.sub ? t(-3, '', n.label) + t(13, ' class="sub"', n.sub) : t(5, '', n.label);
+    }
+    boxes += `<g class="n ${n.kind || ''}"><rect x="${x - w / 2}" y="${y - h / 2}" width="${w}" height="${h}" rx="${rx}"/>${txt}</g>`;
+  }
+  let legend = '';
+  if (spec.legend) {
+    const ly = top - 18;
+    let lx = 12;
+    for (const l of spec.legend) {
+      legend += `<line class="${ecls(l)}" x1="${lx}" x2="${lx + 32}" y1="${ly}" y2="${ly}"/><text class="lg" x="${lx + 40}" y="${ly + 4}">${esc(l.text)}</text>`;
+      lx += 64 + l.text.length * 6.5;
+    }
+    top = ly - 18;
+  }
+  const W = spec.cols * CW, H = spec.rows * CH - top;
+  el.innerHTML = `<svg viewBox="0 ${top} ${W} ${H}" style="min-width:${Math.round(W * 0.7)}px" role="img" aria-label="${esc(spec.title || '')}">` +
+                 markers(p) + back + lines + boxes + labels + legend + '</svg>';
+}
+
+// Sequence diagram. spec = { title, actors: [names], msgs: [...] } where a message is
+// {from, to, label, reply?, kind?}  (reply = dashed; from === to = a call to itself)  or  {note, over: [actor, ...]}.
+// ponytail: no activation bars and no alt/loop frames; use a note for those.
+function sequence(el, spec) {
+  const CW = spec.colW || 180, RH = 44, TOP = 64, A = spec.actors, p = el.id || 's', x = {};
+  A.forEach((a, i) => x[a] = i * CW + CW / 2);
+  const W = A.length * CW, H = TOP + spec.msgs.length * RH;
+  let g = markers(p);
+  for (const a of A)
+    g += `<line class="life" x1="${x[a]}" x2="${x[a]}" y1="40" y2="${H - 4}"/>` +
+         `<g class="n"><rect x="${x[a] - CW / 2 + 12}" y="4" width="${CW - 24}" height="36" rx="6"/>` +
+         `<text x="${x[a]}" y="27" text-anchor="middle">${esc(a)}</text></g>`;
+  spec.msgs.forEach((m, i) => {
+    const y = TOP + i * RH + 12;
+    if (m.note) {
+      const xs = (m.over || [A[0]]).map(a => x[a]), l = Math.min(...xs) - CW / 2 + 20, r = Math.max(...xs) + CW / 2 - 20;
+      g += `<g class="note"><rect x="${l}" y="${y - 14}" width="${r - l}" height="24" rx="4"/>` +
+           `<text x="${(l + r) / 2}" y="${y + 2}" text-anchor="middle">${esc(m.note)}</text></g>`;
+      return;
+    }
+    const cls = `e ${m.kind || ''}${m.reply ? ' dashed' : ''}`, mk = `marker-end="url(#${p}-${m.kind || 'neutral'})"`;
+    const a = x[m.from], b = x[m.to];
+    if (a === b)
+      g += `<path class="${cls}" d="M${a},${y - 8} h28 v16 h-26" ${mk}/><text class="el" x="${a + 34}" y="${y + 4}">${esc(m.label)}</text>`;
+    else
+      g += `<path class="${cls}" d="M${a},${y} L${b - Math.sign(b - a) * 2},${y}" ${mk}/>` +
+           `<text class="el" x="${(a + b) / 2}" y="${y - 6}" text-anchor="middle">${esc(m.label)}</text>`;
+  });
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="min-width:${Math.round(W * 0.7)}px" role="img" aria-label="${esc(spec.title || '')}">${g}</svg>`;
+}
+
+// Full-screen view. Click or Enter opens a copy in one shared <dialog>; Esc or a click closes it.
+// - svg mode, for every `.diagram` / `.chart`: only the <svg> is copied; its viewBox scales it to the window.
+// - HTML mode, opt-in: an element marked `data-zoom` is copied whole and scaled with CSS zoom. Put data-zoom on
+//   the element that holds everything read together (both cards of a before/after pair, a figure and its legend),
+//   so a click on any part opens the whole group. Use it only where zooming gains readability: wide or small
+//   content. Text already at reading size gains nothing, and the zoom-in cursor would promise a gain that isn't there.
+// Call it last, after every helper has drawn. Copies repeat the original's marker ids, harmless while identical.
+// ponytail: no zoom or pan inside the overlay; pinch-zoom on phones covers it. Upgrade path: wheel/drag on viewBox.
+function zoomable(svgSelector = '.diagram, .chart') {
+  const dlg = document.body.appendChild(document.createElement('dialog'));
+  dlg.className = 'zoom';
+  dlg.addEventListener('click', () => dlg.close());
+  const groups = [...document.querySelectorAll('[data-zoom]')];
+  const boxes = [...document.querySelectorAll(svgSelector)].filter(b => !b.closest('[data-zoom]')).concat(groups);
+  for (const box of boxes) {
+    const html = box.hasAttribute('data-zoom'), svg = box.querySelector('svg');
+    if (!html && !svg) continue;
+    box.tabIndex = 0;
+    box.setAttribute('role', 'button');
+    const what = box.getAttribute('data-zoom') || (svg && svg.getAttribute('aria-label')) || 'illustration';
+    box.setAttribute('aria-label', `Show full screen: ${what}`);
+    const open = () => {
+      if (!html) { dlg.replaceChildren(svg.cloneNode(true)); dlg.showModal(); return; }
+      // The copy keeps the width it has on the page, so it lays out the same; the wrapper carries the parent's
+      // classes (minus grid layout) so rules like `.spark .card` still match.
+      const wrap = document.createElement('div');
+      wrap.className = 'zoom-html ' + [...box.parentElement.classList].filter(c => !/^(grid|g\d)$/.test(c)).join(' ');
+      const copy = box.cloneNode(true);
+      for (const a of ['tabindex', 'role', 'aria-label', 'data-zoom', 'id']) copy.removeAttribute(a);
+      copy.style.width = `${box.offsetWidth}px`;
+      wrap.appendChild(copy);
+      dlg.replaceChildren(wrap);
+      dlg.showModal();
+      // Between 1x and 2.5x: small groups don't balloon, tall ones scroll instead of shrinking under page size.
+      const fit = Math.min((dlg.clientWidth - 32) / copy.offsetWidth, (dlg.clientHeight - 32) / copy.offsetHeight);
+      wrap.style.zoom = Math.max(1, Math.min(fit, 2.5));
+    };
+    box.addEventListener('click', open);
+    box.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); open(); } });
+  }
+}
+
+
+boxDiagram(document.getElementById('d-why'), {
+  title: 'srt stops a leak at the read and at the send', cols: 4, rows: 2, cellW: 220,
+  legend: [
+    { text: 'attempt by the command' },
+    { text: 'refused', kind: 'danger', dashed: true },
+  ],
+  nodes: [
+    { id: 'cmd', label: 'agent command', sub: 'runs as your user', kind: 'accent', col: 0, row: 0.5 },
+    { id: 'kern', label: 'kernel check', sub: 'denyRead', col: 1.5, row: 0 },
+    { id: 'prox', label: 'srt proxy', sub: 'domain lists', col: 1.5, row: 1 },
+    { id: 'sec', label: '~/.aws/credentials', sub: 'secret file', kind: 'muted', w: 170, col: 3, row: 0 },
+    { id: 'ext', label: 'webhook.site', sub: 'external host', kind: 'muted', w: 170, col: 3, row: 1 },
+  ],
+  edges: [
+    { from: 'cmd', to: 'kern', label: '1 read' },
+    { from: 'kern', to: 'sec', label: 'Operation not permitted', kind: 'danger', dashed: true },
+    { from: 'cmd', to: 'prox', label: '2 send' },
+    { from: 'prox', to: 'ext', label: '403 Forbidden', kind: 'danger', dashed: true },
+  ],
+});
+
+boxDiagram(document.getElementById('d-arch'), {
+  title: 'srt confines the command with a Seatbelt profile and routes its network traffic through localhost proxies',
+  cols: 5.4, rows: 3.45, cellW: 180, cellH: 110,
+  legend: [
+    { text: 'set-up by srt', dashed: true },
+    { text: 'traffic via proxy', kind: 'accent', strong: true },
+    { text: 'forwarded', kind: 'success' },
+    { text: 'refused', kind: 'danger', dashed: true },
+  ],
+  groups: [{ label: 'your Mac · one kernel · one user account', cols: [0, 3.35], rows: [0, 2.4] }],
+  nodes: [
+    { id: 'srt', label: 'srt', sub: 'starts proxies, then command', w: 170, col: 0, row: 0.15 },
+    { id: 'prof', label: 'Seatbelt profile', sub: 'applied by sandbox-exec', w: 170, col: 1.4, row: 0.15 },
+    { id: 'cmd', label: 'command', sub: 'and every child process', kind: 'accent', w: 170, col: 1.4, row: 1.2 },
+    { id: 'fs', label: 'file system', w: 230, col: 1.4, row: 2.4,
+      lines: ['read: all, minus `denyRead`', 'write: `allowWrite`, minus `denyWrite`'] },
+    { id: 'prox', label: 'srt proxies', sub: 'HTTP + SOCKS5 on localhost', w: 170, col: 2.9, row: 1.2 },
+    { id: 'net', label: 'allowed hosts', sub: 'github.com, …', kind: 'muted', col: 4.4, row: 1.2 },
+  ],
+  edges: [
+    { from: 'srt', to: 'prof', label: 'generates', dashed: true },
+    { from: 'prof', to: 'cmd', dashed: true },
+    { from: 'srt', to: 'prox', dashed: true },
+    { from: 'cmd', to: 'fs', label: 'kernel checks each access' },
+    { from: 'cmd', to: 'prox', label: '*_PROXY', kind: 'accent', strong: true },
+    { from: 'prox', to: 'net', label: 'allowlisted', kind: 'success' },
+    { from: 'cmd', to: 'net', label: 'direct connection: denied by the profile', kind: 'danger', dashed: true, bend: -150 },
+  ],
+});
+
+boxDiagram(document.getElementById('d-tree'), {
+  title: 'Every process below sandbox-exec runs under the same profile',
+  cols: 6.35, rows: 3.75, cellW: 160, cellH: 110,
+  legend: [
+    { text: 'started by srt', dashed: true },
+    { text: 'fork + exec, inherits the profile' },
+    { text: 'refused by the profile', kind: 'danger', dashed: true },
+  ],
+  groups: [{ label: 'sandbox · one Seatbelt profile', cols: [1, 3.95], rows: [0.15, 2.65] }],
+  nodes: [
+    { id: 'srt', label: 'srt', w: 150, col: 0, row: 0.6, lines: ['not sandboxed;', 'runs the proxies'] },
+    { id: 'sbx', label: 'sandbox-exec', w: 190, col: 1.35, row: 0.6,
+      lines: ['applies the profile,', 'then execs `bash -c <cmd>`'] },
+    { id: 'gw', label: './gradlew build', w: 150, col: 2.7, row: 0.6 },
+    { id: 'git', label: 'git fetch', w: 150, col: 2.7, row: 1.6 },
+    { id: 'det', label: 'detached process', w: 150, col: 2.7, row: 2.6,
+      lines: ['setsid, parent exited', 'ppid 1: still confined'] },
+    { id: 'java', label: 'java', sub: 'Gradle daemon', w: 150, col: 3.85, row: 0.6 },
+    { id: 'ssh', label: 'ssh', sub: 'started by git', w: 150, col: 3.85, row: 1.6 },
+    { id: 'other', label: 'your other processes', sub: 'editor, terminal, …', kind: 'muted', w: 180, col: 5.25, row: 2.6 },
+  ],
+  edges: [
+    { from: 'srt', to: 'sbx', dashed: true },
+    { from: 'sbx', to: 'gw' },
+    { from: 'sbx', to: 'git', route: 'vh' },
+    { from: 'sbx', to: 'det', route: 'vh' },
+    { from: 'gw', to: 'java' },
+    { from: 'git', to: 'ssh' },
+    { from: 'det', to: 'other', label: 'signal: refused', kind: 'danger', dashed: true },
+  ],
+});
+
+sequence(document.getElementById('d-seq'), {
+  title: 'The proxy checks the denylist, the allowlist and the resolved address before it connects',
+  colW: 190,
+  actors: ['command', 'srt HTTP proxy', 'DNS', 'github.com'],
+  msgs: [
+    { from: 'command', to: 'srt HTTP proxy', label: 'CONNECT github.com:443', kind: 'accent' },
+    { from: 'srt HTTP proxy', to: 'srt HTTP proxy', label: 'in deniedDomains? no' },
+    { from: 'srt HTTP proxy', to: 'srt HTTP proxy', label: 'in allowedDomains? yes' },
+    { from: 'srt HTTP proxy', to: 'DNS', label: 'resolve github.com' },
+    { from: 'DNS', to: 'srt HTTP proxy', label: 'public address', reply: true },
+    { from: 'srt HTTP proxy', to: 'github.com', label: 'TCP connect :443', kind: 'success' },
+    { from: 'srt HTTP proxy', to: 'command', label: '200, tunnel open', reply: true, kind: 'success' },
+    { note: 'TLS runs end to end through the tunnel; the proxy sees host and port only', over: ['command', 'github.com'] },
+    { from: 'command', to: 'srt HTTP proxy', label: 'CONNECT example.com:443', kind: 'accent' },
+    { from: 'srt HTTP proxy', to: 'srt HTTP proxy', label: 'no list matches' },
+    { from: 'srt HTTP proxy', to: 'command', label: '403, no connection made', reply: true, kind: 'danger' },
+  ],
+});
+
+zoomable();   // last: after every helper has drawn
+</script>
+</body>
+</html>
