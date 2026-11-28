@@ -1047,3 +1047,24 @@ def test_keys_known_to_srt_or_mapped_by_twsrt_are_not_flagged(
     )
 
     assert "unknown-srt-key" not in codes(run(config))
+
+
+def test_keys_added_in_srt_0_0_83_are_not_flagged(tmp_path: Path) -> None:
+    # srt 0.0.83 accepts these; flagging them would tell the user a working
+    # setting is dead.
+    config = write_config(
+        tmp_path,
+        srt={
+            "base": (
+                '{"enabled": true, "allowNestedUserNamespaces": false,'
+                ' "network": {"allowPlaintextHeaderSet": false,'
+                ' "stripResponseHeaders": ["set-cookie"],'
+                ' "refuseOpaqueTunnels": true, "requireHostMatch": true,'
+                ' "ambiguousRequestTarget": "refuse"}}'
+            )
+        },
+        bash={"base": BASH_BASE},
+        profiles='[profiles.default]\nsrt = ["base"]\nbash = ["base"]\n',
+    )
+
+    assert "unknown-srt-key" not in codes(run(config))

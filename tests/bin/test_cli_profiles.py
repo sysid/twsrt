@@ -344,8 +344,11 @@ def test_show_prints_the_compiled_srt_document_and_writes_nothing(
         # (see sources.compile_sources).
         "filesystem": {
             "denyRead": ["~/.ssh"],
+            "allowWrite": [],
             "denyWrite": sorted(["~/.ssh", *load_config(config).policy_files]),
         },
+        # srt requires all five lists; absent ones compile to [].
+        "network": {"allowedDomains": [], "deniedDomains": []},
     }
     assert not (tmp_path / "compiled").exists()
     assert not claude_target.exists()
@@ -523,8 +526,10 @@ def test_generate_write_keeps_the_fixed_claude_posture_out_of_the_canonical_docu
         # (see sources.compile_sources).
         "filesystem": {
             "denyRead": ["~/.ssh"],
+            "allowWrite": [],
             "denyWrite": sorted(["~/.ssh", *load_config(config).policy_files]),
         },
+        "network": {"allowedDomains": [], "deniedDomains": []},
     }
 
 

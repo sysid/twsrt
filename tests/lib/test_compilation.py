@@ -1,6 +1,7 @@
 """Tests for compiling resolved canonical-source profiles."""
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -268,7 +269,7 @@ def test_compile_sources_adds_extra_deny_write_to_document_and_rules(
     )
 
 
-def test_compile_sources_extra_deny_write_creates_missing_filesystem_section(
+def test_compile_sources_adds_extra_deny_write_to_a_fragment_without_filesystem(
     tmp_path: Path,
 ) -> None:
     config = load_config(
@@ -282,9 +283,9 @@ def test_compile_sources_extra_deny_write_creates_missing_filesystem_section(
         config, resolve_profile(config), extra_deny_write=["/a/repo/.twsrt"]
     )
 
-    assert compiled.documents["srt"].document["filesystem"] == {
-        "denyWrite": sorted(["/a/repo/.twsrt", *config.policy_files])
-    }
+    assert compiled.documents["srt"].document["filesystem"]["denyWrite"] == sorted(
+        ["/a/repo/.twsrt", *config.policy_files]
+    )
 
 
 def test_every_read_deny_is_also_compiled_as_a_write_deny(tmp_path: Path) -> None:
@@ -343,6 +344,51 @@ srt = ["base"]
     assert set(compiled.documents) == {"srt"}
     assert not [rule for rule in compiled.rules if rule.scope == Scope.EXECUTE]
     assert any(rule.pattern == "~/.ssh" for rule in compiled.rules)
+
+
+def test_compiled_srt_always_carries_the_lists_srt_requires(tmp_path: Path) -> None:
+    # srt refuses a settings file lacking any of these five lists
+    # ("network.deniedDomains: Required"), so a minimal fragment must still
+    # compile to a file srt will load. An absent list means "nothing listed".
+    # Without policy files no write deny is implied, so only the required-list
+    # defaults can put denyWrite into the document.
+    config = replace(
+        load_config(configured_profile(tmp_path, "{}", "{}")), policy_files=[]
+    )
+    (tmp_path / "fragments/srt-base.jsonc").write_text(
+        '{"network": {"allowedDomains": ["github.com"]}}'
+    )
+
+    document = (
+        compile_sources(config, resolve_profile(config)).documents["srt"].document
+    )
+
+    assert document["network"] == {
+        "allowedDomains": ["github.com"],
+        "deniedDomains": [],
+    }
+    assert document["filesystem"] == {
+        "allowWrite": [],
+        "denyWrite": [],
+        "denyRead": [],
+    }
+
+
+def test_compiled_srt_without_a_network_section_allows_no_domain(
+    tmp_path: Path,
+) -> None:
+    # An empty allowedDomains blocks every host: the fail-safe reading of a
+    # policy that names no domain.
+    config = load_config(configured_profile(tmp_path, "{}", "{}"))
+    (tmp_path / "fragments/srt-base.jsonc").write_text(
+        '{"filesystem": {"denyRead": ["~/.ssh"]}}'
+    )
+
+    document = (
+        compile_sources(config, resolve_profile(config)).documents["srt"].document
+    )
+
+    assert document["network"] == {"allowedDomains": [], "deniedDomains": []}
 
 
 def test_read_deny_on_a_write_allowed_path_is_a_conflict(tmp_path: Path) -> None:

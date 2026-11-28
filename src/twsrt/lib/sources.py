@@ -55,6 +55,10 @@ _SRT_LISTS = {
     "filesystem": ("allowWrite", "denyWrite", "denyRead"),
     "network": ("allowedDomains", "deniedDomains"),
 }
+# Lists srt's schema requires; _add_required_srt_lists defaults each to [].
+# Equal to _SRT_LISTS as of srt 0.0.83, but a separate fact: a newly required
+# list belongs here, not in _SRT_LISTS, unless it also becomes rules.
+_SRT_REQUIRED_LISTS = _SRT_LISTS
 # The only top-level keys a Bash source document may carry.
 _BASH_ACTIONS = ("allow", "ask", "deny")
 # Lists whose order carries no meaning, sorted on compile for stable output.
@@ -91,6 +95,7 @@ def compile_sources(
             profile.name, kind, loaded, set_paths=_SET_PATHS.get(kind, ())
         )
         if kind == "srt":
+            _add_required_srt_lists(document)
             _imply_write_denies(profile.name, document, extra_deny_write)
         loaded_by_kind[kind] = loaded
         documents[kind] = CompiledDocument(
@@ -111,6 +116,20 @@ def compile_sources(
     )
 
 
+def _add_required_srt_lists(document: dict[str, Any]) -> None:
+    """Add every _SRT_REQUIRED_LISTS list a fragment left out, as an empty list.
+
+    srt refuses to start on a file lacking one (srt 0.0.83:
+    "network.deniedDomains: Required"), so a minimal fragment would compile
+    to a policy srt never loads. An absent list means nothing is listed; for
+    allowedDomains that is the fail-safe "no domain".
+    """
+    for section, keys in _SRT_REQUIRED_LISTS.items():
+        lists = document.setdefault(section, {})
+        for key in keys:
+            lists.setdefault(key, [])
+
+
 def _imply_write_denies(
     profile_name: str, document: dict[str, Any], extra: Sequence[str]
 ) -> None:
@@ -122,21 +141,22 @@ def _imply_write_denies(
     is implied rather than left to the fragment author. A path that is both
     read-denied and write-allowed would silently lose that guarantee, so it
     fails instead.
+
+    Runs after _add_required_srt_lists, so the filesystem lists all exist.
     """
-    filesystem = document.get("filesystem", {})
-    read_denies = filesystem.get("denyRead", [])
+    filesystem = document["filesystem"]
+    read_denies = filesystem["denyRead"]
     implied = {*read_denies, *extra}
     if not implied:
         return
-    write_only = sorted(set(read_denies) & set(filesystem.get("allowWrite", [])))
+    write_only = sorted(set(read_denies) & set(filesystem["allowWrite"]))
     if write_only:
         raise ValueError(
             f"profile {profile_name!r}: {', '.join(write_only)} is in both "
             "filesystem.denyRead and filesystem.allowWrite; denyRead implies "
             "denyWrite, so a write-only path cannot be expressed"
         )
-    filesystem = document.setdefault("filesystem", {})
-    filesystem["denyWrite"] = sorted({*filesystem.get("denyWrite", []), *implied})
+    filesystem["denyWrite"] = sorted({*filesystem["denyWrite"], *implied})
 
 
 def serialize_document(document: dict[str, Any]) -> str:

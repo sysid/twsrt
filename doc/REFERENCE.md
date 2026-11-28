@@ -21,6 +21,7 @@ rationale are in [SECURITY_CONCEPT.md](../SECURITY_CONCEPT.md).
 - [Diagnostic output](#diagnostic-output)
 - [Invariants](#invariants)
 - [Extending twsrt](#extending-twsrt)
+- [After an srt upgrade](#after-an-srt-upgrade)
 - [Scope and roadmap](#scope-and-roadmap)
 
 ## Compiler model
@@ -56,6 +57,7 @@ rationale are in [SECURITY_CONCEPT.md](../SECURITY_CONCEPT.md).
 | JSONC parsing | Selected `.jsonc` files | Duplicate keys, trailing commas, single-quoted or unquoted keys, `NaN`/infinities, non-object roots, malformed comments |
 | Composition | Parsed objects | Unequal scalars, incompatible types |
 | Domain validation | Each fragment and the composed document | Invalid field shapes, unknown Bash actions, a value in opposing buckets |
+| Required srt lists | Composed srt document | Never fails: each of `filesystem.denyRead`/`allowWrite`/`denyWrite` and `network.allowedDomains`/`deniedDomains` a fragment left out is added as `[]`, because srt refuses a file lacking one. An absent `allowedDomains` therefore allows no domain |
 | Write-deny implication | Composed srt document | A path in both `denyRead` and `allowWrite` |
 | Translation and write | Compiled documents | Any rendering conflict; nothing is written until every target rendered, and each file is replaced atomically |
 
@@ -629,7 +631,7 @@ redundant copy, and names the earlier one.
 | `inherited-fragment` | warning | A profile selects a fragment its `extends` chain already selects |
 | `redundant-extends` | warning | A profile extends a parent it already reaches through another parent |
 | `unused-fragment` | warning | A registered fragment no profile selects |
-| `unknown-srt-key` | warning | A top-level, `network.*` or `filesystem.*` key outside srt's config schema (sandbox-runtime 0.0.78) that twsrt does not map either. srt strips it without a word, so it reaches no agent. Typical case: a Claude-only key such as `excludedCommands`, which belongs in Claude's own `settings.json`. Fragment-level, so `// doctor-ignore` does not apply |
+| `unknown-srt-key` | warning | A top-level, `network.*` or `filesystem.*` key outside srt's config schema (sandbox-runtime 0.0.83; refresh with `make srt-schema-check`, see [After an srt upgrade](#after-an-srt-upgrade)) that twsrt does not map either. srt strips it without a word, so it reaches no agent. Typical case: a Claude-only key such as `excludedCommands`, which belongs in Claude's own `settings.json`. Fragment-level, so `// doctor-ignore` does not apply |
 | `symlinked-deny-path` | warning | A `denyRead`/`denyWrite` path reaches a symlink on disk and its real path is not denied too. srt keeps the unresolved spelling while Seatbelt matches the real path, so the deny is a no-op (bkmr 3686) |
 | `broad-allow-write` | warning | `allowWrite` on or above `/`, `~`, `~/.config` or `~/Library`. With Claude Code every `allowWrite` path also auto-approves the edit tools (ADR 0002) |
 | `claude-relative-sandbox-path` | warning | A relative or `**/` entry in `sandbox.filesystem.*` of a scanned Claude settings file. Claude anchors it at the settings-file root (`~/.claude`, the project root, or the `--settings` file's directory), not the launch cwd; use `Read()`/`Edit()` rules (bkmr 3742) |
@@ -1146,6 +1148,31 @@ strict serialization, output staging, and canonical drift detection are
 shared. The registration step is a security boundary: a new document format
 cannot bypass validation merely because generic composition can merge its
 JSON objects.
+
+## After an srt upgrade
+
+srt ships no JSON schema, and twsrt hand-copies what it relies on: doctor's
+`_SRT_SCHEMA_KEYS`, the required lists in `sources.py` (`_SRT_REQUIRED_LISTS`), and
+plain-string path entries. srt strips unknown keys without a word, so drift
+goes unnoticed unless it is checked. After `make install-srt`, from a plain
+terminal:
+
+1. `make srt-schema-check`: compares top-level, `network.*` and
+   `filesystem.*` key names with `_SRT_SCHEMA_KEYS` and fails on drift. Add
+   or remove the reported keys and bump the version in the comment above the
+   table.
+2. Diff `src/sandbox/sandbox-config.ts` between the old and new release tag
+   of [anthropics/sandbox-runtime](https://github.com/anthropics/sandbox-runtime),
+   because step 1 sees key names only (the install replaced the old version
+   locally). Look for keys that became required (compare with `_SRT_REQUIRED_LISTS`), changed
+   types, and new entry forms in path or domain lists. 0.0.83 added
+   `{"path": ..., "literal": true}` path entries, which twsrt rejects with
+   `must be a list of strings`.
+3. `grep -rn '0\.0\.<old>' src doc tests scripts README.md SECURITY_CONCEPT.md`: update version pins
+   that claim the current schema. Pins that cite where a behaviour was
+   verified (ADRs, probe pattern semantics) stay until re-verified.
+4. `twsrt test`: enforcement probes against the new srt (see
+   [Sandbox probes](#sandbox-probes)).
 
 ## Scope and roadmap
 
