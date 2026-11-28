@@ -15,7 +15,7 @@ security rules per agent invites drift, human error and coverage gaps.
 twsrt compiles one policy, maintained as composable JSONC fragments and
 selected by a profile, into a canonical document and from it into every
 agent's native configuration
-([pipeline](README.md#1-one-policy-compiled-in-two-stages)). Combined with
+([pipeline](README.md#compile-then-translate)). Combined with
 Anthropic's Sandbox Runtime (SRT) and the agents' native sandboxes, this
 yields **defense in depth**: a kernel layer enforces invariants for every
 spawned command, an application layer applies the same policy to every tool.
@@ -140,11 +140,13 @@ When the system meets ambiguity it chooses the more restrictive option:
 
 | Ambiguity | Default | Rationale |
 |---|---|---|
-| A deny path does not exist at generation time | Treated as a directory (adds the `/**` deny) | Blocks more rather than less |
-| Copilot has no "ask" tier | Ask maps to deny, with a warning | Better to block than to run without the intended confirmation |
+| A deny path does not exist at generation time | Claude: treated as a directory (adds the `/**` deny) | Blocks more rather than less |
+| Copilot has no "ask" tier | Ask maps to a `--deny-tool` flag, with a warning | Better to block than to run without the intended confirmation |
 | Codex cannot express read-only for globs | A `denyWrite` glob becomes `deny`, with a warning | Narrows instead of widening |
 | Codex `allow` rules mean "run unsandboxed" | Bash `allow` is not compiled for Codex | A translation must never widen the sandbox |
-| Unknown source kind, disabled canonical sandbox, malformed path | Abort before writing | No output beats a guessed one |
+| Unknown source kind or key, conflicting fragments | Abort before writing | No output beats a guessed one |
+| Disabled canonical sandbox (`enabled: false`) | Claude, Codex and Copilot native targets refuse to generate | No agent config without a sandbox |
+| `/~/…` or `..` path | Codex and Copilot native targets refuse to generate | The intended path cannot be known |
 
 ### 3.4 Least privilege: `denyRead` implies `denyWrite`
 
@@ -177,13 +179,15 @@ are not included ([ADR 0008](doc/adr/0008-policy-files-are-write-denied.md)).
   canonical JSON and the agent targets on disk.
 - **Enforcement verification.** `twsrt test` probes the kernel sandbox for
   every effective rule ([sandbox probes](doc/REFERENCE.md#sandbox-probes)).
-- **Provenance-rich failure.** Conflicts name the profile, source kind, JSON
-  pointer or rule bucket, and both fragments.
+- **Provenance-rich failure.** Composition conflicts name the profile, source
+  kind, JSON pointer or list, and both fragments; a `denyRead`/`allowWrite`
+  clash names the profile and path.
 - **Explicit warnings.** Every lossy mapping (ask → deny for Copilot, glob
   narrowing for Codex) is reported, so administrators know where fidelity
   is reduced.
 - **Secret-safe diagnostics.** `--verbose` never prints policy contents,
-  environment values or credentials; probe stdout is never captured.
+  environment values or credentials; probe stdout is never captured, except
+  the three-digit proxy status of a wildcard-domain probe.
 
 ## 4. Why SRT and twsrt Together
 
@@ -227,8 +231,9 @@ mistakes that in practice cause most gaps.
 **Native-sandbox convergence (2026).** All supported agents now ship native
 OS sandboxes (Claude Code: Seatbelt/bwrap, opt-in, always switched on by
 twsrt since ADR 0010; Copilot CLI and JetBrains: local sandbox, GA, compiled
-by twsrt since ADR 0009; Codex: always on). twsrt's durable core is therefore compiling deny paths and domains into each agent's native sandbox,
-a high-fidelity translation everywhere; the Bash-rules app layer stays a
+by twsrt since ADR 0009; Codex: always on). twsrt's durable core is therefore
+compiling deny paths and domains into each agent's native sandbox, a
+high-fidelity translation everywhere; the Bash-rules app layer stays a
 best-effort supplement ([roadmap](doc/REFERENCE.md#scope-and-roadmap)).
 
 ## 5. Per-project policy
@@ -275,7 +280,7 @@ Its security properties:
 | Agent runs `rm -rf /` | Added by hand to each agent | Bash deny translates to every agent |
 | Agent sends data to `evil.com` via Bash | Network allowlist per agent by hand | Proxy blocks **and** agent denies: two layers |
 | Agent sends data to `evil.com` via WebFetch | Network allowlist per agent by hand | `WebFetch(domain:…)` allow check: one layer |
-| Copilot runs a command meant to be "ask" | Copilot runs it (no ask tier) | Mapped to deny, warned |
+| Copilot runs a command meant to be "ask" | Copilot runs it (no ask tier) | Mapped to a `--deny-tool` flag, warned; without `copilot_output` not enforced, warned |
 | Config drift (deny rule removed) | Undetectable until exploited | `twsrt diff` exits 1 |
 | A rule written but not enforced (symlink, upgrade) | Undetectable | `twsrt test` reports `FAIL` |
 | New agent added to the workflow | Start from scratch | New generator, same resolved policy |
@@ -351,10 +356,11 @@ If a legacy `sandbox_mode` / `sandbox_workspace_write` setting appears in
 *any* loaded Codex config layer (managed, team, project, config profile), or
 `--sandbox` is passed on the CLI, Codex silently falls back to the legacy
 sandbox and ignores `default_permissions`, without an error. twsrt's
-`_reject_legacy_sandbox` guard is fail-safe only for the `config.toml` it
-owns; other layers are invisible to it. Mitigations: twsrt prints a
-reminder on every Codex generate/diff, and `codex doctor` shows the
-effective sandbox posture. Run it after changing any other config layer.
+`_reject_legacy_sandbox` guard checks only the top-level keys of the
+`config.toml` it owns; a `[profiles.*]` table there and every other layer are
+invisible to it. Mitigations: twsrt warns whenever it renders the Codex
+target, and `codex doctor` shows the effective sandbox posture. Run it after
+changing any Codex config.
 
 ### 7.4 Symlinked deny paths (macOS)
 

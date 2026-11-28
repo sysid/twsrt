@@ -7,6 +7,8 @@ rationale are in [SECURITY_CONCEPT.md](../SECURITY_CONCEPT.md).
 
 ## Contents
 
+- [Configuration](#configuration)
+- [CLI](#cli)
 - [Compiler model](#compiler-model)
 - [Rule mapping per agent](#rule-mapping-per-agent)
 - [Claude sandbox key mapping](#claude-sandbox-key-mapping)
@@ -23,6 +25,75 @@ rationale are in [SECURITY_CONCEPT.md](../SECURITY_CONCEPT.md).
 - [Extending twsrt](#extending-twsrt)
 - [After an srt upgrade](#after-an-srt-upgrade)
 - [Scope and roadmap](#scope-and-roadmap)
+
+## Configuration
+
+`config.toml` (default `~/.config/twsrt/config.toml`, override with `-c`). Relative
+paths resolve from its directory; `~` and absolute paths work everywhere. `twsrt
+config --init` writes the required keys and every optional key commented out with
+its default. Unknown keys are load errors; nothing is silently ignored.
+
+| Key | Required | Meaning |
+|---|---|---|
+| `schema_version` | yes | `1` |
+| `default_profile` | yes | Profile compiled when `-p` is omitted |
+| `[sources.srt]` | yes | Filesystem and network policy |
+| `[sources.bash]` | no | Command rules. Without it no `bash-rules.json` is compiled, no agent gets Bash entries, and a profile, `show` or `edit` naming `bash` fails |
+| `[sources.<kind>].output` | no | Compiled document; default `srt-settings.json` / `bash-rules.json` next to `config.toml` |
+| `[sources.<kind>.fragments.<name>].path` | ≥ 1 per kind | A `.jsonc` fragment |
+| `[profiles.<name>]` | ≥ 1 | `extends = [profile, …]` plus `srt = […]`, `bash = […]` fragment names |
+| `[targets]` | no | Agent files, below |
+
+| `[targets]` key | Agent | Notes |
+|---|---|---|
+| `claude_settings` | `claude` | Must be named `settings.json`, the only user file Claude Code reads |
+| `codex_config` | `codex` | |
+| `codex_rules` | `codex` | Optional `forbidden` rules file; requires `codex_config` |
+| `copilot_settings` | `copilot` | Native sandbox in `~/.copilot/settings.json` |
+| `copilot_output` | `copilot` | Flag snippet; independent of `copilot_settings` |
+| `copilot_jetbrains_xml` | `copilot-jetbrains` | List, one `github-copilot.xml` per IDE product and version |
+
+Keys removed in 4.0 (`claude_settings_yolo`, `copilot_output_yolo`, `claude_sync`,
+`sandbox_overrides`) are load errors naming their replacement (ADR 0010).
+
+srt itself reads only `~/.srt-settings.json`; a missing file runs srt with built-in
+defaults and no `denyRead`. With the default `output`, launch `srt -s <output>`.
+
+## CLI
+
+Global options go before the subcommand: `-c/--config PATH`, `-v/--verbose`,
+`-V/--version`. Results go to stdout, notices to stderr
+([Diagnostic output](#diagnostic-output)).
+
+| Command | Behaviour |
+|---|---|
+| `config [--init]` | Opens `config.toml` in `$EDITOR` (fallback `vi`). `--init` first creates it and starter fragments, never overwriting an existing file |
+| `edit [srt\|bash\|all] [-p P] [-n]` | Opens every registered fragment (only profile P's with `-p`) in one editor call, then compiles and reports canonical drift; a fragment that no longer compiles exits `1`. A bare `vim`, `nvim`, `gvim` or `mvim` gets `-p` (one tab per file); an `$EDITOR` with arguments is passed through. `-n` lists the paths |
+| `profiles` | Every profile with parents and resolved fragments; `*` marks `default_profile`, inherited fragments are dimmed, `invalid` marks one that does not compile on its own |
+| `show [srt\|bash] [-p P]` | The compiled canonical document exactly as `-w` writes it |
+| `generate [agent] [-p P]` | Preview: the agent translation on stdout, the files `-w` would write on stderr. Same compile and merge checks as `-w` |
+| `generate [agent] [-p P] -w` | Writes every canonical output and the selected agents' targets, each atomically, only after all rendered |
+| `diff [agent] [-p P]` | Exit `0` clean, `1` drift, `2` a target missing |
+| `test …` | [Sandbox probes](#sandbox-probes) |
+| `doctor …` | [Doctor checks](#doctor-checks) |
+
+Agents: `claude`, `codex`, `copilot`, `copilot-jetbrains`, `all` (default). An agent
+without its `[targets]` key is skipped with an `Info:` note and exit `0`, whether
+named or reached through `all`; with no agent configured, `generate -w` writes only
+the canonical outputs. Likewise `show bash` and `edit bash` without `[sources.bash]`.
+
+**`generate --project`** writes profile P (default `default_profile`) to
+`./.twsrt/P/` of the current directory and touches no global file:
+
+| Aspect | Behaviour |
+|---|---|
+| Outputs | `srt-settings.json`, `bash-rules.json` (with `[sources.bash]`), `claude-settings.json`; `./.twsrt/.gitignore` = `*`; stdout prints the absolute `./.twsrt/P` |
+| Agents | `all` means `claude`; `codex`, `copilot`, `copilot-jetbrains` are rejected (they read no per-launch settings file) |
+| Claude target | Merged from the global `claude_settings`, which therefore must be configured |
+| Added deny | The absolute path of `./.twsrt` joins `denyWrite`; global policy files stay denied |
+| Refused | A symlinked `./.twsrt` or `./.twsrt/P` (a cloned repository could redirect the write); 3.x files directly in `./.twsrt` (a 3.x launcher would keep loading a frozen policy). Profile names that differ only in case or Unicode normalization are already a load error |
+
+Why the launch line works: [Claude per-project launch premise](#claude-per-project-launch-premise).
 
 ## Compiler model
 
@@ -52,26 +123,19 @@ rationale are in [SECURITY_CONCEPT.md](../SECURITY_CONCEPT.md).
 
 | Phase | Input | Fails on |
 |---|---|---|
-| Configuration loading | `config.toml` | Unknown schema version, legacy source paths, unknown source kinds, duplicate outputs, an output equal to a fragment path, a fragment path not ending in `.jsonc`, unknown references, inheritance cycles |
-| Profile resolution | Profile name (`default_profile` unless `-p`) | Unknown parents or fragments; a source kind with no selected fragment |
+| Configuration loading | `config.toml` | Unknown or removed keys, unknown schema version, legacy source paths, unknown source kinds, duplicate outputs, a fragment path equal to its own kind's output, a fragment path not ending in `.jsonc`, unknown parents or fragments, inheritance cycles, colliding profile directory names |
+| Profile resolution | Profile name (`default_profile` unless `-p`) | Unknown profile; a source kind with no selected fragment |
 | JSONC parsing | Selected `.jsonc` files | Duplicate keys, trailing commas, single-quoted or unquoted keys, `NaN`/infinities, non-object roots, malformed comments |
 | Composition | Parsed objects | Unequal scalars, incompatible types |
-| Domain validation | Each fragment and the composed document | Invalid field shapes, unknown Bash actions, a value in opposing buckets |
-| Required srt lists | Composed srt document | Never fails: each of `filesystem.denyRead`/`allowWrite`/`denyWrite` and `network.allowedDomains`/`deniedDomains` a fragment left out is added as `[]`, because srt refuses a file lacking one. An absent `allowedDomains` therefore allows no domain |
-| Write-deny implication | Composed srt document | A path in both `denyRead` and `allowWrite` |
+| Domain validation | Each fragment and the composed document | Invalid field shapes, unknown Bash actions, a value in opposing lists (even within one fragment) |
+| Required srt lists | Composed srt document | Never fails: each missing required list is added as `[]`, so an unset `allowedDomains` allows no domain |
+| Write-deny implication | Composed srt document | A path in both `denyRead` and `allowWrite` (the error names profile and path, not fragments) |
 | Translation and write | Compiled documents | Any rendering conflict; nothing is written until every target rendered, and each file is replaced atomically |
 
-Each source kind owns a fragment namespace and exactly one compiled output.
-Relative paths resolve from `config.toml`, so the configuration directory is
-relocatable. An omitted `output` defaults to `srt-settings.json` or
-`bash-rules.json` next to `config.toml` (`config.DEFAULT_OUTPUT_NAMES`, the
-same names `--project` uses in `./.twsrt/<profile>/`). srt itself reads only
-`~/.srt-settings.json`, and a missing one runs it with built-in defaults, no
-`denyRead` at all: with the default, launch `srt -s <output>`. Unknown source kinds fail instead of being composed without
-validation or translation semantics. `srt` is required (`config.REQUIRED_SOURCE_KINDS`);
-without `bash` its compile, output and `EXECUTE` rules are skipped, and a
-profile, `show` or `edit` naming `bash` fails with "source kind 'bash' not
-configured".
+Each source kind owns a fragment namespace and exactly one compiled output
+(`config.DEFAULT_OUTPUT_NAMES`, the same names `--project` uses in
+`./.twsrt/<profile>/`). Unknown source kinds fail instead of being composed
+without validation or translation semantics.
 
 ### Profile resolution
 
@@ -92,21 +156,26 @@ Within a source kind the selected documents form a structural union:
 | Values at the same path | Result |
 |---|---|
 | Objects | Merge recursively |
-| Arrays | Deduplicated union. Rule arrays the schema knows to be sets (`filesystem.*`, `network.allowedDomains`/`deniedDomains`/`allowUnixSockets`, `ignoreViolations.*`, Bash `allow`/`ask`/`deny`) are sorted, so output is independent of fragment order; every other array keeps first-seen order, because an unknown pass-through list may be a sequence such as argv |
+| Arrays | Deduplicated union. Rule arrays known to be sets (`filesystem.allowWrite`/`denyWrite`/`denyRead`, `network.allowedDomains`/`deniedDomains`/`allowUnixSockets`, `ignoreViolations.*`, Bash `allow`/`ask`/`deny`) are sorted, so output is independent of fragment order; every other array keeps first-seen order, because an unknown pass-through list may be a sequence such as argv |
 | Equal scalars | Keep the value |
 | Unequal scalars, different JSON types | Fail with profile, source kind, JSON pointer and both fragment paths |
 
-Domain validation rejects the same value in opposing buckets: SRT
-`allowedDomains`/`deniedDomains` and `allowWrite`/`denyWrite`; Bash
-`allow`/`ask`/`deny`. There is no "safer value wins" heuristic: it would be
-source-specific and could conceal an authoring error.
+Domain validation rejects the same value in opposing lists, also within one
+fragment: srt `allowedDomains`/`deniedDomains` and `allowWrite`/`denyWrite`;
+any two of Bash `allow`/`ask`/`deny`. There is no "safer value wins"
+heuristic: it would be source-specific and could conceal an authoring error.
+
+**Required lists.** srt refuses a settings file lacking any of
+`filesystem.denyRead`/`allowWrite`/`denyWrite` or
+`network.allowedDomains`/`deniedDomains` (srt 0.0.83: `network.deniedDomains:
+Required`). Each one no fragment sets is added as `[]`.
 
 **Write denies are implied.** After composition every `denyRead` path is
-added to `denyWrite` (`sources._imply_write_denies`), plus `./.twsrt` under
-`--project`, plus the policy files: `config.toml` and every `[sources]`
+added to `denyWrite` (`sources._imply_write_denies`), plus the absolute path
+of `./.twsrt` under `--project`, plus the policy files: `config.toml` and every `[sources]`
 output and fragment path (`AppConfig.policy_files`), absolute (`~/…` under
-the home directory) and, behind a symlink, also as the real path. `--project` keeps protecting the global
-outputs. A path in both `denyRead` and `allowWrite` asks for write-only
+the home directory) and, behind a symlink, also as the real path. `--project`
+keeps protecting the global outputs. A path in both `denyRead` and `allowWrite` asks for write-only
 access and fails. Why: [ADR 0001](adr/0001-deny-read-implies-deny-write.md),
 [SECURITY_CONCEPT §3.4](../SECURITY_CONCEPT.md#34-least-privilege-denyread-implies-denywrite).
 
@@ -205,18 +274,21 @@ subset from the compiled SRT document and two keys with a fixed value.
 **Pass-through** keys are copied verbatim; one absent from SRT is removed from
 the target, so nothing another profile or a hand edit loosened survives a
 write. To keep such a key, set it in an SRT fragment.
-SRT keys without an honoured Claude Code counterpart are dropped: `allowPty`
-is valid for srt but Claude Code ignores `sandbox.allowPty`, so it is not
-forwarded.
-The two managed-empty deny lists are always emitted as `[]` so a write
+Every srt key not in this table is forwarded to no agent, valid or not
+(`sources.py` allowlists): for example `allowPty` (Claude Code ignores
+`sandbox.allowPty`), `filesystem.allowRead`, `allowGitConfig`,
+`allowNestedUserNamespaces`, `allowAppleEvents` and the newer `network.*`
+proxy options. They still reach srt itself through the canonical file.
+`doctor` reports only keys outside srt's schema (`unknown-srt-key`), not these.
+The three managed-empty filesystem lists are always emitted as `[]` so a write
 clears stale values generated by older twsrt versions.
 
 **Why the deny lists are empty.** Claude Code folds `Read`/`Edit` permission
 deny rules into the native OS sandbox profile. twsrt relies on that merge to
 enforce canonical `denyRead`/`denyWrite` paths without duplicating them under
 `sandbox.filesystem`, which previously expanded the Seatbelt profile past
-macOS `ARG_MAX` (E2BIG on every Bash call). Consequently these two keys
-cannot be set by hand; define deny paths in SRT fragments.
+macOS `ARG_MAX` (E2BIG on every Bash call). Consequently these keys
+cannot be set by hand; define paths in SRT fragments.
 
 **Canary after every Claude Code upgrade.** From sandboxed Bash, reading and
 moving a configured read-deny path must fail, and writing a configured
@@ -274,7 +346,8 @@ Existing hand-maintained `~/.claude/settings.json`:
 
 After `twsrt generate claude -w` with SRT `allowedDomains` `github.com` and
 `*.github.com`, `denyRead` `~/.aws`, bash deny `rm` and `sudo`, bash ask
-`git push`:
+`git push` (the `Edit(...)` denies for the policy files, added by every compile,
+are left out for brevity):
 
 ```json
 {
@@ -288,8 +361,8 @@ After `twsrt generate claude -w` with SRT `allowedDomains` `github.com` and
       "Read", "Glob", "Grep", "WebSearch",
       "Bash(npm test:*)",
       "mcp__memory__store",
-      "WebFetch(domain:github.com)",
-      "WebFetch(domain:*.github.com)"
+      "WebFetch(domain:*.github.com)",
+      "WebFetch(domain:github.com)"
     ]
   },
   "hooks": {
@@ -300,13 +373,13 @@ After `twsrt generate claude -w` with SRT `allowedDomains` `github.com` and
   "additionalDirectories": ["/home/user/other-project"],
   "sandbox": {
     "network": {
-      "allowedDomains": ["github.com", "*.github.com"]
+      "allowedDomains": ["*.github.com", "github.com"]
     },
+    "autoAllowBashIfSandboxed": true,
+    "excludedCommands": ["docker"],
     "filesystem": { "denyRead": [], "denyWrite": [], "allowWrite": [] },
     "enabled": true,
-    "allowUnsandboxedCommands": false,
-    "autoAllowBashIfSandboxed": true,
-    "excludedCommands": ["docker"]
+    "allowUnsandboxedCommands": false
   }
 }
 ```
@@ -454,7 +527,10 @@ profile extends the built-in `:workspace` base (workspace and tmp writable,
   `domains` table is always emitted, even empty: an empty map blocks all
   domain traffic, matching SRT allowlist semantics.
 - Exact Unix socket paths become `unix_sockets` allow entries; directory
-  entries are skipped with a warning.
+  entries are skipped with a warning. `allowAllUnixSockets: true` becomes
+  `network.dangerously_allow_all_unix_sockets = true`.
+- `network.enabled = true` is always emitted; the `domains` table does the
+  filtering.
 
 Added workspace roots inherit the `:workspace` write policy and every rule in
 `filesystem.:workspace_roots`, so canonical deny globs constrain them without
@@ -493,8 +569,19 @@ not support hook-driven `ask` decisions.
 
 **Skipped SRT fields** (cannot be translated without widening access):
 `allowLocalBinding`, socket directory entries, integer proxy ports, Mach
-lookup, violation-reporting exceptions, weaker-isolation switches. A disabled
-canonical SRT sandbox or a malformed `/~/...` path fails generation.
+lookup (without a warning), violation-reporting exceptions, weaker-isolation
+switches. A disabled canonical SRT sandbox, a `/~/...` path or a relative path
+containing `..` fails generation.
+
+**Legacy sandbox guard.** A top-level `sandbox_mode` or `sandbox_workspace_write`
+in the owned `config.toml` fails generation (`_reject_legacy_sandbox`). The same
+keys inside a `[profiles.*]` table, in any other Codex config layer (managed,
+project), or `--sandbox` on the CLI make Codex silently ignore
+`default_permissions`; twsrt cannot see them and warns, with a `codex doctor`
+hint, whenever it renders the Codex target ([SECURITY_CONCEPT
+§7.3](../SECURITY_CONCEPT.md#73-codex-profile-silent-deactivation)). Permission
+profiles are Beta and `.rules` Experimental upstream. Restart Codex after
+generating.
 
 **Owned keys in `~/.codex/config.toml`**, each pinned against a distinct
 silent-weakening vector and checked by `diff`:
@@ -538,6 +625,28 @@ twsrt warns that they are not enforced instead.
 
 ## Copilot native sandbox
 
+Copilot CLI has two modes, chosen by the `[targets]` keys
+([ADR 0009](adr/0009-copilot-native-sandbox.md)). Never combine them: run
+Copilot either with its native sandbox or under srt.
+
+| Mode | Keys | Paths and domains enforced by | Bash rules |
+|---|---|---|---|
+| Native sandbox (recommended) | `copilot_settings`, optionally `copilot_output` | Copilot's sandbox, from `settings.json` | Only via `copilot_output` flags; without it not enforced (warned) |
+| Flags only | `copilot_output` | srt: `srt -c "copilot --allow-tool 'shell' --deny-tool 'shell(rm)' --allow-url 'github.com' …"` | `--deny-tool` flags |
+
+Copilot confines shell, MCP and LSP processes at OS level; its file tools and
+web fetch are checked in software only, so the snippet's `--allow-tool 'read'`,
+`'edit'`, `'write'` rely on that check. Copilot itself keeps `.git/hooks` and
+`.git/config` read-only. srt-only fields (`allowUnixSockets`, `allowMachLookup`,
+`enableWeakerNetworkIsolation`, `ignoreViolations`) do not translate (warned);
+Copilot's own Seatbelt profile decides, and docker.sock, ssh-agent and the
+pasteboard were blocked in probes.
+
+The JetBrains plugin reads its own `github-copilot.xml` per IDE product and
+version, not `~/.copilot/settings.json`, and has no URL rules, no LSP/extension
+switch and no environment masking (warned). After an IDE upgrade, add the new
+config directory's file to `copilot_jetbrains_xml`; twsrt does not discover them.
+
 One policy builder (`src/twsrt/lib/copilot_sandbox.py`) feeds two targets
 ([ADR 0009](adr/0009-copilot-native-sandbox.md)): `copilot` merges keys into
 `~/.copilot/settings.json`, `copilot-jetbrains` merges options into each
@@ -557,7 +666,7 @@ trailing `/**` removed); lists are deduplicated and sorted.
 | `deniedDomains` | `…network.blockedHosts` | `<sandboxBlockedHosts>` |
 | `allowLocalBinding` | `allowLocalNetwork` (always written; warned when true) | `sandboxAllowLocalNetwork` (IDE default is `true`) |
 | `allowedDomains` / `deniedDomains` | top-level `allowedUrls` / `deniedUrls` | — (no URL rules) |
-| twsrt targets themselves | added to `readonlyPaths`, link and real spelling | same |
+| Copilot's own targets (`copilot_settings`, each `copilot_jetbrains_xml`) | added to `readonlyPaths`, link and real spelling | same |
 | canonical `enabled: false` | error | error |
 
 Fixed values: `enabled`/`sandboxEnabled` true, MCP servers sandboxed, bypass
@@ -587,7 +696,8 @@ same effect until it is removed. XML comments in the file are preserved.
 `twsrt doctor` reads `config.toml`, every registered fragment, and the Claude
 settings files that can carry sandbox paths (the twsrt Claude target and
 `./.claude/settings.json` / `settings.local.json` of the current
-directory). It writes nothing, and prints one line per finding on stdout followed by a count.
+directory). It writes nothing, and prints one line per finding on stdout followed by a count
+(`doctor: no findings` when there are none).
 Without options it shows errors and warnings; `--error`, `--warn` and `--info` show exactly
 those levels and combine, `--all` shows every level. The filter is display only: the count
 covers every level, and exit is `1` on any error, shown or not, else `0`.
@@ -671,8 +781,7 @@ a colon is a free-text reason for the reader; doctor does not interpret it:
   fragments that list the entry.
 - A directive applies to the same string in every list of its fragment.
 
-Pattern semantics are from srt `117eb92` (v0.0.78), see
-`thoughts/research/2026-10-02-srt-wildcard-semantics.md`. Not modelled
+Pattern semantics were verified against srt `117eb92` (v0.0.78). Not modelled
 (deliberate simplifications): coverage by a glob entry and port-qualified
 domains. `~/x` and its absolute spelling compare as equal.
 Drift is out of scope; use `diff`.
@@ -876,7 +985,8 @@ probes and combine; without any, all run. `-k` narrows further.
 ### Preflight and safety
 
 - Before any probe, `test` resolves `srt` on `PATH`, reads its version from
-  the `package.json` next to the binary (`srt --version` reports a
+  the package root's `package.json` (`<realpath of srt>/../../package.json`;
+  `srt --version` reports a
   hardcoded `1.0.0`), and runs `srt -s <settings> -c true`. If that fails
   the run aborts with exit `2`; `sandbox_apply: Operation not permitted`
   means srt cannot nest inside another sandbox, so run from a plain
@@ -889,7 +999,7 @@ probes and combine; without any, all run. `-k` narrows further.
   a failing deny probe cannot leak the secret it just read. The one
   exception is a wildcard domain probe, whose stdout is curl's three-digit
   `CONNECT` status and nothing else (the body goes to `/dev/null`). Only stderr is
-  kept, truncated to 400 characters; the control run's stderr is what
+  kept, its last 400 characters; the control run's stderr is what
   distinguishes an OS permission denial from a broken probe.
 - The control run executes each command as your user with full privileges:
   it reads one byte of each protected file and opens each writable file for
@@ -905,7 +1015,7 @@ run prints only the table and the counts. `CTL` and `SBX` are the exit codes
 of the control and sandboxed run.
 
 ```
-srt 0.0.75, settings /Users/x/.srt-settings.json, 9 probes
+srt 0.0.83, settings /Users/x/.srt-settings.json, 9 probes
 STATUS   KIND       RULE               CTL SBX     MS  PROBE
 PASS     read-deny  ~/.ssh               0   1     85  head -c 1 -- /Users/x/.ssh/config
 FAIL     read-deny  ~/.aws (realpath)    0   0     90  head -c 1 -- /Users/x/configs/dot-aws/sso/cache/x.json
@@ -922,20 +1032,21 @@ passed=7 failed=1 invalid=0 error=0 skipped=1
 ```
 
 Exit codes: `0` every executed probe passed, `1` any `FAIL`, `INVALID`, or
-`ERROR`, `2` configuration or settings missing, or the preflight failed (srt
-not on `PATH`, unloadable settings, or `sandbox_apply` refused because twsrt
-itself runs inside a sandbox).
+`ERROR`, `2` any setup error: config that does not load or compile, settings
+file missing or unreadable, or the preflight failed (srt not on `PATH`, or
+`sandbox_apply` refused because twsrt itself runs inside a sandbox).
 
 `--json` prints this document instead of the table (warnings stay on stderr):
 
 ```json
 {
-  "srt_version": "0.0.75",
+  "srt_version": "0.0.83",
   "settings": "/Users/x/.srt-settings.json",
   "summary": {"total": 9, "passed": 7, "failed": 1, "invalid": 0, "error": 0, "skipped": 1},
   "results": [
     {
       "kind": "read-deny",
+      "section": "denyRead",
       "rule": "~/.aws (realpath)",
       "command": "head -c 1 -- /Users/x/configs/dot-aws/sso/cache/x.json",
       "expect": "deny",
@@ -1018,10 +1129,11 @@ a source kind without `[sources.<kind>]`) are `Info:`, never `Error:`.
 | Kind | Color | Stream |
 |---|---|---|
 | `Error:` | red, bold | stderr |
-| `Warning:` | yellow | stderr |
+| `Warning:` | yellow; red, bold when urgent (a skipped JetBrains file) | stderr |
 | `Info:` skipped agents or kinds, sync and migration notes, restart hints, the preview's "nothing written" footer (bold) | cyan | stderr |
 | Write narration: `Wrote …`, `Would write …` | green (done) / cyan | stderr |
-| Report info: `test` header and summary, `edit -n` paths, preview section headers | cyan | stdout |
+| Report info: `test` header and `--- summary ---` heading, `edit -n` paths, preview section headers | cyan | stdout |
+| Count lines: `test` `passed=…`, `doctor: …` | green when clean, else red (`doctor`: yellow for warnings only) | stdout |
 | Clean diff | green | stdout |
 | Drift (canonical, agent target header) | yellow | stdout |
 | Diff entry missing from target / extra in target | green `+` / red `-` | stdout |
@@ -1084,8 +1196,9 @@ Command stdout is still never captured or logged.
 4. **Selective merge owns only declared sections.** Everything else in a
    target file (hooks, MCP servers, projects, credentials) is preserved
    byte-for-byte where the format allows.
-5. **Fail-safe on ambiguity.** Disabled canonical sandbox, malformed paths,
-   conflicting fragments, incomplete profiles, and legacy Codex
+5. **Fail-safe on ambiguity.** Conflicting fragments, incomplete profiles,
+   a disabled canonical sandbox (Claude, Codex and Copilot native targets),
+   `/~/` or `..` paths (Codex, Copilot native) and a top-level legacy Codex
    `sandbox_mode` in the managed file abort generation instead of guessing.
 6. **Deterministic output.** The same config, profile and fragments produce
    identical output; rule sets are sorted, and no runtime state takes part
@@ -1094,7 +1207,7 @@ Command stdout is still never captured or logged.
    `generate` and `diff` must run under the same `$HOME`.
 7. **Project mode writes nothing global.** `generate --project` sends
    every canonical output and the Claude target to `./.twsrt/<profile>/`, adds
-   `./.twsrt` to the compiled `denyWrite`, and reads the global Claude target
+   the absolute `./.twsrt` to the compiled `denyWrite`, and reads the global Claude target
    only as merge base.
    Rules are dropped per project by profile choice, never by subtraction.
    The global policy files stay write-denied (invariant 8).
@@ -1108,7 +1221,7 @@ Command stdout is still never captured or logged.
 
 **A new agent** consumes the normalized rules and touches neither fragments
 nor profiles nor other generators. Implement the `AgentGenerator` protocol
-and register it:
+(`src/twsrt/lib/agent.py`):
 
 ```python
 class PiMonoGenerator:
@@ -1125,8 +1238,14 @@ class PiMonoGenerator:
     def diff(self, rules, target, config) -> DiffResult:
         ...  # compare generated against existing
 
-GENERATORS["pimono"] = PiMonoGenerator()   # then: twsrt generate pimono
+GENERATORS["pimono"] = PiMonoGenerator()
 ```
+
+Registration alone is not enough; the agent also needs:
+
+1. its `[targets]` key in `config._apply_target_paths` and an `AppConfig` field;
+2. an entry in `AppConfig.agent_target` and `models.AGENT_TARGET_KEYS`;
+3. a write branch in `cli._stage_agent_files`, or `-w` writes nothing for it.
 
 Decide per rule class what the agent can express and where it is lossy; new
 agents get restrictions-only compilation by default (see
@@ -1152,27 +1271,30 @@ JSON objects.
 ## After an srt upgrade
 
 srt ships no JSON schema, and twsrt hand-copies what it relies on: doctor's
-`_SRT_SCHEMA_KEYS`, the required lists in `sources.py` (`_SRT_REQUIRED_LISTS`), and
-plain-string path entries. srt strips unknown keys without a word, so drift
-goes unnoticed unless it is checked. After `make install-srt`, from a plain
-terminal:
+`_SRT_SCHEMA_KEYS`, the required lists in `sources.py` (`_SRT_REQUIRED_LISTS`),
+and plain-string path entries. srt strips unknown keys without a word, so drift
+goes unnoticed unless it is checked. The Makefile's `SRT_VERSION` pins the
+version all of this was checked against; `make install-srt` installs exactly
+that version. To move to a new version `<new>`, from a plain terminal:
 
-1. `make srt-schema-check`: compares top-level, `network.*` and
-   `filesystem.*` key names with `_SRT_SCHEMA_KEYS` and fails on drift. Add
-   or remove the reported keys and bump the version in the comment above the
-   table.
-2. Diff `src/sandbox/sandbox-config.ts` between the old and new release tag
-   of [anthropics/sandbox-runtime](https://github.com/anthropics/sandbox-runtime),
-   because step 1 sees key names only (the install replaced the old version
-   locally). Look for keys that became required (compare with `_SRT_REQUIRED_LISTS`), changed
-   types, and new entry forms in path or domain lists. 0.0.83 added
-   `{"path": ..., "literal": true}` path entries, which twsrt rejects with
-   `must be a list of strings`.
-3. `grep -rn '0\.0\.<old>' src doc tests scripts README.md SECURITY_CONCEPT.md`: update version pins
-   that claim the current schema. Pins that cite where a behaviour was
-   verified (ADRs, probe pattern semantics) stay until re-verified.
-4. `twsrt test`: enforcement probes against the new srt (see
+1. `make install-srt SRT_VERSION=<new>`.
+2. `make srt-schema-check SRT_VERSION=<new>`: first confirms the installed srt
+   is `<new>` (exit `2` otherwise), then compares top-level, `network.*` and
+   `filesystem.*` key names with `_SRT_SCHEMA_KEYS` and fails on drift. Add or
+   remove the reported keys and bump the version in the comment above the table.
+3. Diff `src/sandbox/sandbox-config.ts` between the old and new release tag of
+   [anthropics/sandbox-runtime](https://github.com/anthropics/sandbox-runtime),
+   because step 2 sees key names only. Look for keys that became required
+   (compare with `_SRT_REQUIRED_LISTS`), changed types, and new entry forms in
+   path or domain lists. 0.0.83 added `{"path": ..., "literal": true}` path
+   entries, which twsrt rejects with `must be a list of strings`.
+4. `grep -rn '0\.0\.<old>' src doc tests scripts README.md SECURITY_CONCEPT.md`:
+   update version pins that claim the current schema. Pins that cite where a
+   behaviour was verified (ADRs, probe pattern semantics) stay until re-verified.
+5. `twsrt test`: enforcement probes against the new srt (see
    [Sandbox probes](#sandbox-probes)).
+6. Set `SRT_VERSION := <new>` in the Makefile; `make srt-schema-check` passes
+   without arguments again.
 
 ## Scope and roadmap
 
