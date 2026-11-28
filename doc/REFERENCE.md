@@ -1189,8 +1189,9 @@ Command stdout is still never captured or logged.
    giving a false sense of security.
 2. **Canonical allows widen only the named sandbox boundary.** SRT
    `allowWrite` directories become Codex workspace roots, retaining inherited
-   protected paths and deny globs. Lossy translations narrow or skip with a
-   warning; Bash allows never become unsandboxed execution.
+   protected paths and deny globs. A coarser rule is narrowed; an inexpressible
+   one is skipped (warned for Codex and Copilot, silent for Claude). Bash allows
+   never become unsandboxed execution.
 3. **A read-denied path is never writable.** Every `denyRead` path is
    compiled into `denyWrite`; a write-only path is a compile error.
 4. **Selective merge owns only declared sections.** Everything else in a

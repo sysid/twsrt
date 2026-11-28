@@ -208,6 +208,31 @@ const DIAGRAMS = {
       { text: "also enforced by the kernel", kind: "success", strong: true },
     ],
   },
+  // Question: what does srt confine when an agent runs inside it?
+  srt: {
+    title: "srt -c 'copilot --yolo': the kernel sandbox confines the whole agent process",
+    cols: 4, rows: 3, cellW: 200, cellH: 100, boxW: 166,
+    nodes: [
+      { id: "launch", label: "srt -c 'copilot --yolo'", lines: ["loads, loss-less:", "`~/.srt-settings.json`"], col: 0, row: 1.2, kind: "accent", w: 180 },
+      { id: "agent", label: "copilot --yolo", sub: "agent process", lines: ["own path, URL checks off"], col: 1, row: 1.2 },
+      { id: "tools", label: "Built-in tools", lines: ["Read · Edit · WebFetch", "run inside the agent"], col: 2, row: 0.5 },
+      { id: "cmds", label: "Spawned commands", lines: ["shell, MCP servers", "and their children"], col: 2, row: 1.9 },
+      { id: "res", label: "Files · secrets · network", col: 3, row: 1.2, w: 180 },
+    ],
+    groups: [
+      { label: "srt kernel sandbox: deny paths, write allowlist, domain allowlist", cols: [1, 2], rows: [0, 2.0] },
+    ],
+    edges: [
+      { from: "launch", to: "agent" },
+      { from: "agent", to: "tools" },
+      { from: "agent", to: "cmds" },
+      { from: "tools", to: "res", kind: "success", strong: true },
+      { from: "cmds", to: "res", kind: "success", strong: true },
+    ],
+    legend: [
+      { text: "enforced by the kernel sandbox", kind: "success", strong: true },
+    ],
+  },
   // Question: which command checks which step, and against how many profiles?
   verify: {
     title: "Three read-only checks, one per step from fragments to enforcement",

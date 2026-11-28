@@ -16,8 +16,7 @@ configuration of every AI coding agent you run.
 7. [Verifying the policy](#verifying-the-policy)
 8. [Security gotchas](#security-gotchas)
 9. [Commands](#commands)
-10. [Migrating from 3.x](#migrating-from-3x) · [Documentation](#documentation) ·
-    [Development](#development)
+10. [Documentation](#documentation) · [Development](#development)
 
 ## Why twsrt
 
@@ -30,6 +29,25 @@ it into every agent:
 
 ## Concepts
 
+[SRT](https://github.com/anthropics/sandbox-runtime) is regarded as the master template.
+
+The effective policy is one canonical [srt](https://github.com/anthropics/sandbox-runtime#complete-configuration-example) document. For 
+other agents, twsrt translates into that agent's **native sandbox** wherever the
+agent has a matching setting and/or permission rules.
+
+> **Fidelity.** Only srt receives the policy loss-less: it reads the canonical
+> `srt-settings.json` itself. Every agent target is a best-effort translation into
+> a different model. twsrt tries to default to more strictness when no equivalent setting is
+> available.
+>
+> The compromises per agent are listed under [Agents](#agents). 
+
+
+| Target | Translation | Paths and domains enforced by |
+|---|---|---|
+| srt (`srt -c '<agent>'`) | none, loss-less | srt's kernel sandbox, for the whole agent process |
+| Claude Code, Codex, Copilot CLI, Copilot in JetBrains | best-effort | the agent's native sandbox (plus potential permission rules) |
+
 ### Compile, then translate
 
 ![Fragments are composed per profile into canonical documents, written as srt-settings.json and bash-rules.json and parsed into normalized rules, which per-agent generators translate into agent configs](doc/diagrams/compile.svg)
@@ -37,7 +55,7 @@ it into every agent:
 | | Canonical documents | Agent configs |
 |---|---|---|
 | Files | `srt-settings.json`, `bash-rules.json` | Claude `settings.json`, Codex `config.toml` + `.rules`, Copilot `settings.json` + flags, JetBrains `github-copilot.xml` |
-| Role | Source of truth; srt's own settings file | Translations into each agent's native model, lossy where an agent lacks a concept (always narrowing, always warned) |
+| Role | Source of truth; srt's own settings file | Translations into each agent's native model, best-effort: coarser rules are narrowed, inexpressible ones are lost |
 | Depends on | The profile | The canonical documents and the agent |
 | Inspect | `twsrt show` | `twsrt generate <agent>` |
 | Written by | **every** `generate -w`, whichever agent is named | `generate <agent> -w` |
@@ -46,7 +64,11 @@ it into every agent:
   reports it. Edit the fragments (`twsrt edit`).
 - Nothing is written unless every fragment composes and every selected target renders.
 
-### Two enforcement layers
+### Two enforcement layers (agents with a native sandbox)
+
+An agent with a native sandbox confines only the commands it spawns. Its built-in
+tools run inside the agent process, outside that sandbox, so they depend on the
+agent's own permission engine:
 
 ![Every tool call passes the agent permission engine; built-in tools then reach files and network directly, while the Bash tool spawns a command that the kernel sandbox checks on every access](doc/diagrams/layers.svg)
 
@@ -58,9 +80,32 @@ it into every agent:
 | `WebFetch(evil.com)` | not covered (in-process) | allow check |
 | `Bash(git push)` vs `Bash(ls)` | cannot tell them apart | deny / ask per command |
 
-Paths and domains (layer 1) are the durable core and translate with high fidelity
-into every agent's native sandbox. Bash command rules (layer 2) are a per-agent
-supplement. Rationale: [SECURITY_CONCEPT §3.1](SECURITY_CONCEPT.md#31-defense-in-depth).
+Paths and domains (layer 1) are the core of the policy; Bash command rules
+(layer 2) are a per-agent supplement. Rationale:
+[SECURITY_CONCEPT §3.1](SECURITY_CONCEPT.md#31-defense-in-depth).
+
+### One layer: an agent run inside srt
+
+`srt -c '<agent>'` puts the whole agent process under srt's kernel sandbox, built-in
+tools included, with the canonical policy exactly as compiled:
+
+![srt -c 'copilot --yolo' loads ~/.srt-settings.json and confines the whole agent process: built-in tools and spawned commands alike reach files and network only through the kernel sandbox](doc/diagrams/srt.svg)
+
+| Access under `srt -c 'copilot --yolo'` | Kernel sandbox |
+|---|---|
+| `Read(~/.aws/credentials)`, `cat ~/.aws/credentials` | denied |
+| `WebFetch(evil.com)`, `curl evil.com` | blocked by the proxy |
+| writes outside `allowWrite` | denied |
+| `git push` vs `ls` | cannot tell them apart |
+
+- Every file and network access of the agent and its children is checked against the
+  loss-less policy, whatever the agent's own flags (`--yolo` included) allow.
+- What srt cannot express stays open: command semantics (`git push`, `rm` inside a write
+  root) and whatever the policy itself allows.
+- The agent's own API traffic also passes srt's proxy, so its API hosts need an
+  `allowedDomains` entry.
+- Never combine srt with the agent's native sandbox (for Copilot: `copilot_output` only, no
+  `copilot_settings`); on macOS a sandbox cannot be applied inside another one.
 
 ### Profiles select fragments
 
@@ -80,9 +125,9 @@ other profiles. Composition only adds:
 - One profile is in force at a time for the global files; the last `generate -w` wins.
 - To drop a rule, select a profile without that fragment (typically per project).
 
-### Prompting is a launch choice
+### Prompting the user is a launch choice
 
-The policy decides **what** is denied and **what** asks. Who answers an `ask`
+The generated policy decides **what** is denied and **what** asks. **Who** answers an `ask`
 is chosen per session with the agent's own flag; no generated file changes
 ([ADR 0010](doc/adr/0010-no-modes-profiles-select-policy.md)):
 
@@ -98,7 +143,7 @@ is chosen per session with the agent's own flag; no generated file changes
 
 Keep `ask` for commands whose effect leaves the sandbox (remote systems,
 published history, new dependencies): files and domains are kernel-enforced
-however a command is spelled, Bash rules match command text only.
+however a command is spelled, Bash rules match command text only (weak protection).
 
 ## Quickstart
 
@@ -122,8 +167,8 @@ Regenerate on every launch: `c() { twsrt generate -w claude && claude "$@"; }`
 
 Only `config.toml` and the `.jsonc` fragments are edited by hand. Relative paths
 resolve from the directory of `config.toml`. Every compile write-denies
-`config.toml` and every `[sources]` path, so edit them from a plain terminal: a
-sandboxed agent cannot loosen its own policy
+`config.toml` and every `[sources]` path, so edit them from a plain terminal: **a
+sandboxed agent cannot loosen its own policy**
 ([ADR 0008](doc/adr/0008-policy-files-are-write-denied.md)).
 
 ```toml
@@ -214,6 +259,7 @@ complete examples in [example/](example/).
 | Bash `deny` | `Bash(…)` deny | `forbidden` escalation rule | `--deny-tool` flag | — |
 | Bash `ask` | `Bash(…)` ask | Codex default, not restated | `--deny-tool` flag (warned) | — |
 | Built-in tools | in-process, permission rules only | sandboxed subprocesses | in-process, checked in software | in-process, checked in software |
+| Translation compromises | `deniedDomains` only as `WebFetch` deny; srt keys without a Claude counterpart dropped (neither warned) | `denyWrite` globs become full `deny`; proxy, socket-directory, Mach and violation settings skipped (Mach without a warning); Bash `allow`/`ask` not compiled | path globs dropped or expanded once; `:port` stripped; srt-only fields dropped; Bash `ask` becomes a deny flag | as Copilot CLI; no URL rules, no Bash rules |
 
 | Agent | Must know |
 |---|---|
@@ -303,26 +349,6 @@ Threat model, rationale and every known gap: [SECURITY_CONCEPT.md](SECURITY_CONC
 Global options before the subcommand: `-c PATH` (config file), `-v` (debug output,
 never policy contents). Results go to stdout, notices to stderr.
 [REFERENCE: CLI](doc/REFERENCE.md#cli).
-
-## Migrating from 3.x
-
-4.0 removes modes ([ADR 0010](doc/adr/0010-no-modes-profiles-select-policy.md)).
-Removed config keys are load errors that name their replacement.
-
-| 3.x | 4.0 |
-|---|---|
-| `generate --yolo`, `diff --yolo` | A [launch flag](#prompting-is-a-launch-choice), or a profile without the `ask` fragment |
-| `claude_settings = "…/settings.full.json"` | `claude_settings = "…/settings.json"` |
-| `claude_settings_yolo`, `copilot_output_yolo`, `[claude_sync]`, `[sandbox_overrides.*]` | Delete |
-| `./.twsrt/claude-settings[.yolo].json` | `./.twsrt/<profile>/claude-settings.json` |
-
-1. Close running Claude sessions, run `twsrt generate claude -w`. It reads through
-   the old `settings.json` symlink, keeping hooks, plugins and model, and replaces
-   the link by a regular file. Check with `twsrt diff claude`.
-2. Delete `settings.full.json`, `settings.yolo.json`, `copilot-flags.yolo.txt`.
-   `ask` rules that yolo dropped now prompt: review them.
-3. Delete the 3.x files directly under each `./.twsrt` and point launchers at the
-   directory `generate --project -w` prints. Until then `--project` refuses to run.
 
 ## Documentation
 

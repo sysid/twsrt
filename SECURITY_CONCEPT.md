@@ -106,6 +106,13 @@ syscall: true two-layer defense.
 enforce `Read(~/.aws/credentials)`, there is no OS-level fallback: the Read
 tool runs in the agent's own process, outside the sandbox (§7.2).
 
+**Exception: an agent run inside srt.** `srt -c '<agent>'` makes the agent process
+itself a sandboxed child, so its built-in tools are kernel-enforced too, against the
+canonical policy without translation loss. The agent's own permission layer then adds
+only command-level rules; srt still cannot tell `git push` from `ls`. The agent's
+native sandbox must stay off in this mode: on macOS a Seatbelt sandbox cannot be
+applied inside another one (`sandbox_apply: Operation not permitted`).
+
 The kernel layer cannot parse shell semantics; the application layer cannot
 enforce anything against its own bugs. The layers are complementary, not
 fully overlapping.
@@ -182,9 +189,11 @@ are not included ([ADR 0008](doc/adr/0008-policy-files-are-write-denied.md)).
 - **Provenance-rich failure.** Composition conflicts name the profile, source
   kind, JSON pointer or list, and both fragments; a `denyRead`/`allowWrite`
   clash names the profile and path.
-- **Explicit warnings.** Every lossy mapping (ask → deny for Copilot, glob
-  narrowing for Codex) is reported, so administrators know where fidelity
-  is reduced.
+- **Explicit warnings.** Codex and Copilot targets report each lossy mapping
+  (ask → deny for Copilot, glob narrowing for Codex, dropped globs) on every
+  `generate`. The Claude target reports none; its losses (`deniedDomains` only as
+  `WebFetch` deny, srt keys without a Claude counterpart) are documented in the
+  README's Agents table.
 - **Secret-safe diagnostics.** `--verbose` never prints policy contents,
   environment values or credentials; probe stdout is never captured, except
   the three-digit proxy status of a wildcard-domain probe.
