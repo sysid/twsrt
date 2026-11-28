@@ -26,29 +26,13 @@ format. Keeping "never read `~/.aws`, never run `sudo`, only reach `github.com`"
 in sync by hand drifts and leaves gaps. twsrt keeps the policy once and compiles
 it into every agent:
 
-```
-                 ┌───────────────────────────┐
-   you edit ───► │  policy fragments (JSONC) │   never read ~/.aws · never run sudo
-                 │  + profiles (config.toml) │   only reach github.com · ask before git push
-                 └─────────────┬─────────────┘
-                               │ twsrt generate -w
-          ┌──────────────┬─────┴────────┬────────────────┐
-          ▼              ▼              ▼                ▼
-   ~/.srt-settings   Claude Code      Codex          Copilot CLI + JetBrains
-   (srt sandbox)     settings.json    config.toml    settings.json, flags,
-                                      + .rules       github-copilot.xml
-```
+![Policy fragments and config.toml are compiled by twsrt generate -w into the srt settings file and the native config of Claude Code, Codex, Copilot CLI and Copilot in JetBrains](doc/diagrams/why.svg)
 
 ## Concepts
 
 ### Compile, then translate
 
-```
- fragments ─(profile)─► compose ─► canonical documents ─► srt-settings.json, bash-rules.json
-                                          │
-                                          ▼  one in-memory compile feeds every generator
-                         Claude · Codex · Copilot · Copilot JetBrains  ─► agent configs
-```
+![Fragments are composed per profile into canonical documents, written as srt-settings.json and bash-rules.json and parsed into normalized rules, which per-agent generators translate into agent configs](doc/diagrams/compile.svg)
 
 | | Canonical documents | Agent configs |
 |---|---|---|
@@ -64,20 +48,7 @@ it into every agent:
 
 ### Two enforcement layers
 
-```
-  agent process
-  ┌──────────────────────────────────────────────────────────┐
-  │  built-in tools: Read · Edit · WebFetch   ◄── layer 2 only │
-  │  layer 2: agent permissions (deny / ask / allow)           │
-  │        └─► Bash tool ──spawns──┐                           │
-  └────────────────────────────────┼───────────────────────────┘
-                                   ▼
-  ┌──────────────────────────────────────────────────────────┐
-  │  layer 1: kernel sandbox (Seatbelt / bubblewrap + proxy) │
-  │  every spawned command: deny paths, write allowlist,     │
-  │  domain allowlist                                        │
-  └──────────────────────────────────────────────────────────┘
-```
+![Every tool call passes the agent permission engine; built-in tools then reach files and network directly, while the Bash tool spawns a command that the kernel sandbox checks on every access](doc/diagrams/layers.svg)
 
 | Access | Layer 1: kernel sandbox | Layer 2: agent permissions |
 |---|---|---|
@@ -286,15 +257,7 @@ Why it works and how to re-verify after a Claude upgrade:
 
 ## Verifying the policy
 
-```
- fragments ──doctor──► well-formed, no dead weight?         every profile
-     │ generate -w
-     ▼
- files on disk ──diff──► still match the fragments?          one profile (-p)
-     │
-     ▼
- kernel sandbox ──test──► srt enforces what the file says?   one profile (-p)
-```
+![twsrt doctor checks the fragments, twsrt diff compares fragments with the files on disk, twsrt test probes whether the srt sandbox enforces the file](doc/diagrams/verify.svg)
 
 | Command | Exit codes | Notes |
 |---|---|---|
@@ -378,6 +341,7 @@ make static-analysis    # ruff check, ruff format, ty
 make install            # uv tool install -e . plus shell completion
 make install-srt        # srt at the pinned SRT_VERSION
 make srt-schema-check   # installed srt = SRT_VERSION, doctor's key table matches it
+node scripts/diagrams.mjs   # re-render the README diagrams in doc/diagrams/
 ```
 
 After an srt upgrade follow [REFERENCE: After an srt upgrade](doc/REFERENCE.md#after-an-srt-upgrade).
