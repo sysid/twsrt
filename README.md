@@ -2,6 +2,8 @@
   <img src="doc/twsrt-logo.png" width="300" />
 </p>
 
+![demo](./doc/demo.gif)
+
 One security policy, compiled into the native permission and sandbox
 configuration of every AI coding agent you run.
 
