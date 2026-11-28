@@ -17,6 +17,11 @@ test: test-unit  ## run tests
 test-unit:  ## run all tests except "integration" marked
 	RUN_ENV=local uv run python -m pytest -m "not (integration or experimentation)" --cov-config=pyproject.toml --cov-report=html --cov-report=term --cov=$(pkg_src) tests
 
+# Not part of `test`: it reads the srt installed on this machine.
+.PHONY: srt-schema-check
+srt-schema-check:  ## fail when doctor's srt key table drifts from the installed srt
+	uv run python scripts/srt-schema-check.py
+
 ################################################################################
 # Code Quality \
 QUALITY:  ## ############################################################

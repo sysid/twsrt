@@ -34,8 +34,9 @@ _ALLOW_PATH_LISTS = ("allowWrite", "allowRead")
 
 # Keys srt's config schema accepts; srt strips anything else without a word.
 # ponytail: hand-copied from SandboxRuntimeConfigSchema in sandbox-runtime
-# 0.0.78 (dist/sandbox/sandbox-config.js); a newer srt key is reported until
-# added here. Upgrade path: read the schema from the installed srt.
+# 0.0.83 (dist/sandbox/sandbox-config.js); a newer srt key is reported until
+# added here. Refresh: `make srt-schema-check` (REFERENCE: After an srt upgrade).
+# Upgrade path: read the schema from the installed srt.
 _SRT_SCHEMA_KEYS = {
     "": {
         "network",
@@ -43,6 +44,7 @@ _SRT_SCHEMA_KEYS = {
         "credentials",
         "ignoreViolations",
         "enableWeakerNestedSandbox",
+        "allowNestedUserNamespaces",
         "enableWeakerNetworkIsolation",
         "allowAppleEvents",
         "ripgrep",
@@ -54,7 +56,7 @@ _SRT_SCHEMA_KEYS = {
         "javaAgentJarPath",
         "windows",
         "git",
-        # Not in srt's schema, but twsrt maps it to Claude's sandbox.enabled.
+        # Listed in _TWSRT_ONLY_SRT_KEYS below.
         "enabled",
     },
     "network": {
@@ -71,6 +73,11 @@ _SRT_SCHEMA_KEYS = {
         "socksProxyPort",
         "mitmProxy",
         "filterRequest",
+        "allowPlaintextHeaderSet",
+        "stripResponseHeaders",
+        "refuseOpaqueTunnels",
+        "requireHostMatch",
+        "ambiguousRequestTarget",
         "tlsTerminate",
         "parentProxy",
     },
@@ -83,6 +90,10 @@ _SRT_SCHEMA_KEYS = {
         "allowGitConfig",
     },
 }
+# (section, key) pairs in _SRT_SCHEMA_KEYS that srt's schema lacks on purpose:
+# "enabled" is twsrt's own key for Claude's sandbox.enabled. The drift check
+# (scripts/srt-schema-check.py) skips them.
+_TWSRT_ONLY_SRT_KEYS = {("", "enabled")}
 
 # `// doctor-ignore` or `// doctor-ignore: free-text reason` after an entry.
 _IGNORE_DIRECTIVE = re.compile(r"//\s*doctor-ignore\b")

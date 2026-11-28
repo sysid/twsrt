@@ -302,6 +302,9 @@ SRT fragments follow the
 [SRT configuration schema](https://github.com/anthropic-experimental/sandbox-runtime?tab=readme-ov-file#configuration);
 Bash fragments hold three command lists. JSONC comments are allowed;
 trailing commas, duplicate keys and non-finite numbers are rejected.
+srt requires five lists, the four SRT keys below plus `deniedDomains`, and
+refuses a settings file lacking one. A list no fragment sets compiles to `[]`;
+an unset `allowedDomains` therefore allows no domain.
 
 ```jsonc
 // srt/base.jsonc                                   // bash/base.jsonc
@@ -653,8 +656,9 @@ make install           # uv tool install -e . plus shell completion
 ```
 
 `scripts/srt-schema.mjs` prints the config key tree of the installed srt (Node; srt ships no JSON
-schema). Run it after an srt upgrade to spot new keys; srt silently drops unknown keys outside
-`credentials`.
+schema). srt silently drops unknown keys outside `credentials`. `make srt-schema-check` compares
+its key names with doctor's hand-copied table and fails on drift; the full procedure is "After an
+srt upgrade" in [REFERENCE](doc/REFERENCE.md).
 
 `scripts/copilot-schema.py` does the same for the `sandbox` key of Copilot CLI's
 `~/.copilot/settings.json` (uv script), read from the JSON schema shipped with the newest build
