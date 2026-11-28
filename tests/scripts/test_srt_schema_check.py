@@ -89,3 +89,38 @@ def test_a_missing_node_binary_is_reported_and_exits_2(
 
     assert srt_schema_check.main() == 2
     assert "node not found" in capsys.readouterr().err
+
+
+def test_the_installed_srt_matching_the_pin_is_no_mismatch() -> None:
+    assert srt_schema_check.pin_mismatch(installed="1.2.3", pinned="1.2.3") is None
+
+
+def test_an_installed_srt_other_than_the_pin_is_reported() -> None:
+    # The key table claims the pinned version; checking it against another
+    # installed version would bless or flag the wrong schema.
+    assert srt_schema_check.pin_mismatch(installed="9.9.9", pinned="1.2.3") == (
+        "installed srt 9.9.9 is not the pinned 1.2.3: run `make install-srt`, "
+        "or pass SRT_VERSION=9.9.9 while upgrading"
+    )
+
+
+def test_a_pin_mismatch_exits_2_before_the_schema_is_dumped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(srt_schema_check, "installed_version", lambda: "9.9.9")
+    # A dump that would fail proves main stops before running it.
+    monkeypatch.setattr(srt_schema_check, "DUMP", tmp_path / "absent.mjs")
+
+    assert srt_schema_check.main(["--pin", "1.2.3"]) == 2
+    assert "installed srt 9.9.9 is not the pinned 1.2.3" in capsys.readouterr().err
+
+
+def test_a_missing_srt_binary_under_pin_is_reported_and_exits_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # `make srt-schema-check` always passes --pin; without srt on PATH the
+    # version lookup must fail cleanly, not with a traceback.
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    assert srt_schema_check.main(["--pin", "1.2.3"]) == 2
+    assert "srt not found on PATH" in capsys.readouterr().err

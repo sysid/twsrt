@@ -5,6 +5,9 @@ VERSION = $(shell cat VERSION)
 app_root := $(CURDIR)
 pkg_src = $(app_root)/src/twsrt
 tests_src = $(app_root)/tests
+# The srt version doctor's key table and the docs are checked against. Bump it
+# only through the "After an srt upgrade" checklist in doc/REFERENCE.md.
+SRT_VERSION := 0.0.83
 
 ################################################################################
 # Testing \
@@ -19,8 +22,8 @@ test-unit:  ## run all tests except "integration" marked
 
 # Not part of `test`: it reads the srt installed on this machine.
 .PHONY: srt-schema-check
-srt-schema-check:  ## fail when doctor's srt key table drifts from the installed srt
-	uv run python scripts/srt-schema-check.py
+srt-schema-check:  ## fail when the installed srt is not SRT_VERSION or its keys drift from doctor's table
+	uv run python scripts/srt-schema-check.py --pin $(SRT_VERSION)
 
 ################################################################################
 # Code Quality \
@@ -61,8 +64,8 @@ publish:  ## publish to PyPI
 	uv run twine upload --verbose dist/*
 
 .PHONY: install-srt
-install-srt:  ## install Anthropic Sandbox Runtime globally via npm
-	npm install -g @anthropic-ai/sandbox-runtime
+install-srt:  ## install Anthropic Sandbox Runtime SRT_VERSION globally via npm
+	npm install -g @anthropic-ai/sandbox-runtime@$(SRT_VERSION)
 
 .PHONY: install
 # The completion line has no shell metacharacters, so make execs twsrt directly
